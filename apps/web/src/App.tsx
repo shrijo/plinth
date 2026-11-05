@@ -18,6 +18,9 @@ import { fileSafe } from './files.ts'
 import { Gallery } from './gallery/Gallery.tsx'
 import { createProject, getProject, letGo, openProject, statsOf, updateProject, type OpenProject } from './gallery/store.ts'
 import { loadPlatform, type Platform } from './platform/index.ts'
+import { ProjectSync, type Peer, type SyncStatus } from '@plinth/sync'
+import { useSession } from './cloud/session.ts'
+import { cloudServices } from './cloud/supabase.ts'
 
 /** Thumbnails in the gallery, in pixels. */
 const THUMB_WIDTH = 640
@@ -62,11 +65,15 @@ export function App() {
 /** Opens a city from the gallery and shows it in the editor. */
 function City({ id, platform, navigate }: { id: string; platform: Platform; navigate: (id: string | null) => void }) {
   const [project, setProject] = useState<OpenProject | null>(null)
+  const [cloudId, setCloudId] = useState<string | null>(null)
   const [missing, setMissing] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    const opening = getProject(id).then((record) => (record ? openProject(id) : null))
+    const opening = getProject(id).then((record) => {
+      if (record && !cancelled) setCloudId(record.cloudId ?? null)
+      return record ? openProject(id) : null
+    })
     void opening.then((opened) => {
       if (cancelled) return
       if (opened) setProject(opened)
@@ -91,19 +98,53 @@ function City({ id, platform, navigate }: { id: string; platform: Platform; navi
     )
   }
   if (!project) return <div className="app-message">Opening…</div>
-  return <Workspace project={project} platform={platform} navigate={navigate} />
+  return <Workspace project={project} cloudId={cloudId} platform={platform} navigate={navigate} />
 }
+
+/**
+ * Keeps an open city in step with its shared project in the cloud, while
+ * signed in: its changes go up, everyone else's come in. Says how it's
+ * going and who else has it open.
+ */
+function useCloudSync(doc: OpenProject['doc'], cloudId: string | null): { status: SyncStatus; peers: Peer[] } | null {
+  const session = useSession()
+  const [state, setState] = useState<{ status: SyncStatus; peers: Peer[] }>({ status: 'connecting', peers: [] })
+  const user = session?.user
+  useEffect(() => {
+    if (!cloudId || !cloudServices || !user) return
+    const sync = new ProjectSync(doc.ydoc, cloudId, {
+      ...cloudServices,
+      me: { id: user.id, name: user.email ?? 'Someone' },
+      onStatus: (status) => setState((s) => ({ ...s, status })),
+      onPeers: (peers) => setState((s) => ({ ...s, peers })),
+    })
+    sync.start().catch(() => undefined)
+    // Back online: send what's waiting.
+    const online = () => void sync.flush()
+    window.addEventListener('online', online)
+    return () => {
+      window.removeEventListener('online', online)
+      sync.stop()
+    }
+  }, [doc, cloudId, user])
+  return cloudId && cloudServices && user ? state : null
+}
+
+const SYNC_WORDS: Record<SyncStatus, string> = { connecting: 'Connecting…', synced: 'Synced', offline: 'Offline', error: 'Not synced' }
 
 function Workspace({
   project,
+  cloudId,
   platform,
   navigate,
 }: {
   project: OpenProject
+  cloudId: string | null
   platform: Platform
   navigate: (id: string | null) => void
 }) {
   const { doc, id } = project
+  const cloud = useCloudSync(doc, cloudId)
   const snapshot = useSyncExternalStore(doc.subscribe, doc.getSnapshot)
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -315,6 +356,12 @@ function Workspace({
             /
           </span>
           <ProjectName name={projectName} onRename={(name) => doc.transact((tx) => tx.setMeta({ name }))} />
+          {cloud && (
+            <span className="app-sync" data-status={cloud.status} title={cloud.peers.map((p) => p.name).join(', ')}>
+              {SYNC_WORDS[cloud.status]}
+              {cloud.peers.length > 0 && ` · ${cloud.peers.length} other${cloud.peers.length === 1 ? '' : 's'} here`}
+            </span>
+          )}
         </div>
         <div className="app-actions">
           <FileMenu

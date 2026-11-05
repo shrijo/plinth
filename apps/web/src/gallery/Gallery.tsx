@@ -2,13 +2,18 @@ import { EXAMPLE_CITY_NAME, METROPOLIS_NAME, parseProject, ProjectFileError, ser
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fileSafe } from '../files.ts'
 import type { Platform } from '../platform/index.ts'
+import { AccountButton, InviteDialog, SharedWithYou } from '../cloud/Cloud.tsx'
+import { useSession } from '../cloud/session.ts'
+import { createCloudProject } from '../cloud/supabase.ts'
 import {
   createExampleProject,
   createProject,
   deleteProject,
   duplicateProject,
   handOver,
+  linkToCloud,
   listProjects,
+  localCopyOf,
   openProject,
   setUpGallery,
   updateProject,
@@ -27,6 +32,8 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const session = useSession()
+  const [inviting, setInviting] = useState<ProjectRecord | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -91,6 +98,7 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
         <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
         <h1 className="gallery-title">Plinth</h1>
         <div className="app-actions">
+          <AccountButton session={session} />
           <button type="button" className="app-button" onClick={() => void importFile()} disabled={!!busy}>
             Open file…
           </button>
@@ -124,6 +132,13 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
                 <ProjectCard
                   key={project.id}
                   project={project}
+                  canShare={!!session}
+                  onShare={() => run('Sharing in the cloud…', async () => {
+                    const cloudId = await createCloudProject(project.name)
+                    await linkToCloud(project.id, cloudId)
+                    await refresh()
+                  })}
+                  onInvite={() => setInviting(project)}
                   onOpen={() => onOpen(project.id)}
                   onRename={(name) => run('Renaming…', async () => {
                     const opened = await openProject(project.id)
@@ -154,6 +169,11 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
             </ul>
           )}
         </section>
+        <SharedWithYou
+          session={session}
+          known={new Set((projects ?? []).flatMap((p) => (p.cloudId ? [p.cloudId] : [])))}
+          onOpen={(cloud) => run('Opening the shared city…', async () => onOpen(await localCopyOf(cloud.id, cloud.name)))}
+        />
         <section aria-labelledby="gallery-examples">
           <h2 id="gallery-examples" className="gallery-heading">
             Examples
@@ -187,12 +207,17 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
           </div>
         </section>
       </main>
+      {inviting?.cloudId && <InviteDialog cloudId={inviting.cloudId} name={inviting.name} onClose={() => setInviting(null)} />}
     </div>
   )
 }
 
 interface CardProps {
   project: ProjectRecord
+  /** Signed in, so the city can be shared. */
+  canShare: boolean
+  onShare: () => void
+  onInvite: () => void
   onOpen: () => void
   onRename: (name: string) => void
   onDuplicate: () => void
@@ -200,7 +225,7 @@ interface CardProps {
   onDelete: () => void
 }
 
-function ProjectCard({ project, onOpen, onRename, onDuplicate, onDownload, onDelete }: CardProps) {
+function ProjectCard({ project, canShare, onShare, onInvite, onOpen, onRename, onDuplicate, onDownload, onDelete }: CardProps) {
   const thumbnail = useObjectUrl(project.thumbnail)
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -251,7 +276,10 @@ function ProjectCard({ project, onOpen, onRename, onDuplicate, onDownload, onDel
             ? `${stats.buildings} ${stats.buildings === 1 ? 'building' : 'buildings'} · ${stats.streets} streets · ${Math.round(stats.floorArea).toLocaleString()} m²`
             : ''}
         </p>
-        <p className="gallery-meta">Edited {timeAgo(project.updatedAt)}</p>
+        <p className="gallery-meta">
+          Edited {timeAgo(project.updatedAt)}
+          {project.cloudId && <span className="gallery-badge">Shared</span>}
+        </p>
       </div>
       <div className="gallery-card-menu" ref={menuRef}>
         <button
@@ -271,6 +299,7 @@ function ProjectCard({ project, onOpen, onRename, onDuplicate, onDownload, onDel
               ['Rename', () => setRenaming(true)],
               ['Duplicate', onDuplicate],
               ['Save as file…', onDownload],
+              ...(canShare ? [project.cloudId ? ['Invite people…', onInvite] : ['Share in the cloud', onShare]] : []),
               ['Delete', onDelete],
             ].map(([label, action]) => (
               <button

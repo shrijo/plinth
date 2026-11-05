@@ -40,6 +40,8 @@ export interface ProjectRecord {
   updatedAt: number
   thumbnail: Blob | null
   stats: ProjectStats | null
+  /** The shared project in the cloud this city is kept in step with, if any. */
+  cloudId?: string
 }
 
 let database: Promise<IDBDatabase> | null = null
@@ -197,6 +199,24 @@ export async function duplicateProject(id: string): Promise<string> {
   } finally {
     source.close()
   }
+}
+
+/** Keeps a city in step with a project in the cloud from now on. */
+export async function linkToCloud(id: string, cloudId: string): Promise<void> {
+  await updateProject(id, { cloudId })
+}
+
+/**
+ * A city shared in the cloud, on this device: the one already linked to it,
+ * or a new, empty one that fills up when opened.
+ */
+export async function localCopyOf(cloudId: string, name: string): Promise<string> {
+  const existing = (await listProjects()).find((p) => p.cloudId === cloudId)
+  if (existing) return existing.id
+  const project = await createProject(name)
+  await updateProject(project.id, { cloudId })
+  project.close()
+  return project.id
 }
 
 export type ExampleKind = 'harbour' | 'metropolis'

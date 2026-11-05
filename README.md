@@ -11,9 +11,11 @@ The concept doc lives at https://claude.ai/artifact/1Mvw2qn1LBB8vHTZZPhmj7.
 
 | Path | What it is |
 | --- | --- |
-| `packages/core` | The site model, stored in a Yjs document: buildings, levels, walls and openings, streets; rooms, areas and slabs derived from the walls; street surfaces and junctions; geometry, snapping, undo, file format, area report. Plain TypeScript, no React or three.js. |
-| `packages/editor` | `<PlinthEditor document={doc} />`: the React Three Fiber view with the site and building editors, tools, toolbar, building and level lists, properties panel; `exportGLB(snapshot)` for glTF. Embeddable in other React apps. |
-| `apps/web` | The web app: a gallery of cities kept in the browser (each saved as it changes, with a thumbnail), the editor, opening and saving `.plinth` files, exporting `.glb` models and `.csv` area tables. |
+| `packages/core` | The site model, stored in a Yjs document: buildings, levels, walls and openings, roofs, streets, parcels, spot heights, room tags; rooms, areas and slabs derived from the walls; street surfaces and junctions; roofs (with a straight skeleton), terrain, area figures by SIA 416 and DIN 277; IFC and DXF writers, GeoJSON and XYZ readers; geometry, snapping, undo, file format. Plain TypeScript, no React or three.js. |
+| `packages/editor` | `<PlinthEditor document={doc} />`: the React Three Fiber view with the site and building editors, tools, toolbar, level list, properties panel; `exportModel(snapshot, format)` for glTF, OBJ, STL and USDZ. Embeddable in other React apps. |
+| `packages/sync` | Keeping a project's Yjs document in step with other copies: a change store and a live channel (interfaces), with memory versions for tests. |
+| `apps/web` | The web app: a gallery of cities kept in the browser (each saved as it changes, with a thumbnail), the editor, opening and saving `.plinth` files, imports and exports, and the optional cloud (Supabase: accounts, sharing, live collaboration). |
+| `supabase` | The database set-up for the cloud. |
 | `apps/desktop` | The Tauri v2 shell that wraps `apps/web` as a desktop app. |
 
 ## Scripts
@@ -43,6 +45,38 @@ This is not full global illumination (light bouncing from surface to surface), w
 ## Roofs
 
 A roof is a setting of its building and sits on its top floor's outline (`packages/core/src/geometry/roofs.ts`). Shed and gable roofs are planes over the outline; hip roofs come from the outline's straight skeleton (`skeleton.ts`): every edge moves inwards at the same speed, and the faces they sweep are the roof's slopes. It works for any outline, holes included, and checks its own result (each face on its edge's slope, the faces covering the outline exactly once), falling back to no roof rather than a wrong one. Roofs are drawn on the site and in the building editor, counted in a building's total height and exported with the model.
+
+## Exchange and areas
+
+File › Export writes the whole site:
+
+| Format | What's in it |
+| --- | --- |
+| glTF (.glb) | Every building (walls, windows and doors, slabs, roofs) and the streets, in the editor's colours. For game engines, 3D tools and the web. |
+| OBJ, STL | The same shapes, without colours. STL with Z up, for 3D printing. |
+| USDZ | The same, for AR on iPhone and iPad. |
+| IFC 4 (.ifc) | For BIM software: a storey per floor; walls with openings filled by windows and doors; slabs; roofs; rooms as spaces with their names, uses and areas. Geometry is triangulated, so it matches the editor exactly; a run of identical floors shares its shapes. Checked with web-ifc. |
+| DXF (.dxf) | Floor plans for CAD, AutoCAD R12, metres. Layers per floor (`F00` the ground floor): walls (outline and fill), openings with door swings, rooms with name and area; site layers for footprints, streets, parcels and contours. |
+| CSV | Every room (name, use, category) with its areas and volume, totals per floor and building, and the area standard's figures. |
+
+**Area figures** follow the project's standard, chosen in the site's panel: **SIA 416** (GF, KF, NGF, NF, HNF, NNF, VF, FF, GV) or **DIN 277** (BGF, KGF, NRF, NUF 1–7, TF, VF, BRI). A room's use decides its category; a room without one counts as main usable area and is shown as not set. The figures are in each building's panel, the site's (for large sites, on request) and the CSV.
+
+## Parcels and terrain
+
+- **Parcels** (Parcel tool, P): draw an outline like a building's; drag its corners with the tool; click inside one to select it. The panel gives its area, the buildings on it, site coverage (ÜZ with SIA, GRZ with DIN) and floor area ratio (GFZ). File › Import parcels reads GeoJSON (cadastral or OpenStreetMap exports), in longitude and latitude or projected metres such as Swiss LV95.
+- **Terrain** (Terrain tool, G): spot heights, clicked onto the ground (each starts at the ground's height there) and dragged, or imported from XYZ or CSV files (x, y, height per line). A surface is drawn through them with contour lines; parcels follow it. A building's panel offers **Set on the terrain**, which puts its ground floor at the lowest ground under it. Streets stay level at the site's zero.
+- Imports remember the real-world point at the site's zero, so parcels and terrain imported later line up. The first terrain import sets which height the site's zero stands for (its lowest ground); it can be changed in the Terrain tool's panel.
+
+## Cloud
+
+Optional: without it, cities stay on the device as before. With it, people sign in (by a link sent by email), share cities and work on them together: every change is kept in the database and passed on live to whoever has the city open, and edits made offline go up when the connection is back. To set it up:
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Run `supabase/migrations/20261105000000_plinth_cloud.sql` on it (SQL editor, or `supabase db push`).
+3. In Authentication, keep email sign-in on and add the app's address (`http://localhost:5173` for development) to the redirect URLs.
+4. Copy `apps/web/.env.example` to `apps/web/.env.local` and fill in the project's URL and anon key; restart `pnpm dev`.
+
+Then: **Sign in** in the gallery; a city's menu has **Share in the cloud**, then **Invite people…** (by the address they signed in with, as editor or viewer). Shared cities show up for them under **Shared with you**. The editor's header shows whether it's synced and who else is there. Access is checked by the database (row level security) and the live channels are private to the city's members.
 
 ## Large cities
 
@@ -101,6 +135,7 @@ The first time the gallery opens it adds **Harbour City**, an example of about 1
 | Top view | T | Toolbar |
 | Snapping | S toggles; hold Alt to suspend | Toolbar |
 | Undo / redo | ⌘Z / ⇧⌘Z | Toolbar |
-| Export | File › Export 3D model (.glb, every building and the streets) or areas (.csv, per building and in total) | Same |
+| Room name and use | Select a room: Name and Use (living, office, storage, corridor, plant room…); the use decides its area category | Same |
+| Export | File › Export: 3D model (.glb, .obj), for 3D printing (.stl), for AR (.usdz), BIM model (.ifc), floor plans (.dxf), areas (.csv) | Same |
 
 Moving, orbiting and zooming the view, the lens and the time of day, the top view (T), hiding other buildings (H), snapping (S), undo and redo work the same in both editors. In drawing tools a click places a point and a drag moves the view. Files from before the site editor (version 2 and older) can no longer be opened.
