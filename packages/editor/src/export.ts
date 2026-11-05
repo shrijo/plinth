@@ -20,7 +20,7 @@ import {
   type Opening,
   type Snapshot,
 } from '@plinth/core'
-import { BoxGeometry, Group, Mesh, type BufferGeometry } from 'three'
+import { BoxGeometry, Group, Mesh, Vector3, type BufferGeometry, type Object3D } from 'three'
 import { toBufferGeometry } from './scene/geometry.ts'
 import { buildingColours, fillMaterials, palette, shade, slabMaterials, streetMaterials, wallMaterials } from './scene/materials.ts'
 import { paintSlab, paintWall } from './scene/paintParts.ts'
@@ -125,13 +125,25 @@ export function buildExportScene(snapshot: Snapshot): { scene: Group; dispose: (
           group.add(fill)
         }
       }
+      // The other floors of a run of copies: the same walls and fills, higher up (geometry shared).
+      for (let k = 1; k < levelAnalysis.floors; k++) {
+        const copy = group.clone()
+        copy.name = `${levelAnalysis.level.name} (${k + 1} of ${levelAnalysis.floors})`
+        copy.position.y += k * levelAnalysis.level.height
+        buildingGroup.add(copy)
+      }
     }
 
     for (const slab of building.slabs) {
       const painted = paintSlab(buildSlabMesh(slab.region, slab.bottom, slab.top), slab.levelId ? p.floor : colours.roof, colours.band, p.ceiling)
-      const mesh = new Mesh(track(toBufferGeometry(painted)), slabMaterials.normal)
-      mesh.name = slab.levelId ? `Floor slab · ${snapshot.levels[slab.levelId]?.name ?? ''}` : 'Roof slab'
-      buildingGroup.add(mesh)
+      const geometry = track(toBufferGeometry(painted))
+      // A run's slab stands for one per floor.
+      for (let k = 0; k < slab.count; k++) {
+        const mesh = new Mesh(geometry, slabMaterials.normal)
+        mesh.name = slab.levelId ? `Floor slab · ${snapshot.levels[slab.levelId]?.name ?? ''}` : 'Roof slab'
+        mesh.position.y = k * slab.step
+        buildingGroup.add(mesh)
+      }
     }
 
     const roofs = roofParts(building, snapshot.meta, p)
@@ -176,4 +188,111 @@ export async function exportGLB(snapshot: Snapshot): Promise<ArrayBuffer> {
   } finally {
     dispose()
   }
+}
+
+/** A file to hand to the user: its contents and what kind of file it is. */
+export interface ExportedFile {
+  data: string | ArrayBuffer
+  extension: string
+  mime: string
+  description: string
+}
+
+export type ModelFormat = 'glb' | 'obj' | 'stl' | 'usdz'
+
+/**
+ * The site as a 3D model file. glTF and USDZ keep colours; OBJ and STL are
+ * shape only. All in metres; glTF, OBJ and USDZ with Y up, STL with Z up as
+ * 3D printers expect.
+ */
+export async function exportModel(snapshot: Snapshot, format: ModelFormat): Promise<ExportedFile> {
+  if (format === 'glb') {
+    return { data: await exportGLB(snapshot), extension: 'glb', mime: 'model/gltf-binary', description: '3D model (glTF binary)' }
+  }
+  const { scene, dispose } = buildExportScene(snapshot)
+  try {
+    scene.updateMatrixWorld(true)
+    if (format === 'obj') return { data: objFile(scene), extension: 'obj', mime: 'model/obj', description: '3D model (OBJ)' }
+    if (format === 'stl') {
+      const { STLExporter } = await import('three/examples/jsm/exporters/STLExporter.js')
+      // Z up.
+      scene.rotation.x = Math.PI / 2
+      scene.updateMatrixWorld(true)
+      const view = new STLExporter().parse(scene, { binary: true }) as DataView
+      const data = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer
+      return { data, extension: 'stl', mime: 'model/stl', description: '3D model (STL)' }
+    }
+    const { USDZExporter } = await import('three/examples/jsm/exporters/USDZExporter.js')
+    const bytes = await new USDZExporter().parseAsync(scene)
+    const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+    return { data, extension: 'usdz', mime: 'model/vnd.usdz+zip', description: '3D model for AR (USDZ)' }
+  } finally {
+    dispose()
+  }
+}
+
+/**
+ * A scene as an OBJ file: one object per mesh, each point once (flat
+ * faces share their corners), to the millimetre. Written in pieces
+ * straight to bytes: a city's OBJ is too big for one JavaScript string.
+ */
+function objFile(scene: Object3D): ArrayBuffer {
+  const encoder = new TextEncoder()
+  const chunks: Uint8Array[] = []
+  let text: string[] = []
+  let size = 0
+  const write = (line: string) => {
+    text.push(line)
+    size += line.length
+    if (size > 1 << 20) flush()
+  }
+  const flush = () => {
+    chunks.push(encoder.encode(text.join('')))
+    text = []
+    size = 0
+  }
+  const point = new Vector3()
+  const round = (v: number) => String(Math.round(v * 1000) / 1000)
+  let offset = 0
+  write('# Plinth\n# Metres, Y up\n')
+  scene.updateMatrixWorld(true)
+  scene.traverse((object) => {
+    if (!(object instanceof Mesh)) return
+    const geometry = object.geometry as BufferGeometry
+    const positions = geometry.getAttribute('position')
+    if (!positions) return
+    write(`o ${(object.name || 'Mesh').replace(/\s+/g, '_')}\n`)
+    const indexOf = new Map<string, number>()
+    const remap = new Int32Array(positions.count)
+    for (let i = 0; i < positions.count; i++) {
+      point.fromBufferAttribute(positions, i).applyMatrix4(object.matrixWorld)
+      const key = `${round(point.x)} ${round(point.y)} ${round(point.z)}`
+      let index = indexOf.get(key)
+      if (index === undefined) {
+        index = offset + indexOf.size + 1
+        indexOf.set(key, index)
+        write(`v ${key}\n`)
+      }
+      remap[i] = index
+    }
+    const index = geometry.getIndex()
+    const corner = (i: number) => remap[index ? index.getX(i) : i]!
+    const count = index ? index.count : positions.count
+    for (let i = 0; i + 2 < count; i += 3) {
+      const a = corner(i)
+      const b = corner(i + 1)
+      const c = corner(i + 2)
+      if (a !== b && b !== c && a !== c) write(`f ${a} ${b} ${c}\n`)
+    }
+    offset += indexOf.size
+  })
+  flush()
+  const total = chunks.reduce((sum, c) => sum + c.length, 0)
+  const bytes = new Uint8Array(total)
+  let at = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, at)
+    at += chunk.length
+  }
+  return bytes.buffer
 }

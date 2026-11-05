@@ -1,5 +1,14 @@
-import { areaReportCSV, parseProject, PROJECT_FILE_EXTENSION, ProjectFileError, serializeProject } from '@plinth/core'
-import { exportGLB, PlinthEditor, type PlinthEditorApi } from '@plinth/editor'
+import {
+  areaReportCSV,
+  exportDXF,
+  exportIFC,
+  parseProject,
+  PROJECT_FILE_EXTENSION,
+  ProjectFileError,
+  serializeProject,
+  type Snapshot,
+} from '@plinth/core'
+import { exportModel as exportModelFile, PlinthEditor, type ExportedFile, type ModelFormat, type PlinthEditorApi } from '@plinth/editor'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { fileSafe } from './files.ts'
 import { Gallery } from './gallery/Gallery.tsx'
@@ -181,20 +190,43 @@ function Workspace({
     navigate(created.id)
   }, [navigate, saveThumbnail])
 
-  const exportModel = useCallback(async () => {
-    try {
-      const snapshot = doc.getSnapshot()
-      const data = await exportGLB(snapshot)
-      const name = await platform.exportFile(data, `${fileSafe(snapshot.meta.name)}.glb`, {
-        description: '3D model (glTF binary)',
-        extension: 'glb',
-        mime: 'model/gltf-binary',
-      })
-      if (name) flash(`Exported ${name}`)
-    } catch (e) {
-      flash(`Could not export the model: ${errorText(e)}`, true)
-    }
-  }, [doc, platform, flash])
+  /** Makes a file from the city and lets the user save it. */
+  const exportAs = useCallback(
+    async (what: string, make: (snapshot: Snapshot) => Promise<ExportedFile> | ExportedFile, suffix = '') => {
+      try {
+        const snapshot = doc.getSnapshot()
+        flash(`Exporting ${what}…`)
+        // Let the message show before the work blocks the page.
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const file = await make(snapshot)
+        const name = await platform.exportFile(file.data, `${fileSafe(snapshot.meta.name)}${suffix}.${file.extension}`, file)
+        if (name) flash(`Exported ${name}`)
+      } catch (e) {
+        flash(`Could not export ${what}: ${errorText(e)}`, true)
+      }
+    },
+    [doc, platform, flash],
+  )
+  const exportModel = useCallback((format: ModelFormat) => void exportAs('the model', (s) => exportModelFile(s, format)), [exportAs])
+  const exportIfc = useCallback(
+    () =>
+      void exportAs('the BIM model', (s) => ({
+        data: exportIFC(s),
+        extension: 'ifc',
+        mime: 'application/x-step',
+        description: 'BIM model (IFC 4)',
+      })),
+    [exportAs],
+  )
+  const exportPlans = useCallback(
+    () =>
+      void exportAs(
+        'the floor plans',
+        (s) => ({ data: exportDXF(s), extension: 'dxf', mime: 'image/vnd.dxf', description: 'Floor plans (DXF)' }),
+        ' plans',
+      ),
+    [exportAs],
+  )
 
   const exportAreas = useCallback(async () => {
     try {
@@ -248,8 +280,13 @@ function Workspace({
               { label: 'New city', action: () => void newCity() },
               { label: 'Open file…', shortcut: '⌘O', action: () => void openFile() },
               { label: 'Save as file…', shortcut: '⌘S', action: () => void saveFile() },
-              { label: 'Export 3D model (.glb)…', action: () => void exportModel(), divider: true },
-              { label: 'Export areas (.csv)…', action: () => void exportAreas() },
+              { label: 'Export 3D model (.glb)…', action: () => exportModel('glb'), divider: true },
+              { label: 'Export 3D model (.obj)…', action: () => exportModel('obj') },
+              { label: 'Export for 3D printing (.stl)…', action: () => exportModel('stl') },
+              { label: 'Export for AR (.usdz)…', action: () => exportModel('usdz') },
+              { label: 'Export BIM model (.ifc)…', action: () => exportIfc(), divider: true },
+              { label: 'Export floor plans (.dxf)…', action: () => exportPlans() },
+              { label: 'Export areas (.csv)…', action: () => void exportAreas(), divider: true },
             ]}
           />
         </div>

@@ -17,6 +17,8 @@
     "yjs": "^13.6.33"
   },
   "devDependencies": {
-    "vitest": "^5.1.0"
+    "dxf-parser": "1.1.2",
+    "vitest": "^5.1.0",
+    "web-ifc": "0.0.66"
   }
 }
