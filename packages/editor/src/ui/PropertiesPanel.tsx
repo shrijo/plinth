@@ -36,6 +36,7 @@ import { DeleteButton, LengthField, Readout, Stepper, TextField, type PanelFrame
 import { ChevronIcon, LinkIcon, TrashIcon } from './icons.tsx'
 import { stackFloors } from './selection.ts'
 import { SitePanel } from './SitePanel.tsx'
+import { RoofFields } from './RoofFields.tsx'
 import { MultiWallProperties, NodeProperties, NodeStackProperties, WallProperties } from './WallPanels.tsx'
 
 /** The properties panel: of the site editor, or of the building editor. */
@@ -336,6 +337,8 @@ function LevelProperties({
       <Readout label="Floors" value={String(levels.reduce((sum, l) => sum + floorsOf(l), 0))} />
       <Readout label="Net floor area" value={formatArea(analysis.netArea)} />
       <Readout label="Gross floor area" value={formatArea(analysis.grossArea)} />
+      <RoofFields buildingId={analysis.buildingId} />
+      <h3 className="pe-section-title">Defaults</h3>
       <LengthField
         label="Default wall thickness"
         value={snapshot.meta.wallThickness}
@@ -377,6 +380,8 @@ function BuildingProperties({ snapshot, analysis }: { snapshot: Snapshot; analys
       <Readout label="Floors" value={String(analysis.levels.reduce((sum, l) => sum + l.floors, 0))} />
       <Readout label="Net floor area" value={formatArea(analysis.netArea)} />
       <Readout label="Gross floor area" value={formatArea(analysis.grossArea)} />
+      <RoofFields buildingId={analysis.buildingId} />
+      <h3 className="pe-section-title">Defaults</h3>
       <LengthField
         label="Default wall thickness"
         value={snapshot.meta.wallThickness}

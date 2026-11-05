@@ -130,6 +130,64 @@ export function LengthField({
   )
 }
 
+/** A plain number with a unit (degrees, say), kept within limits; commits on Enter or when it loses focus. */
+export function NumberField({
+  label,
+  value,
+  unit,
+  min,
+  max,
+  decimals = 0,
+  onCommit,
+}: {
+  label: string
+  value: number
+  unit: string
+  min: number
+  max: number
+  decimals?: number
+  onCommit: (value: number) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const cancelled = useRef(false)
+  const shown = draft ?? value.toFixed(decimals)
+  const parsed = draft === null ? null : Number(draft.replace(',', '.').replace(unit, '').trim())
+  const valid = parsed !== null && draft?.trim() !== '' && Number.isFinite(parsed) && parsed >= min && parsed <= max
+  const commit = () => {
+    if (!cancelled.current && valid && parsed !== value) onCommit(parsed)
+    cancelled.current = false
+    setDraft(null)
+  }
+  return (
+    <label className="pe-field">
+      <span className="pe-field-label">{label}</span>
+      <span className="pe-input-wrap">
+        <input
+          className="pe-input"
+          inputMode="decimal"
+          autoComplete="off"
+          value={shown}
+          aria-invalid={draft !== null && draft.trim() !== '' && !valid}
+          onFocus={(e) => {
+            setDraft(shown)
+            e.target.select()
+          }}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+            if (e.key === 'Escape') {
+              cancelled.current = true
+              e.currentTarget.blur()
+            }
+          }}
+        />
+        <span className="pe-unit">{unit}</span>
+      </span>
+    </label>
+  )
+}
+
 /** A whole number with minus and plus buttons. */
 export function Stepper({
   label,

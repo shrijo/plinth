@@ -476,6 +476,14 @@
   cursor: pointer;
 }
 
+.pe-segmented-wide {
+  background: var(--pe-chip-bg);
+}
+
+.pe-segmented-wide button {
+  flex: 1;
+}
+
 .pe-segmented button[aria-checked='true'] {
   background: var(--pe-accent-gradient);
   color: #fff;

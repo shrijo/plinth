@@ -10,6 +10,7 @@ import {
   setStreetCurve,
   setStreetProps,
   sortedLevels,
+  roofHeight,
   stackHeight,
   streetLength,
   updateLevel,
@@ -30,6 +31,7 @@ import { useAnalysis, useEditor, useEditorContext, useSnapshot } from '../contex
 import { selectionSize, type SiteDefaults } from '../state.ts'
 import { CheckField, DeleteButton, LengthField, Readout, Stepper, TextField, type PanelFrame } from './fields.tsx'
 import { TrashIcon } from './icons.tsx'
+import { RoofFields } from './RoofFields.tsx'
 
 const MAX_LANES = 12
 
@@ -114,7 +116,10 @@ function BuildingShellProperties({ buildingId }: { buildingId: Id }) {
   const heights = masters.map((l) => l.height)
   const sameHeight = heights.every((h) => h === heights[0]) ? (heights[0] ?? null) : null
   const top = levels.at(-1)
-  const totalHeight = top ? top.elevation + stackHeight(top) - (levels[0]?.elevation ?? 0) : 0
+  const topSlab = analysis?.slabs.find((s) => s.levelId === null)
+  // To the top of the roof.
+  const roofRise = analysis && topSlab ? roofHeight(topSlab.region, analysis.roof) : 0
+  const totalHeight = top ? top.elevation + stackHeight(top) - (levels[0]?.elevation ?? 0) + roofRise : 0
   const floors = levels.reduce((sum, l) => sum + floorsOf(l), 0)
   // The middle of the building's ground floor; moving it moves the whole building.
   const centre = groundCentre(snapshot, levels[0]?.id)
@@ -175,6 +180,7 @@ function BuildingShellProperties({ buildingId }: { buildingId: Id }) {
           </button>
         </div>
       </div>
+      <RoofFields buildingId={buildingId} />
       <h3 className="pe-section-title">Areas</h3>
       <Readout label="Net floor area" value={formatArea(analysis?.netArea ?? 0)} />
       <Readout label="Gross floor area" value={formatArea(analysis?.grossArea ?? 0)} />

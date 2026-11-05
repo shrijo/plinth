@@ -1,5 +1,5 @@
 import type { Palette } from './materials.ts'
-import { buildingColours } from './materials.ts'
+import { buildingColours, shade } from './materials.ts'
 import { paint, type PaintedMesh } from './geometry.ts'
 import {
   buildSlabMesh,
@@ -7,12 +7,14 @@ import {
   openingCopies,
   placeOpening,
   resolveWall,
+  roofGeometry,
   type BuildingAnalysis,
   type Id,
   type MeshData,
   type Meta,
   type Opening,
   type OpeningCut,
+  type Roof,
   type WallFootprint,
 } from '@plinth/core'
 
@@ -92,7 +94,28 @@ export function shellMesh(building: BuildingAnalysis, meta: Meta, palette: Palet
       }
     }
   }
+  parts.push(...roofParts(building, meta, palette))
   return concatMeshes(parts)
+}
+
+/** Whether a roof adds anything to the flat top every building has. */
+export const hasRoof = (roof: Roof) => roof.kind !== 'flat' || roof.parapet > 0 || roof.overhang > 0
+
+/**
+ * A building's roof, painted: the roof colour on its slopes, a little darker
+ * at its edges and underneath; walls carried up to it in the facade colour.
+ */
+export function roofParts(building: BuildingAnalysis, meta: Meta, palette: Palette): PaintedMesh[] {
+  if (!hasRoof(building.roof)) return []
+  const top = building.slabs.find((slab) => slab.levelId === null)
+  if (!top) return []
+  const { facade, roof } = buildingColours(building.buildingId, palette)
+  const edge = shade(roof, -0.06)
+  const geometry = roofGeometry(top.region, top.top, building.roof, meta.wallThickness)
+  return [
+    paint(geometry.roof, (_x, ny) => (ny > 0.2 ? roof : edge)),
+    paint(geometry.walls, (_x, ny) => (ny > 0.5 ? roof : facade)),
+  ]
 }
 
 /** How far window surrounds stand out from the facade, in metres. */

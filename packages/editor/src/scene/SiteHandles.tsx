@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { useEditor, useSnapshot } from '../context.ts'
 import { HandlePoints } from './HandlePoints.tsx'
 import { COLORS } from './materials.ts'
+import { HIDE_IN_PICTURES } from './pictures.ts'
 
 /**
  * Street handles on the site. In the Street tool every street point shows
@@ -48,9 +49,9 @@ export function SiteHandles() {
 
   if (tool !== 'select' && tool !== 'street') return null
   return (
-    <>
+    <group userData={HIDE_IN_PICTURES}>
       <HandlePoints positions={normal} fill={COLORS.node} ring={COLORS.nodeRing} size={10} />
       <HandlePoints positions={highlighted} fill={COLORS.accent} ring="#ffffff" size={14} renderOrder={16} />
-    </>
+    </group>
   )
 }

@@ -24,6 +24,7 @@ import { BoxGeometry, Group, Mesh, type BufferGeometry } from 'three'
 import { toBufferGeometry } from './scene/geometry.ts'
 import { buildingColours, fillMaterials, palette, shade, slabMaterials, streetMaterials, wallMaterials } from './scene/materials.ts'
 import { paintSlab, paintWall } from './scene/paintParts.ts'
+import { concatMeshes, roofParts } from './scene/shellMesh.ts'
 
 /**
  * Builds the whole site as a three.js scene, straight from the model: each
@@ -130,6 +131,13 @@ export function buildExportScene(snapshot: Snapshot): { scene: Group; dispose: (
       const painted = paintSlab(buildSlabMesh(slab.region, slab.bottom, slab.top), slab.levelId ? p.floor : colours.roof, colours.band, p.ceiling)
       const mesh = new Mesh(track(toBufferGeometry(painted)), slabMaterials.normal)
       mesh.name = slab.levelId ? `Floor slab · ${snapshot.levels[slab.levelId]?.name ?? ''}` : 'Roof slab'
+      buildingGroup.add(mesh)
+    }
+
+    const roofs = roofParts(building, snapshot.meta, p)
+    if (roofs.length > 0) {
+      const mesh = new Mesh(track(toBufferGeometry(concatMeshes(roofs))), slabMaterials.normal)
+      mesh.name = 'Roof'
       buildingGroup.add(mesh)
     }
   }

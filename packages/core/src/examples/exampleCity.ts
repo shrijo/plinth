@@ -1,6 +1,6 @@
 import { createId } from '../ids.ts'
 import { normalize, type Vec2 } from '../math.ts'
-import type { Id, OpeningKind, StreetProps, Wall } from '../model.ts'
+import { FLAT_ROOF, type Id, type OpeningKind, type Roof, type RoofKind, type StreetProps, type Wall } from '../model.ts'
 import { openingType } from '../openingTypes.ts'
 import { levelName, restackLevels } from '../ops/levels.ts'
 import { insertStreet } from '../ops/streets.ts'
@@ -191,6 +191,14 @@ class BuildingWriter {
     return new FloorWriter(this.tx, level.id, outline)
   }
 
+  /** Puts a roof on top: pitched ones get eaves. */
+  roof(kind: RoofKind, settings: Partial<Roof> = {}): this {
+    const building = this.tx.building(this.id)
+    const roof: Roof = { ...FLAT_ROOF, kind, overhang: kind === 'flat' ? 0 : 0.35, ...settings }
+    if (building) this.tx.putBuilding({ ...building, roof })
+    return this
+  }
+
   done(): void {
     restackLevels(this.tx, this.id, 0)
   }
@@ -320,12 +328,14 @@ function downtown(tx: Tx, random: Random, b: Block, variant: number): void {
     .windows({ typeId: 'window-tall', spacing: 3 })
   t.floor(podium, 4.5).windows({ typeId: 'window', spacing: 3 })
   t.floor(tower.outline(centre), 3.6, random.int(12, 26)).windows({ typeId: 'window-tall', spacing: 2.8 })
+  t.roof('flat', { parapet: 1.2 })
   t.done()
 
   const north = new BuildingWriter(tx, `${tower.name} North`)
   const northOutline = rect(rest.x0, b.y1 - 36, rest.x1, b.y1)
   north.floor(northOutline, 4.5).door(2, 'door-glass').windows({ typeId: 'window-tall', spacing: 3 })
   north.floor(northOutline, 3.4, random.int(5, 9)).windows({ typeId: 'window-casement', spacing: 3 })
+  north.roof('flat', { parapet: 1 })
   north.done()
 
   const south = new BuildingWriter(tx, `${tower.name} Offices`)
@@ -346,6 +356,7 @@ function courtyardBlock(tx: Tx, random: Random, b: Block, name: string): void {
     const w = new BuildingWriter(tx, `${name} ${n++}`)
     w.floor(outline, 4).door(door).windows({ typeId: 'window-casement', spacing: 3.2, skip })
     w.floor(outline, 3.2, floors - 2).windows({ typeId: 'window-casement', spacing: 3.2, skip })
+    w.roof('gable', { pitch: 38 })
     w.done()
   }
   const splitN = random.between(b.x0 + 35, b.x1 - 35)
@@ -371,6 +382,8 @@ function terraces(tx: Tx, random: Random, b: Block, southStreet: string, northSt
       house.floor(outline, 3).door(door).windows({ typeId: 'window', spacing: 2.6, skip: [1, 3] })
       const upper = random.int(1, 3)
       house.floor(outline, 3, upper - 1).windows({ typeId: 'window', spacing: 2.6, skip: [1, 3] })
+      // Ridges along the street, so a row's roofs run on from house to house.
+      house.roof('gable', { pitch: 42, direction: 0, overhang: 0 })
       house.done()
       x += width
     }
@@ -387,6 +400,7 @@ function villas(tx: Tx, random: Random, b: Block, southStreet: string, northStre
       const villa = new BuildingWriter(tx, `${street} ${nextNumber(street, door === 2)}`)
       villa.floor(outline, 3.2).door(door, 'door-glass').windows({ typeId: 'window-grid', spacing: 2.8 })
       villa.floor(outline, 3).windows({ typeId: 'window-grid', spacing: 2.8 })
+      villa.roof('hip', { pitch: 30, overhang: 0.6 })
       villa.done()
     }
   }
@@ -397,6 +411,7 @@ function villas(tx: Tx, random: Random, b: Block, southStreet: string, northStre
 function industry(tx: Tx, b: Block): void {
   const one = new BuildingWriter(tx, 'Warehouse 1')
   one.floor(rect(b.x0, b.y0, b.x0 + 45, b.y0 + 35), 7.5).door(0, 'door-double', 0.25).door(0, 'door-double', 0.75)
+  one.roof('gable', { pitch: 15 })
   one.done()
 
   const two = new BuildingWriter(tx, 'Warehouse 2')
@@ -410,10 +425,12 @@ function industry(tx: Tx, b: Block): void {
   ]
   two.floor(lShape, 5).door(0, 'door-double').windows({ typeId: 'window-empty', spacing: 6 })
   two.floor(lShape, 5).windows({ typeId: 'window-empty', spacing: 6 })
+  two.roof('hip', { pitch: 18 })
   two.done()
 
   const three = new BuildingWriter(tx, 'Workshop')
   three.floor(rect(b.x0, b.y0 + 42, b.x0 + 40, b.y1), 6).door(3, 'door-double').windows({ typeId: 'window-grid', spacing: 4 })
+  three.roof('shed', { pitch: 10, direction: 270 })
   three.done()
 }
 
@@ -422,10 +439,12 @@ function park(tx: Tx): void {
   const hexagon = regular(v(-200, -150), 11, 6, Math.PI / 6)
   museum.floor(hexagon, 6).door(4, 'door-glass').windows({ typeId: 'window-tall', spacing: 3 })
   museum.floor(hexagon, 5).windows({ typeId: 'window-tall', spacing: 3 })
+  museum.roof('hip', { pitch: 25, overhang: 0.8 })
   museum.done()
 
   const pavilion = new BuildingWriter(tx, 'Pavilion')
   pavilion.floor(regular(v(-150, -175), 7, 8, Math.PI / 8), 4.5).door(2, 'door-glass').windows({ typeId: 'window-tall', spacing: 2 })
+  pavilion.roof('hip', { pitch: 32, overhang: 1 })
   pavilion.done()
 }
 
@@ -450,6 +469,7 @@ function civicCentre(tx: Tx): void {
   const upper = hall.floor(outline, 3.8, 1)
   interior(upper, false)
   upper.windows({ typeId: 'window', spacing: 2.8 })
+  hall.roof('hip', { pitch: 28, overhang: 0.6 })
   hall.done()
 
   const library = new BuildingWriter(tx, 'Library')
@@ -461,6 +481,7 @@ function civicCentre(tx: Tx): void {
     floor.opening(partition, 'door', 'door-empty', 7)
     floor.windows({ typeId: 'window-grid', spacing: 3 })
   }
+  library.roof('flat', { parapet: 0.9 })
   library.done()
 }
 
@@ -480,30 +501,40 @@ function waterfront(tx: Tx, random: Random): void {
     const w = new BuildingWriter(tx, tall ? 'Harbour Tower' : `Quay ${i + 1}`)
     w.floor(outline, 4.5).door(2, 'door-glass').windows({ typeId: 'window-tall', spacing: 3 })
     w.floor(outline, 3.3, tall ? 14 : random.int(3, 7)).windows({ typeId: 'window-casement', spacing: 3 })
+    w.roof('flat', { parapet: tall ? 1.2 : 0.9 })
     w.done()
   })
 }
 
 /** The strips west and east of the outer avenues. */
 function edges(tx: Tx, random: Random): void {
-  const simple = (name: string, outline: Vec2[], heights: number[], windowType: string, door: number, doorType = 'door') => {
+  const simple = (
+    name: string,
+    outline: Vec2[],
+    heights: number[],
+    windowType: string,
+    door: number,
+    doorType = 'door',
+    roof?: [RoofKind, Partial<Roof>],
+  ) => {
     const w = new BuildingWriter(tx, name)
     heights.forEach((height, i) => {
       const floor = w.floor(outline, height)
       if (i === 0) floor.door(door, doorType)
       floor.windows({ typeId: windowType, spacing: 3.2 })
     })
+    if (roof) w.roof(...roof)
     w.done()
   }
-  simple('Sports Hall', rect(-292, -100, -256, -30), [9], 'window-tall', 1, 'door-double')
+  simple('Sports Hall', rect(-292, -100, -256, -30), [9], 'window-tall', 1, 'door-double', ['gable', { pitch: 12, overhang: 0.5 }])
   const school = [v(-292, 30), v(-256, 30), v(-256, 45), v(-276, 45), v(-276, 85), v(-256, 85), v(-256, 100), v(-292, 100)]
-  simple('School', school, [3.6, 3.6, 3.6], 'window', 1, 'door-double')
-  simple('Cottage 1', centredRect(v(-275, 150), 10, 12, 0.35), [3, 3], 'window-grid', 0)
-  simple('Cottage 2', centredRect(v(-268, 176), 9, 11, -0.2), [3, 2.8], 'window-grid', 0)
-  simple('Garden Centre', rect(-292, -185, -260, -140), [5], 'window-tall', 1, 'door-glass')
-  simple('Market Hall', centredRect(v(273, -64), 30, 70, 0.12), [5.5, 5.5], 'window-grid', 3, 'door-double')
-  simple('Clinic', regular(v(273, 160), 18, 6), [3.6, 3.4, 3.4], 'window', 3, 'door-double')
-  simple('Depot', rect(254, -186, 294, -134), [8], 'window-empty', 3, 'door-double')
+  simple('School', school, [3.6, 3.6, 3.6], 'window', 1, 'door-double', ['hip', { pitch: 25, overhang: 0.5 }])
+  simple('Cottage 1', centredRect(v(-275, 150), 10, 12, 0.35), [3, 3], 'window-grid', 0, 'door', ['gable', { pitch: 45, overhang: 0.5 }])
+  simple('Cottage 2', centredRect(v(-268, 176), 9, 11, -0.2), [3, 2.8], 'window-grid', 0, 'door', ['gable', { pitch: 45, overhang: 0.5 }])
+  simple('Garden Centre', rect(-292, -185, -260, -140), [5], 'window-tall', 1, 'door-glass', ['gable', { pitch: 20 }])
+  simple('Market Hall', centredRect(v(273, -64), 30, 70, 0.12), [5.5, 5.5], 'window-grid', 3, 'door-double', ['gable', { pitch: 25, overhang: 0.8 }])
+  simple('Clinic', regular(v(273, 160), 18, 6), [3.6, 3.4, 3.4], 'window', 3, 'door-double', ['flat', { parapet: 0.9 }])
+  simple('Depot', rect(254, -186, 294, -134), [8], 'window-empty', 3, 'door-double', ['shed', { pitch: 8, direction: 0 }])
 
   const hotel = new BuildingWriter(tx, 'Hotel')
   hotel.floor(rect(254, 25, 294, 100), 5).door(3, 'door-double').windows({ typeId: 'window-tall', spacing: 3 })

@@ -1,6 +1,6 @@
 import { createId } from '../ids.ts'
 import { add, signedArea2, sub, type Vec2 } from '../math.ts'
-import { DEFAULT_LEVEL_HEIGHT, floorsOf, stackHeight, type Building, type Id } from '../model.ts'
+import { DEFAULT_LEVEL_HEIGHT, floorsOf, stackHeight, type Building, type Id, type Roof } from '../model.ts'
 import type { Tx } from '../tx.ts'
 import { copyLevelContent, levelName, restackLevels, stackOrder } from './levels.ts'
 import { insertPolyline } from './walls.ts'
@@ -61,7 +61,24 @@ export function rotateBuilding(tx: Tx, buildingId: Id, angle: number, pivot: Vec
     const d = sub(node, pivot)
     tx.putNode({ ...node, x: pivot.x + d.x * c - d.y * s, y: pivot.y + d.x * s + d.y * c })
   }
+  // A roof set to run a given way turns with the building.
+  const building = tx.building(buildingId)
+  if (building?.roof && building.roof.direction !== null) {
+    const direction = normalizeAngle(building.roof.direction + (angle * 180) / Math.PI)
+    tx.putBuilding({ ...building, roof: { ...building.roof, direction } })
+  }
 }
+
+/** Sets a building's roof; null gives it the plain flat roof. */
+export function setRoof(tx: Tx, buildingId: Id, roof: Roof | null): void {
+  const building = tx.building(buildingId)
+  if (!building) return
+  const { roof: _old, ...rest } = building
+  tx.putBuilding(roof ? { ...rest, roof: { ...roof, direction: roof.direction === null ? null : normalizeAngle(roof.direction) } } : rest)
+}
+
+/** An angle in degrees, in [0, 360). */
+const normalizeAngle = (degrees: number) => Math.round((((degrees % 360) + 360) % 360) * 1e6) / 1e6
 
 /** The middle of a building's bounding box on the plan. */
 export function buildingCentre(tx: Tx, buildingId: Id): Vec2 {

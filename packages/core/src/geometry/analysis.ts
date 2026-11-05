@@ -1,5 +1,17 @@
 import { add, angleOf, intersectLines, normalize, perpLeft, pointInRing, polygonCentroid, scale, signedArea2, sub, type Vec2 } from '../math.ts'
-import { contentLevelId, floorsOf, levelsByBuilding, wallsByLevel, type Id, type Level, type Snapshot, type Wall, type WallNode } from '../model.ts'
+import {
+  contentLevelId,
+  floorsOf,
+  levelsByBuilding,
+  roofOf,
+  wallsByLevel,
+  type Id,
+  type Level,
+  type Roof,
+  type Snapshot,
+  type Wall,
+  type WallNode,
+} from '../model.ts'
 import { findIntersections, type Intersection } from '../ops/intersections.ts'
 import { computeFootprints, type WallFootprint } from './footprint.ts'
 import {
@@ -100,6 +112,8 @@ export interface BuildingAnalysis {
   /** From the ground up. */
   levels: LevelAnalysis[]
   slabs: Slab[]
+  /** The roof on its top floor. */
+  roof: Roof
   grossArea: number
   netArea: number
 }
@@ -154,7 +168,19 @@ interface ContentKey {
 /** Per content level, the last analysis and what it was made from. */
 const contentCache = new Map<Id, { key: ContentKey; result: ContentAnalysis }>()
 /** Per building, the last analysis, reused while its levels and their contents are the same. */
-const buildingCache = new Map<Id, { levels: Level[]; contents: ContentAnalysis[]; slabThickness: number; result: BuildingAnalysis }>()
+const buildingCache = new Map<
+  Id,
+  { levels: Level[]; contents: ContentAnalysis[]; slabThickness: number; roof: Roof; result: BuildingAnalysis }
+>()
+
+const sameRoof = (a: Roof, b: Roof) =>
+  a === b ||
+  (a.kind === b.kind &&
+    a.pitch === b.pitch &&
+    a.overhang === b.overhang &&
+    a.direction === b.direction &&
+    a.thickness === b.thickness &&
+    a.parapet === b.parapet)
 
 const sameItems = <T>(a: readonly T[], b: readonly T[]) => a.length === b.length && a.every((item, i) => item === b[i])
 
@@ -255,10 +281,12 @@ function analyzeOne(snapshot: Snapshot, buildingId: Id, contentOf: (levelId: Id)
   const sorted = (levelsByBuilding(snapshot).get(buildingId) ?? []) as Level[]
   const contents = sorted.map((level) => contentOf(contentLevelId(level)))
   const thickness = snapshot.meta.slabThickness
+  const roof = roofOf(snapshot.buildings[buildingId])
   const cached = buildingCache.get(buildingId)
   if (
     cached &&
     cached.slabThickness === thickness &&
+    sameRoof(cached.roof, roof) &&
     sameItems(cached.levels, sorted) &&
     sameItems(cached.contents, contents)
   ) {
@@ -314,10 +342,11 @@ function analyzeOne(snapshot: Snapshot, buildingId: Id, contentOf: (levelId: Id)
     buildingId,
     levels,
     slabs,
+    roof,
     grossArea: levels.reduce((sum, l) => sum + l.grossArea * l.floors, 0),
     netArea: levels.reduce((sum, l) => sum + l.netArea * l.floors, 0),
   }
-  buildingCache.set(buildingId, { levels: sorted, contents, slabThickness: thickness, result })
+  buildingCache.set(buildingId, { levels: sorted, contents, slabThickness: thickness, roof, result })
   return result
 }
 

@@ -16,6 +16,7 @@ import { paint, useBufferGeometry, type PaintedMesh } from './geometry.ts'
 import { COLORS, PALETTES, shade, streetHighlight, streetMaterials, type Palette } from './materials.ts'
 import { Outline } from './Outline.tsx'
 import { apparentDistance } from './lens.ts'
+import { HIDE_IN_PICTURES } from './pictures.ts'
 import { concatMeshes } from './shellMesh.ts'
 
 /** Streets are drawn in square tiles of this size (metres): a base mesh and a paint mesh per tile. */
@@ -174,7 +175,7 @@ const StreetTile = memo(function StreetTile({ tile, outlines }: { tile: StreetTi
 const StreetHighlight = memo(function StreetHighlight({ outline, look }: { outline: Vec2[]; look: 'hover' | 'selected' }) {
   const data = useMemo(() => buildSlabMesh([[toRing(outline)]], 0, CURB_HEIGHT + 0.01), [outline])
   const geometry = useBufferGeometry(data)
-  return <mesh geometry={geometry} material={streetHighlight[look]} renderOrder={3} raycast={noRaycast} />
+  return <mesh geometry={geometry} material={streetHighlight[look]} renderOrder={3} raycast={noRaycast} userData={HIDE_IN_PICTURES} />
 })
 
 const noRaycast = () => {}

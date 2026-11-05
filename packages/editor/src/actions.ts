@@ -27,10 +27,12 @@ import {
   rotateBuilding,
   scale,
   setFloorCount,
+  setRoof,
   setRepeatCount,
   sortedLevels,
   sub,
   type Id,
+  type Roof,
   type Intersection,
   type OpeningKind,
   type PlinthDocument,
@@ -377,6 +379,11 @@ export function exitToSite({ store }: ActionContext): void {
 
 export function setBuildingFloors(ctx: ActionContext, buildingId: Id, floors: number): void {
   ctx.doc.transact((tx) => setFloorCount(tx, buildingId, floors))
+}
+
+/** Sets a building's roof; null gives it the plain flat roof. */
+export function setBuildingRoof(ctx: ActionContext, buildingId: Id, roof: Roof | null): void {
+  ctx.doc.transact((tx) => setRoof(tx, buildingId, roof))
 }
 
 /** Turns a building about its middle by `degrees` (counter-clockwise on the plan). */

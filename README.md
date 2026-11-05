@@ -40,6 +40,10 @@ Two things make the light read as real:
 
 This is not full global illumination (light bouncing from surface to surface), which a browser can't do live for a city; the soft shading gives most of its look for a white model. `patches/n8ao@2.0.1.patch` fixes N8AO's half-resolution mode for three.js 0.187.
 
+## Roofs
+
+A roof is a setting of its building and sits on its top floor's outline (`packages/core/src/geometry/roofs.ts`). Shed and gable roofs are planes over the outline; hip roofs come from the outline's straight skeleton (`skeleton.ts`): every edge moves inwards at the same speed, and the faces they sweep are the roof's slopes. It works for any outline, holes included, and checks its own result (each face on its edge's slope, the faces covering the outline exactly once), falling back to no roof rather than a wrong one. Roofs are drawn on the site and in the building editor, counted in a building's total height and exported with the model.
+
 ## Large cities
 
 Plinth is built to show whole cities. The **Metropolis** example (Examples › Make a copy) is a stress test the size of Manhattan: about 44,000 buildings, 440,000 floors, 4,400 streets and 1.6 million windows and doors (in 280,000 records). Every building has a ground floor of shopfronts round its front door, a typical upper floor with rows of windows front and back (and on the avenue at a corner), and a run of copies of it to the top. What makes that work:
@@ -69,6 +73,7 @@ The first time the gallery opens it adds **Harbour City**, an example of about 1
 | Move street points | With the Street tool, drag a point, or the handle in the middle of the street under the pointer to bend it; deleting a point between two streets joins them | Same |
 | Building (B) | Click the corners; click the first corner again or press Enter to close | Aim and lift; Close |
 | Select a building (V) | Click it. Position, rotation, floors, floor height and name in the panel. Dragging moves the view, never the building | Tap |
+| Roof | Select a building: Flat (with a parapet and overhang if wanted), Shed, Gable or Hip, with pitch, overhang and thickness; "Turn the ridge" turns it a quarter, and it follows the longest side until turned. A gable carries its end walls up to the roof; a hip roof slopes on every side of any outline (an L gets a valley, a courtyard block a ring of slopes). Also in the building editor's whole-building panel | Same |
 | Reshape a building | In the building editor (double-click it) | Same |
 | Building name | Hover a building: its name shows at the bottom of the view (the selected one's when nothing is hovered) | Tap it |
 | Go inside | Double-click the building, Enter, or "Edit building" | Double-tap, or the panel |

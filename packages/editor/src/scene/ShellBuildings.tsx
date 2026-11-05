@@ -8,6 +8,7 @@ import { useBufferGeometry, type PaintedMesh } from './geometry.ts'
 import { COLORS, PALETTES, slabMaterials, surroundMaterial, type Palette } from './materials.ts'
 import { Outline } from './Outline.tsx'
 import { apparentDistance } from './lens.ts'
+import { HIDE_IN_PICTURES } from './pictures.ts'
 import { usePickable } from './pickable.ts'
 import { buildingCentre, concatMeshes, paneMesh, shellMesh } from './shellMesh.ts'
 
@@ -388,7 +389,7 @@ const highlightMaterials = { hover: inFront(slabMaterials.hover), selected: inFr
 function Highlight({ mesh, look }: { mesh: PaintedMesh; look: 'hover' | 'selected' }) {
   const geometry = useBufferGeometry(mesh)
   return (
-    <mesh geometry={geometry} material={highlightMaterials[look]} raycast={noRaycast} renderOrder={2}>
+    <mesh geometry={geometry} material={highlightMaterials[look]} raycast={noRaycast} renderOrder={2} userData={HIDE_IN_PICTURES}>
       {look === 'selected' && <Outline geometry={geometry} color={COLORS.edgeSelected} threshold={30} />}
     </mesh>
   )

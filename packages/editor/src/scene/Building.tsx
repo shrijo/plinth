@@ -16,6 +16,7 @@ import {
   type Id,
   type Opening,
   type OpeningCut,
+  type BuildingAnalysis,
   type Slab,
   type Wall,
   type WallFootprint,
@@ -44,7 +45,7 @@ import {
   wallMaterials,
   type Look,
 } from './materials.ts'
-import { concatMeshes, cutPanes, stackUp } from './shellMesh.ts'
+import { concatMeshes, cutPanes, roofParts, stackUp } from './shellMesh.ts'
 import { pointsKey, StableValues } from './stable.ts'
 
 interface PlacedOpening {
@@ -238,9 +239,38 @@ export function Building({ buildingId }: { buildingId: Id }) {
           bottom={palette.ceiling}
         />
       ))}
+      {own && slabs.some((slab) => slab.levelId === null) && (
+        <RoofMesh
+          building={own}
+          faded={faded(topLevel?.level.id === activeLevelId ? activeLevelId : null)}
+          outlines={outlines}
+        />
+      )}
     </group>
   )
 }
+
+/** The building's roof, shown with its top slab. */
+const RoofMesh = memo(function RoofMesh({ building, faded, outlines }: { building: BuildingAnalysis; faded: boolean; outlines: boolean }) {
+  const snapshot = useSnapshot()
+  const palette = PALETTES[useEditor((s) => s.style)]
+  const { wallThickness, slabThickness } = snapshot.meta
+  const data = useMemo(() => {
+    const meta = { schemaVersion: 3 as const, name: '', wallThickness, slabThickness }
+    const parts = roofParts(building, meta, palette)
+    return parts.length > 0 ? concatMeshes(parts) : null
+  }, [building, palette, wallThickness, slabThickness])
+  const geometry = useBufferGeometry(data ?? NO_MESH)
+  if (!data) return null
+  const look: Look = faded ? 'faded' : 'normal'
+  return (
+    <mesh name="Roof" geometry={geometry} material={slabMaterials[look]} castShadow receiveShadow>
+      {outlines && <Outline geometry={geometry} look={look} threshold={30} />}
+    </mesh>
+  )
+})
+
+const NO_MESH = { positions: new Float32Array(), normals: new Float32Array(), indices: new Uint32Array(), colors: new Float32Array() }
 
 const NO_VIEWS: WallView[] = []
 

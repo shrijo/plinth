@@ -1,9 +1,9 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect } from 'react'
 import { useEditor, useEditorContext } from '../context.ts'
-import { EMPTY_SELECTION } from '../state.ts'
 import { InteractionController } from '../interaction.ts'
 import { LabelProjector } from './LabelProjector.tsx'
+import { withoutEditorMarks } from './pictures.ts'
 import { Building } from './Building.tsx'
 import { CameraRig } from './CameraRig.tsx'
 import { DrawingOverlay } from './DrawingOverlay.tsx'
@@ -54,23 +54,11 @@ function CaptureBridge() {
   useEffect(() => {
     captureRef.current = async (width, height) => {
       // A picture of the city, so only from the site view (not from inside a building).
-      const state = store.getState()
-      if (state.mode !== 'site') return null
-      // Without selection or hover colours, for a frame or two.
-      const { selection, hover } = state
-      store.setState({ selection: EMPTY_SELECTION, hover: null })
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-      try {
-        return await snapshotView(width, height)
-      } finally {
-        store.setState({ selection, hover })
-      }
+      if (store.getState().mode !== 'site') return null
+      return snapshotView(width, height)
     }
     const snapshotView = (width: number, height: number): Promise<Blob | null> => {
       const { gl, scene, camera } = get()
-      // Draw now (through the effects, if they're on), and copy the picture before the browser clears it.
-      if (renderRef.current) renderRef.current()
-      else gl.render(scene, camera)
       const source = gl.domElement
       const canvas = document.createElement('canvas')
       canvas.width = width
@@ -80,7 +68,13 @@ function CaptureBridge() {
       const scale = Math.max(width / source.width, height / source.height)
       const w = width / scale
       const h = height / scale
-      context.drawImage(source, (source.width - w) / 2, (source.height - h) / 2, w, h, 0, 0, width, height)
+      // Draw a frame without selection and handles (through the effects, if they're on) and copy
+      // it before the browser clears it, all at once: the view on screen never changes.
+      withoutEditorMarks(scene, () => {
+        if (renderRef.current) renderRef.current()
+        else gl.render(scene, camera)
+        context.drawImage(source, (source.width - w) / 2, (source.height - h) / 2, w, h, 0, 0, width, height)
+      })
       return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85))
     }
     return () => {

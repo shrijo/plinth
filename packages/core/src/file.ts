@@ -1,10 +1,12 @@
 import {
   DEFAULT_META,
   DEFAULT_STREET,
+  ROOF_KINDS,
   type Building,
   type Level,
   type Meta,
   type Opening,
+  type Roof,
   type Snapshot,
   type Street,
   type StreetNode,
@@ -86,7 +88,10 @@ export function parseProject(text: string): ProjectFile {
     )
   }
   const meta = isObject(data.meta) ? data.meta : {}
-  const buildings = arrayOf(data.buildings, isBuilding)
+  // A roof that doesn't make sense is dropped (the building gets a flat one), not the building.
+  const buildings = arrayOf(data.buildings, isBuilding).map(({ roof, ...building }): Building =>
+    isRoof(roof) ? { ...building, roof } : building,
+  )
   const buildingIds = new Set(buildings.map((b) => b.id))
   const levels = arrayOf(data.levels, isLevel)
     .filter((l) => buildingIds.has(l.buildingId))
@@ -144,6 +149,20 @@ const isString = (v: unknown): v is string => typeof v === 'string' && v.length 
 
 function isBuilding(v: unknown): v is Building {
   return isObject(v) && isString(v.id) && typeof v.name === 'string'
+}
+
+function isRoof(v: unknown): v is Roof {
+  return (
+    isObject(v) &&
+    (ROOF_KINDS as readonly unknown[]).includes(v.kind) &&
+    isFiniteNumber(v.pitch) &&
+    (v.pitch as number) >= 0 &&
+    (v.pitch as number) < 89 &&
+    isNonNegative(v.overhang) &&
+    (v.direction === null || isFiniteNumber(v.direction)) &&
+    isPositive(v.thickness) &&
+    isNonNegative(v.parapet)
+  )
 }
 
 function isStreetNode(v: unknown): v is StreetNode {

@@ -24,6 +24,42 @@ export interface Meta {
 export interface Building {
   id: Id
   name: string
+  /** The roof on its top floor; none is a flat roof. */
+  roof?: Roof
+}
+
+export type RoofKind = 'flat' | 'shed' | 'gable' | 'hip'
+export const ROOF_KINDS: readonly RoofKind[] = ['flat', 'shed', 'gable', 'hip']
+
+/**
+ * A building's roof, sitting on its top floor's outline: flat (with a
+ * parapet if wanted), shed (one slope), gable (two slopes meeting at a
+ * ridge, the end walls carried up to them) or hip (sloping on every side;
+ * a ring of slopes on a courtyard block).
+ */
+export interface Roof {
+  kind: RoofKind
+  /** Slope of a pitched roof, in degrees from level. */
+  pitch: number
+  /** How far the roof reaches out past the walls, in metres. */
+  overhang: number
+  /**
+   * Which way the ridge runs (gable, hip) or the roof falls (shed), in
+   * degrees anticlockwise from east (+x); null runs it along the
+   * building's longest side.
+   */
+  direction: number | null
+  /** The roof's own thickness, in metres. */
+  thickness: number
+  /** Height of the low wall round a flat roof, in metres; 0 for none. */
+  parapet: number
+}
+
+/** A building without a roof of its own has this one. */
+export const FLAT_ROOF: Roof = { kind: 'flat', pitch: 35, overhang: 0, direction: null, thickness: 0.3, parapet: 0 }
+
+export function roofOf(building: Pick<Building, 'roof'> | undefined): Roof {
+  return building?.roof ?? FLAT_ROOF
 }
 
 export interface Level {
