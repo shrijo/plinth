@@ -1,0 +1,22 @@
+{
+  "name": "@plinth/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "earcut": "^3.2.4",
+    "polygon-clipping": "^0.15.7",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "vitest": "^5.1.0"
+  }
+}
