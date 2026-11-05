@@ -38,8 +38,10 @@ import {
   type PlinthDocument,
   type Vec2,
 } from '@plinth/core'
+import { addSpotHeights, createParcel, deleteParcels, heightAt, terrainOf } from '@plinth/core'
 import {
   EMPTY_SELECTION,
+  isOutlineTool,
   SELECTION_KEY,
   type EditorStore,
   type OpeningPreview,
@@ -92,7 +94,7 @@ export function finishDrawing({ store }: ActionContext): void {
 /** Enter: like finishing, but a building outline with three or more corners is closed into a building. */
 export function completeDrawing(ctx: ActionContext): void {
   const state = ctx.store.getState()
-  if (state.tool === 'outline' && state.draft.length >= 3) createBuildingFrom(ctx, state.draft)
+  if (isOutlineTool(state.tool) && state.draft.length >= 3) closeOutline(ctx, state.draft)
   else finishDrawing(ctx)
 }
 
@@ -135,15 +137,25 @@ export function placePoint(ctx: ActionContext, point: Vec2): void {
     return
   }
 
-  if (state.tool === 'outline') {
+  if (isOutlineTool(state.tool)) {
     const first = state.draft[0]
-    // Back at the first point closes the outline and makes the building.
+    // Back at the first point closes the outline and makes the building (or parcel).
     if (first && state.draft.length >= 3 && dist(point, first) < SAME_POINT) {
-      createBuildingFrom(ctx, state.draft)
+      closeOutline(ctx, state.draft)
       return
     }
     if (state.anchor && dist(point, state.anchor) < SAME_POINT) return
     store.setState({ draft: [...state.draft, point], anchor: point, chainStart: state.draft[0] ?? point })
+    return
+  }
+
+  if (state.tool === 'terrain') {
+    // A new spot height, at the ground's height there (the site's zero off the terrain).
+    const terrain = terrainOf(doc.getSnapshot())
+    const ground = doc.getSnapshot().meta.ground ?? 0
+    const z = (terrain && heightAt(terrain, point)) ?? ground
+    const [id] = doc.transact((tx) => addSpotHeights(tx, [{ x: point.x, y: point.y, z: Math.round(z * 100) / 100 }]))
+    if (id) store.setState({ selection: { ...EMPTY_SELECTION, spotHeights: [id] } })
     return
   }
 
@@ -170,6 +182,19 @@ export function placePoint(ctx: ActionContext, point: Vec2): void {
   }
 }
 
+/** A closed outline makes a building, or with the Parcel tool a parcel. */
+function closeOutline(ctx: ActionContext, outline: readonly Vec2[]): void {
+  if (ctx.store.getState().tool === 'parcel') createParcelFrom(ctx, outline)
+  else createBuildingFrom(ctx, outline)
+}
+
+function createParcelFrom(ctx: ActionContext, outline: readonly Vec2[]): void {
+  const parcel = ctx.doc.transact((tx) => createParcel(tx, outline))
+  finishDrawing(ctx)
+  // Stays in the Parcel tool, ready for the next one, with this one selected.
+  if (parcel) ctx.store.setState({ selection: { ...EMPTY_SELECTION, parcels: [parcel.id] } })
+}
+
 function createBuildingFrom(ctx: ActionContext, outline: readonly Vec2[]): void {
   const { floors, floorHeight } = ctx.store.getState().siteDefaults
   const building = ctx.doc.transact((tx) => createBuilding(tx, outline, { floors, floorHeight }))
@@ -191,7 +216,7 @@ function createBuildingFrom(ctx: ActionContext, outline: readonly Vec2[]): void 
 export function commitTypedLength(ctx: ActionContext, text: string): boolean {
   const state = ctx.store.getState()
   const length = parseLength(text)
-  const chains = state.tool === 'wall' || state.tool === 'street' || state.tool === 'outline'
+  const chains = state.tool === 'wall' || state.tool === 'street' || isOutlineTool(state.tool)
   if (length === null || length <= 0 || !state.anchor || !chains) return false
   const towards = state.cursor?.point
   let dir = towards ? sub(towards, state.anchor) : { x: 0, y: 0 }
@@ -261,12 +286,15 @@ export function toggleIsolation(ctx: ActionContext): void {
 }
 
 export function deleteSelection(ctx: ActionContext): void {
-  const { walls, nodes, openings, buildings, streets, streetNodes } = ctx.store.getState().selection
+  const { walls, nodes, openings, buildings, streets, streetNodes, parcels, spotHeights } = ctx.store.getState().selection
   const site = ctx.store.getState().mode === 'site'
   // On the site, a selected shell point or wall is edited, not the building deleted.
   const removeBuildings = site && walls.length === 0 && nodes.length === 0 ? buildings : []
-  if ([walls, nodes, openings, removeBuildings, streets, streetNodes].every((list) => list.length === 0)) return
+  const lists = [walls, nodes, openings, removeBuildings, streets, streetNodes, parcels, spotHeights]
+  if (lists.every((list) => list.length === 0)) return
   ctx.doc.transact((tx) => {
+    deleteParcels(tx, parcels)
+    for (const id of spotHeights) tx.deleteSpotHeight(id)
     deleteOpenings(tx, openings)
     deleteWalls(tx, walls)
     // A removed point joins the walls on either side of it.
@@ -324,6 +352,8 @@ export function dropMissingSelection({ doc, store }: ActionContext): void {
     openings: selection.openings.filter((id) => snapshot.openings[id]),
     rooms: selection.rooms.filter((id) => roomIds.has(id)),
     buildings: selection.buildings.filter((id) => snapshot.buildings[id]),
+    parcels: selection.parcels.filter((id) => snapshot.parcels[id]),
+    spotHeights: selection.spotHeights.filter((id) => snapshot.spotHeights[id]),
     streets: selection.streets.filter((id) => snapshot.streets[id]),
     streetNodes: selection.streetNodes.filter((id) => snapshot.streetNodes[id]),
   }

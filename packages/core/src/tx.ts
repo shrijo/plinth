@@ -7,6 +7,7 @@ import {
   type Meta,
   type Opening,
   type AreaStandard,
+  type GeoOrigin,
   type Parcel,
   type RoomTag,
   type SpotHeight,
@@ -294,6 +295,13 @@ export class Tx {
   }
 }
 
+export function isGeoOrigin(v: unknown): v is GeoOrigin {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  const finite = (n: unknown) => typeof n === 'number' && Number.isFinite(n)
+  return (o.kind === 'lonlat' && finite(o.lon) && finite(o.lat)) || (o.kind === 'projected' && finite(o.x) && finite(o.y))
+}
+
 export function readMeta(map: Y.Map<unknown>): Meta {
   const name = map.get('name')
   const positive = (key: 'wallThickness' | 'slabThickness'): number => {
@@ -301,11 +309,15 @@ export function readMeta(map: Y.Map<unknown>): Meta {
     return typeof value === 'number' && value > 0 ? value : DEFAULT_META[key]
   }
   const standard = map.get('areaStandard')
+  const origin = map.get('origin')
+  const ground = map.get('ground')
   return {
     schemaVersion: 3,
     name: typeof name === 'string' ? name : DEFAULT_META.name,
     wallThickness: positive('wallThickness'),
     slabThickness: positive('slabThickness'),
     areaStandard: standard === 'sia416' || standard === 'din277' ? (standard as AreaStandard) : DEFAULT_META.areaStandard,
+    ...(isGeoOrigin(origin) ? { origin } : {}),
+    ...(typeof ground === 'number' && Number.isFinite(ground) ? { ground } : {}),
   }
 }

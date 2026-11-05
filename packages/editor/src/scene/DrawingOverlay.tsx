@@ -22,6 +22,7 @@ import { useMemo } from 'react'
 import { useBufferGeometry, worldPoint } from './geometry.ts'
 import { ScreenSized } from './ScreenSized.tsx'
 import { COLORS, previewMaterial } from './materials.ts'
+import { isOutlineTool } from '../state.ts'
 
 /** The snapped cursor, its guide lines and a preview of what the click will create. */
 export function DrawingOverlay() {
@@ -59,7 +60,7 @@ export function DrawingOverlay() {
         {tool === 'street' && anchor && dist(anchor, cursor.point) > 0.05 && (
           <StreetPreview snapshot={snapshot} from={anchor} to={cursor.point} props={defaults.street} />
         )}
-        {tool === 'outline' && draft.length > 0 && (
+        {isOutlineTool(tool) && draft.length > 0 && (
           <>
             <OutlinePreview points={draft} cursor={cursor.point} level={shellLevel} thickness={thickness} />
             {first && draft.length >= 2 && (

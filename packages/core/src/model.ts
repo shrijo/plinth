@@ -22,7 +22,22 @@ export interface Meta {
   slabThickness: number
   /** The standard area figures follow. */
   areaStandard: AreaStandard
+  /** Where the site's zero is in the coordinates of imported data (parcels, terrain), once something is imported. */
+  origin?: GeoOrigin
+  /**
+   * The ground height the site's zero stands for, in the heights of its
+   * spot heights (metres above sea level for imported terrain); 0 if unset.
+   * Buildings and streets are measured from the site's zero.
+   */
+  ground?: number
 }
+
+/**
+ * The real-world point at the site's zero: in longitude and latitude
+ * (degrees, WGS 84), or in the projected coordinates (metres, such as
+ * Swiss LV95) the imported data came in.
+ */
+export type GeoOrigin = { kind: 'lonlat'; lon: number; lat: number } | { kind: 'projected'; x: number; y: number }
 
 /** Area standards: SIA 416 (Switzerland) and DIN 277 (Germany). */
 export type AreaStandard = 'sia416' | 'din277'

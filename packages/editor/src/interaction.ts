@@ -21,6 +21,9 @@ import {
   openingsOnWall,
   openingType,
   rowReach,
+  moveParcelCorner,
+  moveSpotHeight,
+  parcelAt,
   perpLeft,
   pointInRegion,
   resolveWall,
@@ -44,6 +47,8 @@ import { dropMissingSelection, enterBuilding, finishDrawing, placeOpening, place
 import { buildingEdgesNear, streetAt, streetNodesNear, streetSegmentsNear } from './siteIndex.ts'
 import {
   isSelected,
+  parcelCornerId,
+  parseParcelCorner,
   samePick,
   type EditorState,
   type EditorStore,
@@ -147,6 +152,8 @@ type Drag =
     }
   | { kind: 'building'; buildingId: Id; start: Vec2; applied: Vec2; moved: boolean }
   | { kind: 'streetNode'; nodeId: Id; moved: boolean }
+  | { kind: 'parcelCorner'; parcelId: Id; index: number; moved: boolean }
+  | { kind: 'spotHeight'; spotId: Id; moved: boolean }
   | { kind: 'streetCurve'; streetId: Id; moved: boolean }
   | { kind: 'street'; starts: Map<Id, Vec2>; startPoint: Vec2; moved: boolean }
   | {
@@ -268,6 +275,19 @@ export class InteractionController {
           return
         }
       }
+      // The Parcel tool moves parcel corners from their handles (when not drawing one), the Terrain tool spot heights.
+      if ((tool === 'parcel' && this.state.draft.length === 0) || tool === 'terrain') {
+        const snapshot = this.deps.doc.getSnapshot()
+        const corner =
+          tool === 'parcel'
+            ? this.parcelCornerAt(e.clientX, e.clientY, kind, snapshot)
+            : this.spotHeightAt(e.clientX, e.clientY, kind, snapshot)
+        if (corner) {
+          this.press.pick = corner
+          this.setControlsEnabled(false)
+          return
+        }
+      }
       if (isOpeningTool(tool)) this.updateOpeningPreview(e, tool)
       else this.updateCursor(e)
     }
@@ -307,6 +327,14 @@ export class InteractionController {
       const hover = this.streetHandleAt(e.clientX, e.clientY, kind, snapshot) ?? this.streetUnder(e.clientX, e.clientY)
       if (!samePick(hover, this.state.hover)) this.deps.store.setState({ hover })
       this.updateCursor(e)
+    } else if ((tool === 'parcel' && this.state.draft.length === 0) || tool === 'terrain') {
+      const snapshot = this.deps.doc.getSnapshot()
+      const hover =
+        tool === 'parcel'
+          ? this.parcelCornerAt(e.clientX, e.clientY, kind, snapshot)
+          : this.spotHeightAt(e.clientX, e.clientY, kind, snapshot)
+      if (!samePick(hover, this.state.hover)) this.deps.store.setState({ hover })
+      this.updateCursor(e)
     } else if (isOpeningTool(tool)) {
       this.updateOpeningPreview(e, tool)
     } else {
@@ -330,6 +358,12 @@ export class InteractionController {
     this.setControlsEnabled(true)
     if (tool === 'select') {
       if (press.button === 0 && !press.moved) select(ctx, press.pick, press.shiftKey)
+      return
+    }
+    // A click on a handle (not a drag) selects what it belongs to.
+    if (press.button === 0 && !press.moved && (press.pick?.kind === 'parcelCorner' || press.pick?.kind === 'spotHeight')) {
+      const pick = press.pick.kind === 'parcelCorner' ? { kind: 'parcel' as const, id: parseParcelCorner(press.pick.id).parcelId } : press.pick
+      select(ctx, pick, press.shiftKey)
       return
     }
 
@@ -888,7 +922,47 @@ export class InteractionController {
       }
     }
     if (best) return best
-    return this.streetUnder(clientX, clientY, true)
+    const under = this.streetUnder(clientX, clientY, true)
+    if (under) return under
+    // Nothing else there: the parcel the ground under the pointer is on.
+    const ground = this.planPoint(clientX, clientY, 0)
+    const parcel = ground && parcelAt(snapshot, ground)
+    return parcel ? { kind: 'parcel', id: parcel.id } : null
+  }
+
+  /** In the Terrain tool: the spot height within a few pixels of a screen position. */
+  private spotHeightAt(clientX: number, clientY: number, kind: PointerKind, snapshot: Snapshot): Pick | null {
+    let best: Pick | null = null
+    let bestDistance = SNAP_PX[kind] * 0.8
+    const base = snapshot.meta.ground ?? 0
+    for (const spot of Object.values(snapshot.spotHeights)) {
+      const screen = this.screenOf(spot.x, spot.z - base, -spot.y)
+      if (!screen) continue
+      const d = Math.hypot(screen.x - clientX, screen.y - clientY)
+      if (d < bestDistance) {
+        best = { kind: 'spotHeight', id: spot.id }
+        bestDistance = d
+      }
+    }
+    return best
+  }
+
+  /** In the Parcel tool: the parcel corner within a few pixels of a screen position. */
+  private parcelCornerAt(clientX: number, clientY: number, kind: PointerKind, snapshot: Snapshot): Pick | null {
+    let best: Pick | null = null
+    let bestDistance = SNAP_PX[kind] * 0.8
+    for (const parcel of Object.values(snapshot.parcels)) {
+      parcel.points.forEach((p, i) => {
+        const screen = this.screenOf(p.x, 0.05, -p.y)
+        if (!screen) return
+        const d = Math.hypot(screen.x - clientX, screen.y - clientY)
+        if (d < bestDistance) {
+          best = { kind: 'parcelCorner', id: parcelCornerId(parcel.id, i) }
+          bestDistance = d
+        }
+      })
+    }
+    return best
   }
 
   /**
@@ -954,6 +1028,8 @@ export class InteractionController {
   private canDrag(pick: Pick): boolean {
     const { mode, tool } = this.state
     if (mode === 'building') return tool === 'select' && pick.kind !== 'room'
+    if (tool === 'parcel') return pick.kind === 'parcelCorner'
+    if (tool === 'terrain') return pick.kind === 'spotHeight'
     return tool === 'street' && (pick.kind === 'streetNode' || pick.kind === 'streetCurve')
   }
 
@@ -1073,6 +1149,11 @@ export class InteractionController {
       const start = this.planPoint(press.startX, press.startY, 0)
       if (!start) return
       this.drag = { kind: 'building', buildingId: pick.id, start, applied: { x: 0, y: 0 }, moved: false }
+    } else if (pick.kind === 'spotHeight') {
+      this.drag = { kind: 'spotHeight', spotId: pick.id, moved: false }
+    } else if (pick.kind === 'parcelCorner') {
+      const { parcelId, index } = parseParcelCorner(pick.id)
+      this.drag = { kind: 'parcelCorner', parcelId, index, moved: false }
     } else if (pick.kind === 'streetNode') {
       this.drag = { kind: 'streetNode', nodeId: pick.id, moved: false }
     } else if (pick.kind === 'streetCurve') {
@@ -1172,6 +1253,24 @@ export class InteractionController {
         (tx) => updateOpening(tx, drag.openingId, { offset: (s0 + s1) / 2, width: s1 - s0, sill: z0, height: z1 - z0 }),
         { merge: drag.moved },
       )
+      drag.moved = true
+      return
+    }
+
+    if (drag.kind === 'parcelCorner' || drag.kind === 'spotHeight') {
+      const spot = drag.kind === 'spotHeight' ? snapshot.spotHeights[drag.spotId] : undefined
+      // A spot height moves over the plane of its own height, so it stays under the pointer.
+      const level = spot ? spot.z - (snapshot.meta.ground ?? 0) : 0
+      const ground = this.planPoint(e.clientX, e.clientY, level)
+      if (!ground) return
+      const tolerance = this.tolerance(e.clientX, e.clientY, level, pointerKind(e))
+      const result = snap(ground, this.siteSnapContext(snapshot, state, tolerance, e.altKey, ground, new Set(), new Set()))
+      store.setState({ cursor: result })
+      if (drag.kind === 'parcelCorner') {
+        doc.transact((tx) => moveParcelCorner(tx, drag.parcelId, drag.index, result.point), { merge: drag.moved })
+      } else {
+        doc.transact((tx) => moveSpotHeight(tx, drag.spotId, result.point), { merge: drag.moved })
+      }
       drag.moved = true
       return
     }

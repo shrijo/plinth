@@ -6,6 +6,8 @@ import {
   DoorIcon,
   MagnetIcon,
   OutlineIcon,
+  ParcelIcon,
+  TerrainIcon,
   PerspectiveIcon,
   RedoIcon,
   SelectIcon,
@@ -27,6 +29,8 @@ const SITE_TOOLS: ToolEntry[] = [
   { tool: 'select', label: 'Select', shortcut: 'V', icon: <SelectIcon /> },
   { tool: 'street', label: 'Street', shortcut: 'L', icon: <StreetIcon /> },
   { tool: 'outline', label: 'Building', shortcut: 'B', icon: <OutlineIcon /> },
+  { tool: 'parcel', label: 'Parcel', shortcut: 'P', icon: <ParcelIcon /> },
+  { tool: 'terrain', label: 'Terrain', shortcut: 'G', icon: <TerrainIcon /> },
 ]
 
 const BUILDING_TOOLS: ToolEntry[] = [

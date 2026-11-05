@@ -7,6 +7,7 @@ import { dropMissingSelection } from './actions.ts'
 import { EditorContext, type EditorContextValue } from './context.ts'
 import { applyStyle } from './scene/materials.ts'
 import { Scene } from './scene/Scene.tsx'
+import { siteSphere } from './scene/siteSphere.ts'
 import { createEditorStore, EMPTY_SELECTION, savePreferences, VIEW_PREFERENCES } from './state.ts'
 import { Labels } from './ui/Labels.tsx'
 import { LevelBar } from './ui/LevelBar.tsx'
@@ -22,6 +23,8 @@ export interface PlinthEditorApi {
    * thumbnail. Null while a building is open: thumbnails show the site.
    */
   captureImage(width: number, height: number): Promise<Blob | null>
+  /** Moves the view to show everything on the site (after an import, say). */
+  frameSite(): void
 }
 
 export interface PlinthEditorProps {
@@ -59,6 +62,10 @@ export function PlinthEditor({ document: doc, className, style, apiRef }: Plinth
     if (!apiRef) return
     apiRef.current = {
       captureImage: (width, height) => ctx.captureRef.current?.(width, height) ?? Promise.resolve(null),
+      frameSite: () => {
+        const sphere = siteSphere(ctx.doc.getSnapshot())
+        if (sphere) void ctx.controlsRef.current?.fitToSphere(sphere, true)
+      },
     }
     return () => {
       apiRef.current = null

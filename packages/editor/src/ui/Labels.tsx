@@ -22,6 +22,7 @@ import { toggleIntersection } from '../actions.ts'
 import { useAnalysis, useEditor, useEditorContext, useSnapshot } from '../context.ts'
 import type { OpeningHandle } from '../interaction.ts'
 import { LinkIcon, UnlinkIcon } from './icons.tsx'
+import { isOutlineTool } from '../state.ts'
 
 interface Label {
   key: string
@@ -64,7 +65,7 @@ export function Labels() {
       labels.push({ key, at: toWorld(at, z), className: 'pe-dimension', content: text })
     if (anchor && cursor) {
       const to = cursor.point
-      if ((tool === 'street' || tool === 'outline') && dist(anchor, to) > 0.05) {
+      if ((tool === 'street' || isOutlineTool(tool)) && dist(anchor, to) > 0.05) {
         dimension(
           'length',
           midpoint(anchor, to),
@@ -73,7 +74,7 @@ export function Labels() {
         )
       }
     }
-    if (tool === 'outline' && draft.length >= 3 && cursor && draft[0] && dist(cursor.point, draft[0]) < 1e-6) {
+    if (isOutlineTool(tool) && draft.length >= 3 && cursor && draft[0] && dist(cursor.point, draft[0]) < 1e-6) {
       dimension('close', draft[0], 'Close outline', height + 0.6)
     }
     return <LabelLayer labels={labels} />

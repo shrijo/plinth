@@ -12,7 +12,9 @@ import { Environment } from './Environment.tsx'
 import { Ground } from './Ground.tsx'
 import { NodeHandles } from './NodeHandles.tsx'
 import { Rooms } from './Rooms.tsx'
+import { Parcels } from './Parcels.tsx'
 import { ShellBuildings } from './ShellBuildings.tsx'
+import { Terrain } from './Terrain.tsx'
 import { SiteHandles } from './SiteHandles.tsx'
 import { Streets } from './Streets.tsx'
 import { WorkPlane } from './WorkPlane.tsx'
@@ -27,6 +29,8 @@ export function Scene() {
       <CameraRig />
       <Ground />
       <Streets />
+      <Terrain />
+      <Parcels />
       <ShellBuildings />
       {inside ? (
         <>

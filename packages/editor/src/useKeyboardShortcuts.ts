@@ -14,10 +14,10 @@ import {
   undo,
   type ActionContext,
 } from './actions.ts'
-import type { Tool } from './state.ts'
+import { isOutlineTool, type Tool } from './state.ts'
 
 /** Tool keys, per editor. */
-const SITE_KEYS: Record<string, Tool> = { v: 'select', l: 'street', b: 'outline' }
+const SITE_KEYS: Record<string, Tool> = { v: 'select', l: 'street', b: 'outline', p: 'parcel', g: 'terrain' }
 const BUILDING_KEYS: Record<string, Tool> = { v: 'select', w: 'wall', o: 'window', d: 'door' }
 
 /**
@@ -50,7 +50,7 @@ export function useKeyboardShortcuts(ctx: ActionContext): void {
       }
 
       // Typing a number while drawing opens the exact-length box.
-      const chain = state.tool === 'wall' || state.tool === 'street' || state.tool === 'outline'
+      const chain = state.tool === 'wall' || state.tool === 'street' || isOutlineTool(state.tool)
       if (chain && state.anchor && /^[0-9.,]$/.test(e.key)) {
         e.preventDefault()
         store.setState({ lengthInput: e.key })

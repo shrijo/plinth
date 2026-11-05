@@ -1,7 +1,7 @@
 import { PROJECT_FILE_EXTENSION } from '@plinth/core'
 import { invoke } from '@tauri-apps/api/core'
 import { ask, open, save } from '@tauri-apps/plugin-dialog'
-import type { ExportType, FileHandle, OpenedFile, Platform, SavedFile } from './types.ts'
+import type { ExportType, FileHandle, ImportType, OpenedFile, Platform, SavedFile } from './types.ts'
 
 /** Desktop file access through native dialogs and the app's Rust commands. */
 
@@ -10,8 +10,9 @@ const FILTERS = [{ name: 'Plinth project', extensions: [PROJECT_FILE_EXTENSION] 
 export const tauriPlatform: Platform = {
   kind: 'desktop',
 
-  async openFile(): Promise<OpenedFile | null> {
-    const path = await open({ multiple: false, directory: false, filters: FILTERS })
+  async openFile(type?: ImportType): Promise<OpenedFile | null> {
+    const filters = type ? [{ name: type.description, extensions: type.extensions }] : FILTERS
+    const path = await open({ multiple: false, directory: false, filters })
     if (typeof path !== 'string') return null
     const contents = await invoke<string>('read_text_file', { path })
     return { name: basename(path), contents, handle: { kind: 'path', path } }

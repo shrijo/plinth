@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { Box3, PerspectiveCamera, Sphere, Vector3 } from 'three'
 import { sortedLevels, stackHeight, type Snapshot } from '@plinth/core'
 import { useEditor, useEditorContext, useSnapshot } from '../context.ts'
+import { siteSphere } from './siteSphere.ts'
 import { fieldOfView } from './lens.ts'
 
 const MAX_POLAR = Math.PI / 2 - 0.05
@@ -202,20 +203,3 @@ function buildingSphere(snapshot: Snapshot, buildingId: string): Sphere | null {
   return new Sphere(centre, Math.max(radius * 1.15, 4))
 }
 
-/** A sphere round everything on the site (street points and building corners), to frame it. */
-function siteSphere(snapshot: Snapshot): Sphere | null {
-  const points = [...Object.values(snapshot.streetNodes), ...Object.values(snapshot.nodes)]
-  if (points.length === 0) return null
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const p of points) {
-    minX = Math.min(minX, p.x)
-    maxX = Math.max(maxX, p.x)
-    minY = Math.min(minY, p.y)
-    maxY = Math.max(maxY, p.y)
-  }
-  const radius = Math.hypot(maxX - minX, maxY - minY) / 2
-  return new Sphere(new Vector3((minX + maxX) / 2, 0, -(minY + maxY) / 2), Math.max(radius * 0.85, 20))
-}

@@ -78,6 +78,18 @@ export function union(...regions: MultiPolygon[]): MultiPolygon {
   }
 }
 
+/** Where two regions overlap. Empty when they don't, or when the clipping library can't tell. */
+export function intersection(a: MultiPolygon, b: MultiPolygon): MultiPolygon {
+  const left = tidyRegion(a)
+  const right = tidyRegion(b)
+  if (left.length === 0 || right.length === 0) return []
+  try {
+    return polygonClipping.intersection(left, right)
+  } catch {
+    return []
+  }
+}
+
 export function difference(subject: MultiPolygon, ...clips: MultiPolygon[]): MultiPolygon {
   const tidySubject = tidyRegion(subject)
   if (tidySubject.length === 0) return []

@@ -10,8 +10,17 @@ import {
   setStreetCurve,
   setStreetProps,
   sortedLevels,
+  contourInterval,
+  groundUnder,
+  parcelFigures,
+  restackLevels,
+  setSpotHeight,
+  terrainOf,
+  renameParcel,
   roofHeight,
   stackHeight,
+  type Parcel,
+  type SpotHeight,
   streetLength,
   updateLevel,
   type Id,
@@ -19,7 +28,7 @@ import {
   type Street,
   type StreetProps,
 } from '@plinth/core'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   enterBuilding,
   isolateBuildings,
@@ -75,6 +84,14 @@ export function SitePanel({ frame }: { frame: PanelFrame }) {
   if (count === 1 && selection.streetNodes.length === 1) {
     return frame('Street point', <StreetNodeProperties nodeId={selection.streetNodes[0]!} snapshot={snapshot} />)
   }
+  if (count === 1 && selection.spotHeights.length === 1) {
+    const spot = snapshot.spotHeights[selection.spotHeights[0]!]
+    if (spot) return frame('Spot height', <SpotHeightProperties spot={spot} />)
+  }
+  if (count === 1 && selection.parcels.length === 1) {
+    const parcel = snapshot.parcels[selection.parcels[0]!]
+    if (parcel) return frame(parcel.name || 'Parcel', <ParcelProperties parcel={parcel} />)
+  }
   if (count > 0 && count === selection.buildings.length) {
     return frame(
       `${count} buildings`,
@@ -87,6 +104,7 @@ export function SitePanel({ frame }: { frame: PanelFrame }) {
   if (count > 0) return frame(`${count} items`, <DeleteButton />)
   if (tool === 'street') return frame('New streets', <NewStreetDefaults />)
   if (tool === 'outline') return frame('New buildings', <NewBuildingDefaults />)
+  if (tool === 'terrain') return frame('Terrain', <TerrainProperties />)
   return frame('Site', <SiteProperties snapshot={snapshot} />)
 }
 
@@ -182,6 +200,7 @@ function BuildingShellProperties({ buildingId }: { buildingId: Id }) {
           </button>
         </div>
       </div>
+      <SetOnTerrain buildingId={buildingId} />
       <RoofFields buildingId={buildingId} />
       <AreaFigures buildingId={buildingId} />
       <button type="button" className="pe-danger" onClick={() => removeBuilding(ctx, buildingId)}>
@@ -326,6 +345,93 @@ function NewBuildingDefaults() {
     <>
       <Stepper label="Floors" value={defaults.floors} min={1} max={MAX_FLOORS} onChange={(floors) => set({ floors })} />
       <LengthField label="Floor height" value={defaults.floorHeight} onCommit={(floorHeight) => set({ floorHeight })} />
+    </>
+  )
+}
+
+/** Puts a building's ground floor at the height of the terrain under it (its lowest corner). */
+function SetOnTerrain({ buildingId }: { buildingId: Id }) {
+  const ctx = useEditorContext()
+  const snapshot = useSnapshot()
+  const terrain = terrainOf(snapshot)
+  const ground = sortedLevels(snapshot, buildingId)[0]
+  if (!terrain || !ground) return null
+  const corners = nodesOnLevel(snapshot, ground.id)
+  const under = groundUnder(terrain, corners)
+  if (under === null) return null
+  const base = Math.round((under - (snapshot.meta.ground ?? 0)) * 100) / 100
+  if (Math.abs(base - ground.elevation) < 0.005) return <Readout label="On the terrain at" value={formatLength(base)} />
+  return (
+    <button type="button" className="pe-button pe-button-wide" onClick={() => ctx.doc.transact((tx) => restackLevels(tx, buildingId, base))}>
+      Set on the terrain ({formatLength(base)})
+    </button>
+  )
+}
+
+/** A spot height: how high the ground is there. */
+function SpotHeightProperties({ spot }: { spot: SpotHeight }) {
+  const ctx = useEditorContext()
+  const snapshot = useSnapshot()
+  const ground = snapshot.meta.ground ?? 0
+  return (
+    <>
+      <LengthField label="Height" value={spot.z} allowNegative allowZero onCommit={(z) => ctx.doc.transact((tx) => setSpotHeight(tx, spot.id, z))} />
+      {ground !== 0 && <Readout label="Above the site's zero" value={formatLength(spot.z - ground)} />}
+      <div className="pe-row">
+        <Readout label="X" value={formatLength(spot.x)} />
+        <Readout label="Y" value={formatLength(spot.y)} />
+      </div>
+      <DeleteButton label="Delete spot height" />
+    </>
+  )
+}
+
+/** The terrain as a whole: its points, its range of heights and where the site's zero is. */
+function TerrainProperties() {
+  const ctx = useEditorContext()
+  const snapshot = useSnapshot()
+  const terrain = terrainOf(snapshot)
+  const count = Object.keys(snapshot.spotHeights).length
+  return (
+    <>
+      <Readout label="Spot heights" value={String(count)} />
+      {terrain && (
+        <>
+          <Readout label="Lowest" value={formatLength(terrain.low)} />
+          <Readout label="Highest" value={formatLength(terrain.high)} />
+          <Readout label="Contours every" value={formatLength(contourInterval(terrain.low, terrain.high))} />
+        </>
+      )}
+      <LengthField
+        label="Site zero is at height"
+        value={snapshot.meta.ground ?? 0}
+        allowNegative
+        allowZero
+        onCommit={(ground) => ctx.doc.transact((tx) => tx.setMeta({ ground }))}
+      />
+      {count < 3 && <p className="pe-note">The terrain shows once there are three spot heights.</p>}
+    </>
+  )
+}
+
+/** A parcel: its name, size, the buildings on it and how much they cover and hold. */
+function ParcelProperties({ parcel }: { parcel: Parcel }) {
+  const ctx = useEditorContext()
+  const snapshot = useSnapshot()
+  const figures = useMemo(() => parcelFigures(snapshot, parcel), [snapshot, parcel])
+  const percent = (v: number) => `${(v * 100).toFixed(1)} %`
+  return (
+    <>
+      <TextField label="Name" value={parcel.name} onCommit={(name) => ctx.doc.transact((tx) => renameParcel(tx, parcel.id, name))} />
+      <Readout label="Area" value={formatArea(figures.area)} />
+      <Readout label="Perimeter" value={formatLength(figures.perimeter)} />
+      <h3 className="pe-section-title">Use of the parcel</h3>
+      <Readout label="Buildings on it" value={String(figures.buildings.length)} />
+      <Readout label="Footprint" value={formatArea(figures.covered)} />
+      <Readout label={`Site coverage (${figures.coverageCode})`} value={percent(figures.coverage)} />
+      <Readout label="Gross floor area" value={formatArea(figures.floorArea)} />
+      <Readout label={`Floor area ratio (${figures.ratioCode})`} value={figures.floorAreaRatio.toFixed(2)} />
+      <DeleteButton label="Delete parcel" />
     </>
   )
 }

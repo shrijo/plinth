@@ -20,7 +20,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 export type EditorMode = 'site' | 'building'
 
 /** Tools of the site editor: streets, and new buildings drawn as an outline or a rectangle. */
-export type SiteTool = 'select' | 'street' | 'outline'
+export type SiteTool = 'select' | 'street' | 'outline' | 'parcel' | 'terrain'
 /** Tools of the building editor. */
 export type BuildingTool = 'select' | 'wall' | 'window' | 'door'
 export type Tool = SiteTool | BuildingTool
@@ -36,6 +36,10 @@ export type PickKind =
   | 'streetNode'
   /** The handle that bends a street. */
   | 'streetCurve'
+  | 'parcel'
+  /** A corner of a parcel: its id is the parcel's, a '#' and the corner's index. */
+  | 'parcelCorner'
+  | 'spotHeight'
   /** The middle of a shell wall, dragged to move the wall. */
 
 export interface Pick {
@@ -51,6 +55,8 @@ export interface Selection {
   buildings: readonly Id[]
   streets: readonly Id[]
   streetNodes: readonly Id[]
+  parcels: readonly Id[]
+  spotHeights: readonly Id[]
 }
 
 export const EMPTY_SELECTION: Selection = {
@@ -61,6 +67,8 @@ export const EMPTY_SELECTION: Selection = {
   buildings: [],
   streets: [],
   streetNodes: [],
+  parcels: [],
+  spotHeights: [],
 }
 
 export const SELECTION_KEY: Record<PickKind, keyof Selection> = {
@@ -72,6 +80,9 @@ export const SELECTION_KEY: Record<PickKind, keyof Selection> = {
   street: 'streets',
   streetNode: 'streetNodes',
   streetCurve: 'streets',
+  parcel: 'parcels',
+  parcelCorner: 'parcels',
+  spotHeight: 'spotHeights',
 }
 
 /** What new streets and buildings start with in the site editor. */
@@ -231,7 +242,17 @@ export function selectionSize(selection: Selection): number {
   return Object.values(selection).reduce((sum, list) => sum + list.length, 0)
 }
 
-export const SITE_TOOLS: readonly SiteTool[] = ['select', 'street', 'outline']
+export const SITE_TOOLS: readonly SiteTool[] = ['select', 'street', 'outline', 'parcel', 'terrain']
+
+/** Tools that draw a closed outline corner by corner: a building's, or a parcel's. */
+export const isOutlineTool = (tool: Tool): tool is 'outline' | 'parcel' => tool === 'outline' || tool === 'parcel'
+
+/** A parcel corner's pick id, and back. */
+export const parcelCornerId = (parcelId: Id, index: number) => `${parcelId}#${index}`
+export function parseParcelCorner(id: string): { parcelId: Id; index: number } {
+  const at = id.lastIndexOf('#')
+  return { parcelId: id.slice(0, at), index: Number(id.slice(at + 1)) }
+}
 export const BUILDING_TOOLS: readonly BuildingTool[] = ['select', 'wall', 'window', 'door']
 
 export function samePick(a: Pick | null, b: Pick | null): boolean {

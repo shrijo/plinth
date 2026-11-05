@@ -1,5 +1,5 @@
 import { PROJECT_FILE_EXTENSION } from '@plinth/core'
-import type { ExportType, OpenedFile, Platform, SavedFile } from './types.ts'
+import type { ExportType, ImportType, OpenedFile, Platform, SavedFile } from './types.ts'
 
 /**
  * Browser file access. Uses the File System Access API where available
@@ -26,10 +26,13 @@ const fsWindow = window as unknown as FileSystemAccessWindow
 export const webPlatform: Platform = {
   kind: 'web',
 
-  async openFile(): Promise<OpenedFile | null> {
+  async openFile(type?: ImportType): Promise<OpenedFile | null> {
+    const types: PickerType[] = type
+      ? [{ description: type.description, accept: { 'application/octet-stream': type.extensions.map((e) => `.${e}`) } }]
+      : PICKER_TYPES
     if (fsWindow.showOpenFilePicker) {
       try {
-        const [handle] = await fsWindow.showOpenFilePicker({ types: PICKER_TYPES })
+        const [handle] = await fsWindow.showOpenFilePicker({ types })
         if (!handle) return null
         const file = await handle.getFile()
         return { name: file.name, contents: await file.text(), handle: { kind: 'browser', handle } }
@@ -38,7 +41,7 @@ export const webPlatform: Platform = {
         throw error
       }
     }
-    const file = await pickWithInput()
+    const file = await pickWithInput(type ? type.extensions.map((e) => `.${e}`).join(',') : undefined)
     return file ? { name: file.name, contents: await file.text(), handle: null } : null
   },
 
@@ -103,11 +106,11 @@ function download(contents: string | ArrayBuffer, name: string, mime = 'applicat
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function pickWithInput(): Promise<File | null> {
+function pickWithInput(accept = `.${PROJECT_FILE_EXTENSION},application/json`): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = `.${PROJECT_FILE_EXTENSION},application/json`
+    input.accept = accept
     input.addEventListener('change', () => resolve(input.files?.[0] ?? null))
     input.addEventListener('cancel', () => resolve(null))
     input.click()

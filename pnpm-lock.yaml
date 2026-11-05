@@ -71,6 +71,9 @@ importers:
 
   packages/core:
     dependencies:
+      delaunator:
+        specifier: 5.0.1
+        version: 5.0.1
       earcut:
         specifier: ^3.2.4
         version: 3.2.4
@@ -81,6 +84,9 @@ importers:
         specifier: ^13.6.33
         version: 13.6.33
     devDependencies:
+      '@types/delaunator':
+        specifier: 5.0.3
+        version: 5.0.3
       dxf-parser:
         specifier: 1.1.2
         version: 1.1.2
@@ -105,6 +111,9 @@ importers:
       '@react-three/postprocessing':
         specifier: 3.2.2
         version: 3.2.2(@react-three/fiber@9.8.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(@types/three@0.187.0)(postprocessing@6.39.6(three@0.187.0))(react@19.3.1)(three@0.187.0)
+      earcut:
+        specifier: ^3.2.4
+        version: 3.2.4
       postprocessing:
         specifier: ^6.39.6
         version: 6.39.6(three@0.187.0)
@@ -495,6 +504,9 @@ packages:
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
 
+  '@types/delaunator@5.0.3':
+    resolution: {integrity: sha512-6tTLP8NX0OwtB/fmW9bXp4EWPptawTSsrSGjboWRuzqkxNEEJGyzRPHbr8wnV2DBWfAZ+EPTOvW3B/KysJrl2g==}
+
   '@types/draco3d@1.4.10':
     resolution: {integrity: sha512-AX22jp8Y7wwaBgAixaSvkoG4M/+PlAcm3Qs4OW8yT9DM4xUpWKeFhLueTAyZF39pviAdcDdeJoACapiAceqNcw==}
 
@@ -721,6 +733,9 @@ packages:
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
+
+  delaunator@5.0.1:
+    resolution: {integrity: sha512-8nvh+XBe96aCESrGOqMp/84b13H9cdKbG5P2ejQCh4d4sK9RL4371qou9drQjMhvnPmhWl5hnmqbEE0fXr9Xnw==}
 
   detect-gpu@5.0.70:
     resolution: {integrity: sha512-bqerEP1Ese6nt3rFkwPnGbsUF9a4q+gMmpTVVOEzoCyeCc+y7/RvJnQZJx1JwhgQI5Ntg0Kgat8Uu7XpBqnz1w==}
@@ -1474,6 +1489,8 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
+  '@types/delaunator@5.0.3': {}
+
   '@types/draco3d@1.4.10': {}
 
   '@types/estree@1.0.10': {}
@@ -1622,6 +1639,10 @@ snapshots:
       which: 2.0.2
 
   csstype@3.2.3: {}
+
+  delaunator@5.0.1:
+    dependencies:
+      robust-predicates: 3.0.3
 
   detect-gpu@5.0.70:
     dependencies:

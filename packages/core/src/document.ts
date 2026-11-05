@@ -151,6 +151,8 @@ export class PlinthDocument {
         slabThickness: file.meta.slabThickness,
         areaStandard: file.meta.areaStandard,
       })
+      if (file.meta.origin) tx.setMeta({ origin: file.meta.origin })
+      if (file.meta.ground !== undefined) tx.setMeta({ ground: file.meta.ground })
       for (const building of file.buildings) tx.putBuilding(building)
       for (const level of file.levels) tx.putLevel(level)
       for (const node of file.nodes) tx.putNode(node)

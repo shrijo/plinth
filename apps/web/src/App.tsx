@@ -1,5 +1,9 @@
 import {
+  addSpotHeights,
   areaReportCSV,
+  createParcel,
+  parcelsFromGeoJSON,
+  pointsFromXYZ,
   exportDXF,
   exportIFC,
   parseProject,
@@ -228,6 +232,44 @@ function Workspace({
     [exportAs],
   )
 
+  /** Parcels from a GeoJSON file, placed by the project's origin (the file's middle, for the first import). */
+  const importParcels = useCallback(async () => {
+    try {
+      const opened = await platform.openFile({ description: 'Parcels (GeoJSON)', extensions: ['geojson', 'json'] })
+      if (!opened) return
+      const { parcels, origin } = parcelsFromGeoJSON(opened.contents, doc.getSnapshot().meta.origin)
+      doc.transact((tx) => {
+        tx.setMeta({ origin })
+        for (const parcel of parcels) createParcel(tx, parcel.points, parcel.name)
+      })
+      editorApi.current?.frameSite()
+      flash(`Imported ${parcels.length} parcel${parcels.length === 1 ? '' : 's'} from ${opened.name}`)
+    } catch (e) {
+      flash(`Could not import the parcels: ${errorText(e)}`, true)
+    }
+  }, [doc, platform, flash, editorApi])
+
+  /** Terrain points from an XYZ or CSV file, placed like parcels. */
+  const importTerrain = useCallback(async () => {
+    try {
+      const opened = await platform.openFile({ description: 'Terrain points (XYZ, CSV)', extensions: ['xyz', 'csv', 'txt'] })
+      if (!opened) return
+      const snapshot = doc.getSnapshot()
+      const { points, origin } = pointsFromXYZ(opened.contents, snapshot.meta.origin)
+      // The first terrain sets what the site's zero stands for: its lowest ground, so buildings start on it.
+      const first = snapshot.meta.ground === undefined && Object.keys(snapshot.spotHeights).length === 0
+      const ground = Math.floor(Math.min(...points.map((p) => p.z)))
+      doc.transact((tx) => {
+        tx.setMeta(first ? { origin, ground } : { origin })
+        addSpotHeights(tx, points)
+      })
+      editorApi.current?.frameSite()
+      flash(`Imported ${points.length} terrain point${points.length === 1 ? '' : 's'} from ${opened.name}`)
+    } catch (e) {
+      flash(`Could not import the terrain: ${errorText(e)}`, true)
+    }
+  }, [doc, platform, flash, editorApi])
+
   const exportAreas = useCallback(async () => {
     try {
       const snapshot = doc.getSnapshot()
@@ -280,6 +322,8 @@ function Workspace({
               { label: 'New city', action: () => void newCity() },
               { label: 'Open file…', shortcut: '⌘O', action: () => void openFile() },
               { label: 'Save as file…', shortcut: '⌘S', action: () => void saveFile() },
+              { label: 'Import parcels (GeoJSON)…', action: () => void importParcels(), divider: true },
+              { label: 'Import terrain points (XYZ, CSV)…', action: () => void importTerrain() },
               { label: 'Export 3D model (.glb)…', action: () => exportModel('glb'), divider: true },
               { label: 'Export 3D model (.obj)…', action: () => exportModel('obj') },
               { label: 'Export for 3D printing (.stl)…', action: () => exportModel('stl') },

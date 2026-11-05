@@ -14,6 +14,13 @@ export interface SavedFile {
   handle: FileHandle | null
 }
 
+/** A kind of file to open other than a project: data to import. */
+export interface ImportType {
+  description: string
+  /** Extensions without the dot. */
+  extensions: string[]
+}
+
 /** A kind of exported file. */
 export interface ExportType {
   description: string
@@ -24,8 +31,8 @@ export interface ExportType {
 /** The native features the app needs, with one version for browsers and one for the desktop app. */
 export interface Platform {
   kind: 'web' | 'desktop'
-  /** Asks the user for a project file. Null if they cancel. */
-  openFile(): Promise<OpenedFile | null>
+  /** Asks the user for a project file (or a file of `type`). Null if they cancel. */
+  openFile(type?: ImportType): Promise<OpenedFile | null>
   /**
    * Writes a project file: to `handle` if given, otherwise to a place the user
    * picks. Null if they cancel.

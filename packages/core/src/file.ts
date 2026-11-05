@@ -19,6 +19,7 @@ import {
   type Wall,
   type WallNode,
 } from './model.ts'
+import { isGeoOrigin } from './tx.ts'
 
 /** The on-disk project format: a `.plinth` file is this as JSON. */
 export interface ProjectFile {
@@ -140,6 +141,8 @@ export function parseProject(text: string): ProjectFile {
       areaStandard: (AREA_STANDARDS as readonly unknown[]).includes(meta.areaStandard)
         ? (meta.areaStandard as AreaStandard)
         : DEFAULT_META.areaStandard,
+      ...(isGeoOrigin(meta.origin) ? { origin: meta.origin } : {}),
+      ...(isFiniteNumber(meta.ground) ? { ground: meta.ground } : {}),
     },
     buildings,
     levels,

@@ -1,8 +1,9 @@
-import { parseLength } from '@plinth/core'
+import { formatLength, parseLength } from '@plinth/core'
 import { useEffect, useRef } from 'react'
 import { commitTypedLength, completeDrawing, detach, setActiveLevel, showAllBuildings } from '../actions.ts'
 import { useEditor, useEditorContext, useSnapshot } from '../context.ts'
 import { CheckIcon, RulerIcon } from './icons.tsx'
+import { isOutlineTool } from '../state.ts'
 
 /**
  * The bar at the bottom of the canvas: on the site, the name of the
@@ -20,6 +21,7 @@ export function StatusBar() {
   const isolated = useEditor((s) => s.isolated !== null)
   const hover = useEditor((s) => s.hover)
   const selected = useEditor((s) => s.selection.buildings)
+  const selectedParcels = useEditor((s) => s.selection.parcels)
   const snapshot = useSnapshot()
   const activeLevelId = useEditor((s) => s.activeLevelId)
   const level = snapshot.levels[activeLevelId]
@@ -47,22 +49,30 @@ export function StatusBar() {
   if (drawing && touch) {
     return (
       <div className="pe-status">
-        {(tool === 'wall' || tool === 'street' || tool === 'outline') && (
+        {(tool === 'wall' || tool === 'street' || isOutlineTool(tool)) && (
           <button type="button" className="pe-chip" onClick={() => ctx.store.setState({ lengthInput: '' })}>
             <RulerIcon /> Length
           </button>
         )}
         <button type="button" className="pe-chip pe-chip-primary" onClick={() => completeDrawing(ctx)}>
-          <CheckIcon /> {tool === 'outline' ? 'Close' : 'Done'}
+          <CheckIcon /> {isOutlineTool(tool) ? 'Close' : 'Done'}
         </button>
       </div>
     )
   }
 
-  // The building under the pointer, or else the one selected.
+  // The building (or parcel) under the pointer, or else the one selected.
   const shownId = site ? (hover?.kind === 'building' ? hover.id : selected.length === 1 ? selected[0] : undefined) : undefined
   const shown = shownId ? snapshot.buildings[shownId] : undefined
-  const name = shown?.name ?? (site && selected.length > 1 ? `${selected.length} buildings` : null)
+  const parcelId = site ? (hover?.kind === 'parcel' ? hover.id : selectedParcels.length === 1 ? selectedParcels[0] : undefined) : undefined
+  const parcel = parcelId ? snapshot.parcels[parcelId] : undefined
+  const spot = hover?.kind === 'spotHeight' ? snapshot.spotHeights[hover.id] : undefined
+  const name =
+    (spot ? `Spot height ${formatLength(spot.z)}` : undefined) ??
+    (hover?.kind === 'parcel' ? parcel?.name : undefined) ??
+    shown?.name ??
+    parcel?.name ??
+    (site && selected.length > 1 ? `${selected.length} buildings` : null)
   if (!name && !isolated) return null
   return (
     <div className="pe-status" data-quiet={!isolated || undefined}>

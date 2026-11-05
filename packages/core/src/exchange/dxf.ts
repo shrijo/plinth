@@ -8,6 +8,7 @@ import { placeOpening } from '../geometry/mesh.ts'
 import { flatten, fromRing, normalizePolygon, type MultiPolygon } from '../geometry/regions.ts'
 import { streetGeometry } from '../geometry/streets.ts'
 import { formatArea } from '../units.ts'
+import { contours, terrainOf } from '../terrain.ts'
 
 /**
  * Floor plans as a DXF file (AutoCAD R12, which every CAD program reads), in
@@ -88,6 +89,21 @@ export function exportDXF(snapshot: Snapshot): string {
     for (const polygon of ground?.outline ?? []) for (const ring of polygon) dxf.polyline('SITE-BUILDINGS', fromRing(ring), true)
   }
 
+  for (const parcel of Object.values(snapshot.parcels)) {
+    dxf.polyline('SITE-PARCELS', parcel.points, true)
+    const middle = parcel.points.reduce((sum, p) => add(sum, scale(p, 1 / parcel.points.length)), { x: 0, y: 0 })
+    dxf.text('SITE-PARCELS', middle, 1, parcel.name)
+  }
+
+  const terrain = terrainOf(snapshot)
+  if (terrain) {
+    for (const contour of contours(terrain)) {
+      const layer = contour.major ? 'SITE-CONTOURS-MAJOR' : 'SITE-CONTOURS'
+      for (const [a, b] of contour.segments) dxf.line(layer, a, b)
+    }
+    for (const spot of terrain.points) dxf.text('SITE-SPOT-HEIGHTS', spot, 0.5, spot.z.toFixed(2))
+  }
+
   if (Object.keys(snapshot.streets).length > 0) {
     const streets = streetGeometry(snapshot)
     for (const piece of streets.pieces) {
@@ -112,6 +128,9 @@ const LAYER_COLOURS: [string, number][] = [
   ['SITE-BUILDINGS', 9],
   ['SITE-STREETS', 9],
   ['SITE-PARCELS', 1],
+  ['SITE-CONTOURS-MAJOR', 8],
+  ['SITE-CONTOURS', 9],
+  ['SITE-SPOT-HEIGHTS', 8],
 ]
 
 class DxfWriter {

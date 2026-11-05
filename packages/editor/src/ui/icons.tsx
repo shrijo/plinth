@@ -180,3 +180,19 @@ export const EnterIcon = () => (
     <path d="M8 4.5l5.5 5.5L8 15.5" />
   </Icon>
 )
+
+export const ParcelIcon = () => (
+  <Icon>
+    <path d="M3 5.5l9-2.5 5 5-2 9-11-2z" strokeDasharray="2.2 2" />
+    <circle cx="3" cy="5.5" r="1" fill="currentColor" />
+    <circle cx="12" cy="3" r="1" fill="currentColor" />
+    <circle cx="17" cy="8" r="1" fill="currentColor" />
+  </Icon>
+)
+
+export const TerrainIcon = () => (
+  <Icon>
+    <path d="M2.5 15.5l4.5-6 3 3.5 3-5.5 4.5 8" />
+    <path d="M2.5 17.5h15" />
+  </Icon>
+)

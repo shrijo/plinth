@@ -1,4 +1,4 @@
-import { sortedLevels } from '@plinth/core'
+import { sortedLevels, terrainOf } from '@plinth/core'
 import { Grid } from '@react-three/drei'
 import { useEffect } from 'react'
 import { CanvasTexture, MeshStandardMaterial, RepeatWrapping, SRGBColorSpace } from 'three'
@@ -60,6 +60,9 @@ export function Ground() {
   const style = useEditor((s) => s.style)
   const palette = PALETTES[style]
   const ground = site ? 0 : (sortedLevels(snapshot, buildingId ?? undefined)[0]?.elevation ?? 0)
+  // Below the terrain, where there is one, so it never covers it.
+  const terrain = terrainOf(snapshot)
+  const groundLevel = terrain ? Math.min(-0.06, terrain.low - (snapshot.meta.ground ?? 0) - 0.5) : -0.06
 
   useEffect(() => {
     const texture = groundTexture(palette)
@@ -70,7 +73,7 @@ export function Ground() {
 
   return (
     <>
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.06} material={groundMaterial} receiveShadow raycast={() => null}>
+      <mesh rotation-x={-Math.PI / 2} position-y={groundLevel} material={groundMaterial} receiveShadow raycast={() => null}>
         <circleGeometry args={[GROUND_RADIUS, 64]} />
       </mesh>
       {drawing && (
