@@ -2,7 +2,7 @@ import earcut from 'earcut'
 import { add, dist, normalize, scale, sub, type Vec2 } from '../math.ts'
 import { openingCopies, resolveWall, type Id, type Opening, type Snapshot } from '../model.ts'
 import { openingType } from '../openingTypes.ts'
-import { roomName } from '../report.ts'
+import { roomTagsOf, roomTitle } from '../areas.ts'
 import { analyzeSite } from '../geometry/analysis.ts'
 import { placeOpening } from '../geometry/mesh.ts'
 import { flatten, fromRing, normalizePolygon, type MultiPolygon } from '../geometry/regions.ts'
@@ -75,11 +75,12 @@ export function exportDXF(snapshot: Snapshot): string {
         }
       }
 
+      const tags = roomTagsOf(snapshot, level)
       level.rooms.forEach((room, i) => {
         dxf.polyline(`${layer}-ROOMS`, room.outline, true)
         if (!room.labelPoint) return
         const runs = level.floors > 1 ? ` (x${level.floors} floors)` : ''
-        dxf.text(`${layer}-TEXT`, add(room.labelPoint, { x: 0, y: 0.2 }), 0.3, roomName(i))
+        dxf.text(`${layer}-TEXT`, add(room.labelPoint, { x: 0, y: 0.2 }), 0.3, roomTitle(i, tags[i]))
         dxf.text(`${layer}-TEXT`, add(room.labelPoint, { x: 0, y: -0.25 }), 0.25, `${formatArea(room.area)}${runs}`)
       })
     }

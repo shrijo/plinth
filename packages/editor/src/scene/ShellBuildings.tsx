@@ -48,7 +48,7 @@ export function ShellBuildings() {
   const site = mode === 'site'
   const { wallThickness, slabThickness } = snapshot.meta
   // Only the thicknesses matter for the shells, not a rename of the project.
-  const meta = useMemo<Meta>(() => ({ schemaVersion: 3, name: '', wallThickness, slabThickness }), [wallThickness, slabThickness])
+  const meta = useMemo<Meta>(() => ({ schemaVersion: 3, name: '', wallThickness, slabThickness, areaStandard: 'sia416' }), [wallThickness, slabThickness])
   const openings = snapshot.openings
   const [tiler] = useState(() => new Tiler())
   const tiles = useMemo(

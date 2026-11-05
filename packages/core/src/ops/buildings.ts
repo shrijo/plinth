@@ -49,8 +49,14 @@ function buildingNodes(tx: Tx, buildingId: Id) {
   return tx.levels(buildingId).flatMap((level) => tx.nodes(level.id))
 }
 
+/** Every room tag of every level of a building. */
+function buildingTags(tx: Tx, buildingId: Id) {
+  return tx.levels(buildingId).flatMap((level) => tx.roomTags(level.id))
+}
+
 export function moveBuilding(tx: Tx, buildingId: Id, delta: Vec2): void {
   for (const node of buildingNodes(tx, buildingId)) tx.putNode({ ...node, ...add(node, delta) })
+  for (const tag of buildingTags(tx, buildingId)) tx.putRoomTag({ ...tag, ...add(tag, delta) })
 }
 
 /** Rotates a building by `angle` radians (counter-clockwise) about `pivot`. */
@@ -60,6 +66,10 @@ export function rotateBuilding(tx: Tx, buildingId: Id, angle: number, pivot: Vec
   for (const node of buildingNodes(tx, buildingId)) {
     const d = sub(node, pivot)
     tx.putNode({ ...node, x: pivot.x + d.x * c - d.y * s, y: pivot.y + d.x * s + d.y * c })
+  }
+  for (const tag of buildingTags(tx, buildingId)) {
+    const d = sub(tag, pivot)
+    tx.putRoomTag({ ...tag, x: pivot.x + d.x * c - d.y * s, y: pivot.y + d.x * s + d.y * c })
   }
   // A roof set to run a given way turns with the building.
   const building = tx.building(buildingId)
@@ -145,6 +155,7 @@ export function deleteBuilding(tx: Tx, buildingId: Id): void {
       tx.deleteWall(wall.id)
     }
     for (const node of tx.nodes(level.id)) tx.deleteNode(node.id)
+    for (const tag of tx.roomTags(level.id)) tx.deleteRoomTag(tag.id)
     tx.deleteLevel(level.id)
   }
   tx.deleteBuilding(buildingId)

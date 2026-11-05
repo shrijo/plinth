@@ -1,6 +1,6 @@
 import { createId } from '../ids.ts'
 import { normalize, type Vec2 } from '../math.ts'
-import { FLAT_ROOF, type Id, type OpeningKind, type Roof, type RoofKind, type StreetProps, type Wall } from '../model.ts'
+import { FLAT_ROOF, type Id, type OpeningKind, type Roof, type RoofKind, type RoomUse, type StreetProps, type Wall } from '../model.ts'
 import { openingType } from '../openingTypes.ts'
 import { levelName, restackLevels } from '../ops/levels.ts'
 import { insertStreet } from '../ops/streets.ts'
@@ -85,6 +85,12 @@ class FloorWriter {
   private readonly nodes = new Map<string, Id>()
   private readonly tx: Tx
   readonly levelId: Id
+
+  /** Names the room around a point and says what it's for. */
+  room(at: Vec2, name: string, use: RoomUse): this {
+    this.tx.putRoomTag({ id: createId(), levelId: this.levelId, x: at.x, y: at.y, name, use })
+    return this
+  }
 
   constructor(tx: Tx, levelId: Id, outline: readonly Vec2[]) {
     this.tx = tx
@@ -462,6 +468,16 @@ function civicCentre(tx: Tx): void {
     // On the ground floor the entrance hall opens wide onto the corridor.
     floor.opening(southCorridor, 'door', ground ? 'door-empty' : 'door', 20)
     for (const at of [5, 15, 25, 35]) floor.opening(northCorridor, 'door', 'door', at)
+    floor.room(v(42, 158), 'Corridor', 'circulation')
+    if (ground) {
+      floor.room(v(26, 151), 'Reception', 'office').room(v(34, 151), 'Registry', 'office').room(v(42, 151), 'Entrance hall', 'circulation')
+      floor.room(v(50, 151), 'Cloakroom', 'sanitary').room(v(58, 151), 'Plant room', 'technical')
+      floor.room(v(27, 165), 'Archive', 'storage').room(v(37, 165), 'Office', 'office').room(v(47, 165), 'Office', 'office').room(v(57, 165), 'Meeting room', 'office')
+    } else {
+      floor.room(v(26, 151), 'Mayor', 'office').room(v(34, 151), 'Office', 'office').room(v(42, 151), 'Office', 'office')
+      floor.room(v(50, 151), 'WC', 'sanitary').room(v(58, 151), 'Office', 'office')
+      floor.room(v(37, 165), 'Council chamber', 'office').room(v(47, 165), 'Meeting room', 'office').room(v(57, 165), 'Kitchen', 'other')
+    }
   }
   const ground = hall.floor(outline, 4.5).door(0, 'door-double').door(3, 'door', 0.5)
   interior(ground, true)
@@ -480,6 +496,7 @@ function civicCentre(tx: Tx): void {
     const partition = floor.wall(v(90, 152), v(104, 152), 0.12)
     floor.opening(partition, 'door', 'door-empty', 7)
     floor.windows({ typeId: 'window-grid', spacing: 3 })
+    floor.room(v(84, 144), i === 0 ? 'Lending desk' : 'Reading room', 'education').room(v(97, 168), i === 0 ? 'Stacks' : 'Study rooms', i === 0 ? 'storage' : 'education')
   }
   library.roof('flat', { parapet: 0.9 })
   library.done()

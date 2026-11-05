@@ -621,6 +621,55 @@
   font-variant-numeric: tabular-nums;
 }
 
+.pe-figures {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.pe-figure {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.pe-figure[data-depth='1'] {
+  padding-left: 12px;
+}
+
+.pe-figure[data-depth='2'] {
+  padding-left: 24px;
+}
+
+.pe-figure[data-depth='3'] {
+  padding-left: 36px;
+  color: var(--pe-muted);
+}
+
+.pe-figure dt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pe-figure abbr {
+  display: inline-block;
+  min-width: 40px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.pe-figure dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .pe-check {
   display: flex;
   align-items: center;

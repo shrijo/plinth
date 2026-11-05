@@ -256,7 +256,7 @@ const RoofMesh = memo(function RoofMesh({ building, faded, outlines }: { buildin
   const palette = PALETTES[useEditor((s) => s.style)]
   const { wallThickness, slabThickness } = snapshot.meta
   const data = useMemo(() => {
-    const meta = { schemaVersion: 3 as const, name: '', wallThickness, slabThickness }
+    const meta = { schemaVersion: 3 as const, name: '', wallThickness, slabThickness, areaStandard: 'sia416' as const }
     const parts = roofParts(building, meta, palette)
     return parts.length > 0 ? concatMeshes(parts) : null
   }, [building, palette, wallThickness, slabThickness])

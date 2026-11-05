@@ -1,7 +1,13 @@
 import {
   DEFAULT_META,
+  AREA_STANDARDS,
   DEFAULT_STREET,
   ROOF_KINDS,
+  ROOM_USES,
+  type AreaStandard,
+  type Parcel,
+  type RoomTag,
+  type SpotHeight,
   type Building,
   type Level,
   type Meta,
@@ -26,6 +32,9 @@ export interface ProjectFile {
   openings: Opening[]
   streetNodes: StreetNode[]
   streets: Street[]
+  roomTags: RoomTag[]
+  parcels: Parcel[]
+  spotHeights: SpotHeight[]
 }
 
 export const PROJECT_FILE_EXTENSION = 'plinth'
@@ -45,6 +54,9 @@ export function snapshotToProject(snapshot: Snapshot): ProjectFile {
     openings: Object.values(snapshot.openings),
     streetNodes: Object.values(snapshot.streetNodes),
     streets: Object.values(snapshot.streets),
+    roomTags: Object.values(snapshot.roomTags),
+    parcels: Object.values(snapshot.parcels),
+    spotHeights: Object.values(snapshot.spotHeights),
   }
 }
 
@@ -64,6 +76,9 @@ export function emptyProject(name = DEFAULT_META.name): ProjectFile {
     openings: [],
     streetNodes: [],
     streets: [],
+    roomTags: [],
+    parcels: [],
+    spotHeights: [],
   }
 }
 
@@ -122,6 +137,9 @@ export function parseProject(text: string): ProjectFile {
       name: typeof meta.name === 'string' ? meta.name : DEFAULT_META.name,
       wallThickness: isPositive(meta.wallThickness) ? meta.wallThickness : DEFAULT_META.wallThickness,
       slabThickness: isPositive(meta.slabThickness) ? meta.slabThickness : DEFAULT_META.slabThickness,
+      areaStandard: (AREA_STANDARDS as readonly unknown[]).includes(meta.areaStandard)
+        ? (meta.areaStandard as AreaStandard)
+        : DEFAULT_META.areaStandard,
     },
     buildings,
     levels,
@@ -130,7 +148,38 @@ export function parseProject(text: string): ProjectFile {
     openings,
     streetNodes,
     streets,
+    // Added later: older files have none.
+    roomTags: arrayOf(data.roomTags, isRoomTag).filter((t) => levelIds.has(t.levelId)),
+    parcels: arrayOf(data.parcels, isParcel),
+    spotHeights: arrayOf(data.spotHeights, isSpotHeight),
   }
+}
+
+function isRoomTag(v: unknown): v is RoomTag {
+  return (
+    isObject(v) &&
+    isString(v.id) &&
+    isString(v.levelId) &&
+    isFiniteNumber(v.x) &&
+    isFiniteNumber(v.y) &&
+    typeof v.name === 'string' &&
+    (ROOM_USES as readonly unknown[]).includes(v.use)
+  )
+}
+
+function isParcel(v: unknown): v is Parcel {
+  return (
+    isObject(v) &&
+    isString(v.id) &&
+    typeof v.name === 'string' &&
+    Array.isArray(v.points) &&
+    v.points.length >= 3 &&
+    v.points.every((p) => isObject(p) && isFiniteNumber(p.x) && isFiniteNumber(p.y))
+  )
+}
+
+function isSpotHeight(v: unknown): v is SpotHeight {
+  return isObject(v) && isString(v.id) && isFiniteNumber(v.x) && isFiniteNumber(v.y) && isFiniteNumber(v.z)
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

@@ -6,7 +6,12 @@ import {
   formatLength,
   openingType,
   openingTypesOfKind,
-  roomName,
+  ROOM_USE_NAMES,
+  ROOM_USES,
+  roomTagsOf,
+  roomTitle,
+  tagRoom,
+  type RoomUse,
   rowReach,
   rowSpacing,
   sortedLevels,
@@ -36,6 +41,7 @@ import { DeleteButton, LengthField, Readout, Stepper, TextField, type PanelFrame
 import { ChevronIcon, LinkIcon, TrashIcon } from './icons.tsx'
 import { stackFloors } from './selection.ts'
 import { SitePanel } from './SitePanel.tsx'
+import { AreaFigures } from './AreaFigures.tsx'
 import { RoofFields } from './RoofFields.tsx'
 import { MultiWallProperties, NodeProperties, NodeStackProperties, WallProperties } from './WallPanels.tsx'
 
@@ -233,15 +239,40 @@ function RoomProperties({
   analysis: SiteAnalysis
   snapshot: Snapshot
 }) {
-  const rooms = analysis.byLevel.get(levelId)?.rooms ?? []
+  const ctx = useEditorContext()
+  const levelAnalysis = analysis.byLevel.get(levelId)
+  const rooms = levelAnalysis?.rooms ?? []
   const index = rooms.findIndex((r) => r.id === roomId)
   const room = rooms[index]
   const level = snapshot.levels[levelId]
-  if (!room || !level) return null
+  if (!room || !level || !levelAnalysis) return null
+  const tag = roomTagsOf(snapshot, levelAnalysis)[index]
   const clearHeight = Math.max(0, level.height - snapshot.meta.slabThickness)
+  const copy = levelAnalysis.contentLevelId !== levelId
+  const set = (patch: { name?: string; use?: RoomUse }) => ctx.doc.transact((tx) => tagRoom(tx, room, tag, patch))
   return (
     <>
-      <Readout label="Name" value={roomName(index)} />
+      {copy ? (
+        <Readout label="Name" value={roomTitle(index, tag)} />
+      ) : (
+        <TextField label="Name" value={roomTitle(index, tag)} onCommit={(name) => set({ name })} />
+      )}
+      <label className="pe-field">
+        <span className="pe-field-label">Use</span>
+        <select
+          className="pe-input"
+          value={tag?.use ?? ''}
+          disabled={copy}
+          onChange={(e) => set({ use: e.target.value as RoomUse })}
+        >
+          {!tag && <option value="">Not set</option>}
+          {ROOM_USES.map((use) => (
+            <option key={use} value={use}>
+              {ROOM_USE_NAMES[use]}
+            </option>
+          ))}
+        </select>
+      </label>
       <Readout label="Floor area" value={formatArea(room.area)} />
       <Readout label="Perimeter" value={formatLength(room.perimeter)} />
       <Readout label="Clear height" value={formatLength(clearHeight)} />
@@ -268,6 +299,7 @@ function LevelProperties({
   const copies = levels.filter((l) => l.masterId === level.id).reduce((sum, l) => sum + floorsOf(l), 0)
   const levelAnalysis = site.byLevel.get(level.id)
   const rooms = levelAnalysis?.rooms ?? []
+  const tags = levelAnalysis ? roomTagsOf(snapshot, levelAnalysis) : []
   const update = (patch: Partial<Level>) => ctx.doc.transact((tx) => updateLevel(tx, level.id, patch))
 
   return (
@@ -323,7 +355,7 @@ function LevelProperties({
           {rooms.map((room, i) => (
             <li key={room.id}>
               <button type="button" className="pe-room" onClick={() => select(ctx, { kind: 'room', id: room.id }, false)}>
-                <span>{roomName(i)}</span>
+                <span>{roomTitle(i, tags[i])}</span>
                 <span>{formatArea(room.area)}</span>
               </button>
             </li>
@@ -376,10 +408,8 @@ function BuildingProperties({ snapshot, analysis }: { snapshot: Snapshot; analys
         ))}
       </ul>
       <p className="pe-note">Gross floor area per floor.</p>
-      <h3 className="pe-section-title">Totals</h3>
       <Readout label="Floors" value={String(analysis.levels.reduce((sum, l) => sum + l.floors, 0))} />
-      <Readout label="Net floor area" value={formatArea(analysis.netArea)} />
-      <Readout label="Gross floor area" value={formatArea(analysis.grossArea)} />
+      <AreaFigures buildingId={analysis.buildingId} />
       <RoofFields buildingId={analysis.buildingId} />
       <h3 className="pe-section-title">Defaults</h3>
       <LengthField

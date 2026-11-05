@@ -74,6 +74,7 @@ function clearLevel(tx: Tx, id: Id): void {
     tx.deleteWall(wall.id)
   }
   for (const node of tx.nodes(id)) tx.deleteNode(node.id)
+  for (const tag of tx.roomTags(id)) tx.deleteRoomTag(tag.id)
 }
 
 /**
@@ -160,6 +161,7 @@ export function copyLevelContent(tx: Tx, fromId: Id, toId: Id): void {
       tx.putOpening({ ...opening, id: createId(), wallId: id })
     }
   }
+  for (const tag of tx.roomTags(fromId)) tx.putRoomTag({ ...tag, id: createId(), levelId: toId })
 }
 
 /**

@@ -6,6 +6,10 @@ import {
   type Level,
   type Meta,
   type Opening,
+  type AreaStandard,
+  type Parcel,
+  type RoomTag,
+  type SpotHeight,
   type Street,
   type StreetNode,
   type Wall,
@@ -21,6 +25,9 @@ export interface DocumentMaps {
   openings: Y.Map<Opening>
   streetNodes: Y.Map<StreetNode>
   streets: Y.Map<Street>
+  roomTags: Y.Map<RoomTag>
+  parcels: Y.Map<Parcel>
+  spotHeights: Y.Map<SpotHeight>
 }
 
 /**
@@ -227,6 +234,64 @@ export class Tx {
   deleteStreet(id: Id): void {
     this.maps.streets.delete(id)
   }
+
+  // Room tags
+
+  roomTag(id: Id): RoomTag | undefined {
+    return this.maps.roomTags.get(id)
+  }
+
+  roomTags(levelId?: Id): RoomTag[] {
+    const all = [...this.maps.roomTags.values()]
+    return levelId === undefined ? all : all.filter((t) => t.levelId === levelId)
+  }
+
+  putRoomTag(tag: RoomTag): RoomTag {
+    this.maps.roomTags.set(tag.id, tag)
+    return tag
+  }
+
+  deleteRoomTag(id: Id): void {
+    this.maps.roomTags.delete(id)
+  }
+
+  // Parcels
+
+  parcel(id: Id): Parcel | undefined {
+    return this.maps.parcels.get(id)
+  }
+
+  parcels(): Parcel[] {
+    return [...this.maps.parcels.values()]
+  }
+
+  putParcel(parcel: Parcel): Parcel {
+    this.maps.parcels.set(parcel.id, parcel)
+    return parcel
+  }
+
+  deleteParcel(id: Id): void {
+    this.maps.parcels.delete(id)
+  }
+
+  // Spot heights
+
+  spotHeight(id: Id): SpotHeight | undefined {
+    return this.maps.spotHeights.get(id)
+  }
+
+  spotHeights(): SpotHeight[] {
+    return [...this.maps.spotHeights.values()]
+  }
+
+  putSpotHeight(spot: SpotHeight): SpotHeight {
+    this.maps.spotHeights.set(spot.id, spot)
+    return spot
+  }
+
+  deleteSpotHeight(id: Id): void {
+    this.maps.spotHeights.delete(id)
+  }
 }
 
 export function readMeta(map: Y.Map<unknown>): Meta {
@@ -235,10 +300,12 @@ export function readMeta(map: Y.Map<unknown>): Meta {
     const value = map.get(key)
     return typeof value === 'number' && value > 0 ? value : DEFAULT_META[key]
   }
+  const standard = map.get('areaStandard')
   return {
     schemaVersion: 3,
     name: typeof name === 'string' ? name : DEFAULT_META.name,
     wallThickness: positive('wallThickness'),
     slabThickness: positive('slabThickness'),
+    areaStandard: standard === 'sia416' || standard === 'din277' ? (standard as AreaStandard) : DEFAULT_META.areaStandard,
   }
 }

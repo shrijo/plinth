@@ -9,7 +9,18 @@ const LOCAL_ORIGIN = 'plinth:local'
 const SYSTEM_ORIGIN = 'plinth:system'
 
 /** The record collections, each a Y.Map of plain records by ID. */
-const COLLECTIONS = ['buildings', 'levels', 'nodes', 'walls', 'openings', 'streetNodes', 'streets'] as const
+const COLLECTIONS = [
+  'buildings',
+  'levels',
+  'nodes',
+  'walls',
+  'openings',
+  'streetNodes',
+  'streets',
+  'roomTags',
+  'parcels',
+  'spotHeights',
+] as const
 type Collection = (typeof COLLECTIONS)[number]
 
 export interface TransactOptions {
@@ -51,6 +62,9 @@ export class PlinthDocument {
       openings: ydoc.getMap('openings'),
       streetNodes: ydoc.getMap('streetNodes'),
       streets: ydoc.getMap('streets'),
+      roomTags: ydoc.getMap('roomTags'),
+      parcels: ydoc.getMap('parcels'),
+      spotHeights: ydoc.getMap('spotHeights'),
     }
     this.undoManager = new Y.UndoManager([this.maps.meta, ...COLLECTIONS.map((c) => this.maps[c])], {
       trackedOrigins: new Set([LOCAL_ORIGIN]),
@@ -135,6 +149,7 @@ export class PlinthDocument {
         name: file.meta.name,
         wallThickness: file.meta.wallThickness,
         slabThickness: file.meta.slabThickness,
+        areaStandard: file.meta.areaStandard,
       })
       for (const building of file.buildings) tx.putBuilding(building)
       for (const level of file.levels) tx.putLevel(level)
@@ -143,6 +158,9 @@ export class PlinthDocument {
       for (const opening of file.openings) tx.putOpening(opening)
       for (const node of file.streetNodes) tx.putStreetNode(node)
       for (const street of file.streets) tx.putStreet(street)
+      for (const tag of file.roomTags) tx.putRoomTag(tag)
+      for (const parcel of file.parcels) tx.putParcel(parcel)
+      for (const spot of file.spotHeights) tx.putSpotHeight(spot)
     }, SYSTEM_ORIGIN)
     this.undoManager.clear()
   }

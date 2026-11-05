@@ -9,6 +9,8 @@
  * follows its level's height.
  */
 
+import type { Vec2 } from './math.ts'
+
 export type Id = string
 
 export interface Meta {
@@ -18,7 +20,13 @@ export interface Meta {
   wallThickness: number
   /** Floor slab thickness in metres. */
   slabThickness: number
+  /** The standard area figures follow. */
+  areaStandard: AreaStandard
 }
+
+/** Area standards: SIA 416 (Switzerland) and DIN 277 (Germany). */
+export type AreaStandard = 'sia416' | 'din277'
+export const AREA_STANDARDS: readonly AreaStandard[] = ['sia416', 'din277']
 
 /** A building on the site. Its floors are the levels that point to it. */
 export interface Building {
@@ -229,6 +237,9 @@ export interface Snapshot {
   readonly openings: Readonly<Record<Id, Opening>>
   readonly streetNodes: Readonly<Record<Id, StreetNode>>
   readonly streets: Readonly<Record<Id, Street>>
+  readonly roomTags: Readonly<Record<Id, RoomTag>>
+  readonly parcels: Readonly<Record<Id, Parcel>>
+  readonly spotHeights: Readonly<Record<Id, SpotHeight>>
 }
 
 export type StreetProps = Omit<Street, 'id' | 'a' | 'b' | 'control'>
@@ -254,6 +265,69 @@ export const DEFAULT_META: Meta = {
   name: 'Untitled',
   wallThickness: 0.2,
   slabThickness: 0.25,
+  areaStandard: 'sia416',
+}
+
+/** What a room is for, as area standards group rooms. */
+export type RoomUse =
+  | 'living'
+  | 'office'
+  | 'production'
+  | 'retail'
+  | 'storage'
+  | 'education'
+  | 'care'
+  | 'sanitary'
+  | 'parking'
+  | 'circulation'
+  | 'technical'
+  | 'other'
+
+export const ROOM_USES: readonly RoomUse[] = [
+  'living',
+  'office',
+  'production',
+  'retail',
+  'storage',
+  'education',
+  'care',
+  'sanitary',
+  'parking',
+  'circulation',
+  'technical',
+  'other',
+]
+
+/**
+ * A room's name and use, kept at a point inside it. Rooms are worked out
+ * from the walls, so they have no record of their own; the room that
+ * contains the tag's point has its name and use, however its walls change.
+ */
+export interface RoomTag {
+  id: Id
+  /** The level whose walls make the room (a copy shows its master's tags). */
+  levelId: Id
+  x: number
+  y: number
+  name: string
+  use: RoomUse
+}
+
+/** A plot of land on the site, by its outline. */
+export interface Parcel {
+  id: Id
+  name: string
+  /** Its corners, in order. */
+  points: Vec2[]
+}
+
+/** A point of known ground height; the terrain is drawn through them. */
+export interface SpotHeight {
+  id: Id
+  x: number
+  y: number
+  /** Height above the site's zero, in metres. */
+  z: number
 }
 
 export const DEFAULT_LEVEL_HEIGHT = 3

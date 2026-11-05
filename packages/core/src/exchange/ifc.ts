@@ -1,7 +1,7 @@
 import { add, normalize, scale, sub, type Vec2 } from '../math.ts'
 import { openingCopies, resolveWall, type Id, type Opening, type Snapshot } from '../model.ts'
 import { fillLayout, openingType, type FillPart } from '../openingTypes.ts'
-import { roomName } from '../report.ts'
+import { ROOM_USE_NAMES, roomTagsOf, roomTitle } from '../areas.ts'
 import { analyzeSite, type BuildingAnalysis, type LevelAnalysis } from '../geometry/analysis.ts'
 import { buildSlabMesh, buildWallMesh, placeOpening, type MeshData } from '../geometry/mesh.ts'
 import { roofGeometry } from '../geometry/roofs.ts'
@@ -120,7 +120,7 @@ interface Tools {
 /** The shapes of one level's contents, made once and shared by every floor that shows them. */
 interface LevelShapes {
   walls: { id: Id; shape: StepValue; openings: { opening: Opening; index: number; void: StepValue | null; fill: StepValue | null; width: number; height: number }[] }[]
-  spaces: { id: string; name: string; shape: StepValue | null; area: number; height: number }[]
+  spaces: { id: string; name: string; use: string | null; shape: StepValue | null; area: number; height: number }[]
 }
 
 /** Writes a building's storeys and everything in them; returns the storeys. */
@@ -192,7 +192,7 @@ function writeBuilding(
       const spaces: StepValue[] = []
       shapes.spaces.forEach((space) => {
         const spaceKey = `${floorKey}/space:${space.id}`
-        const ifcSpace = w.add('IFCSPACE', guid(spaceKey), NONE, str(space.name), NONE, NONE, at, space.shape ?? NONE, NONE, enumeration('ELEMENT'), enumeration('INTERNAL'), NONE)
+        const ifcSpace = w.add('IFCSPACE', guid(spaceKey), NONE, str(space.name), NONE, space.use ? str(space.use) : NONE, at, space.shape ?? NONE, space.use ? str(space.use) : NONE, enumeration('ELEMENT'), enumeration('INTERNAL'), NONE)
         spaces.push(ifcSpace)
         const quantities = w.add(
           'IFCELEMENTQUANTITY',
@@ -293,9 +293,11 @@ function levelShapes(
   }
 
   const clear = Math.max(0.1, levelAnalysis.level.height - snapshot.meta.slabThickness)
+  const tags = roomTagsOf(snapshot, levelAnalysis)
   const spaces = levelAnalysis.rooms.map((room, i) => ({
     id: room.id,
-    name: roomName(i),
+    name: roomTitle(i, tags[i]),
+    use: tags[i] ? ROOM_USE_NAMES[tags[i].use] : null,
     shape: shape(fromWorld(buildSlabMesh(room.floor, 0, clear))),
     area: room.area,
     height: clear,

@@ -10,7 +10,8 @@ import {
   rowCount,
   placeOpening,
   resolveWall,
-  roomName,
+  roomTagsOf,
+  roomTitle,
   scale,
   sub,
   toWorld,
@@ -81,6 +82,7 @@ export function Labels() {
   if (!level) return null
   const labels: Label[] = []
   if (roomLabels && !whole && levelAnalysis) {
+    const tags = roomTagsOf(snapshot, levelAnalysis)
     levelAnalysis.rooms.forEach((room, i) => {
       if (!room.labelPoint) return
       labels.push({
@@ -89,7 +91,7 @@ export function Labels() {
         className: 'pe-room-label',
         content: (
           <>
-            <span>{roomName(i)}</span>
+            <span>{roomTitle(i, tags[i])}</span>
             {formatArea(room.area)}
           </>
         ),

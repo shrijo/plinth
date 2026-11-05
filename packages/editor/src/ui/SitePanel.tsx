@@ -19,6 +19,7 @@ import {
   type Street,
   type StreetProps,
 } from '@plinth/core'
+import { useState } from 'react'
 import {
   enterBuilding,
   isolateBuildings,
@@ -31,6 +32,7 @@ import { useAnalysis, useEditor, useEditorContext, useSnapshot } from '../contex
 import { selectionSize, type SiteDefaults } from '../state.ts'
 import { CheckField, DeleteButton, LengthField, Readout, Stepper, TextField, type PanelFrame } from './fields.tsx'
 import { TrashIcon } from './icons.tsx'
+import { AreaFigures } from './AreaFigures.tsx'
 import { RoofFields } from './RoofFields.tsx'
 
 const MAX_LANES = 12
@@ -181,9 +183,7 @@ function BuildingShellProperties({ buildingId }: { buildingId: Id }) {
         </div>
       </div>
       <RoofFields buildingId={buildingId} />
-      <h3 className="pe-section-title">Areas</h3>
-      <Readout label="Net floor area" value={formatArea(analysis?.netArea ?? 0)} />
-      <Readout label="Gross floor area" value={formatArea(analysis?.grossArea ?? 0)} />
+      <AreaFigures buildingId={buildingId} />
       <button type="button" className="pe-danger" onClick={() => removeBuilding(ctx, buildingId)}>
         <TrashIcon /> Delete building
       </button>
@@ -330,6 +330,25 @@ function NewBuildingDefaults() {
   )
 }
 
+/** Above this many buildings, the site's figures are worked out only when asked for: every room counts. */
+const LARGE_SITE = 2000
+
+/** The site's area figures by the project's standard, and the choice of standard. */
+function SiteAreas({ buildings }: { buildings: number }) {
+  const [asked, setAsked] = useState(false)
+  if (buildings > LARGE_SITE && !asked) {
+    return (
+      <>
+        <h3 className="pe-section-title">Areas</h3>
+        <button type="button" className="pe-button pe-button-wide" onClick={() => setAsked(true)}>
+          Work out the site's areas
+        </button>
+      </>
+    )
+  }
+  return <AreaFigures chooser />
+}
+
 function SiteProperties({ snapshot }: { snapshot: Snapshot }) {
   const ctx = useEditorContext()
   const analysis = useAnalysis()
@@ -341,8 +360,8 @@ function SiteProperties({ snapshot }: { snapshot: Snapshot }) {
       <h3 className="pe-section-title">Totals</h3>
       <Readout label="Buildings" value={String(buildings)} />
       <Readout label="Gross floor area" value={formatArea(analysis.grossArea)} />
-      <Readout label="Net floor area" value={formatArea(analysis.netArea)} />
       <Readout label="Streets" value={streets.length === 0 ? 'None' : formatLength(length)} />
+      <SiteAreas buildings={buildings} />
       <h3 className="pe-section-title">Defaults</h3>
       <LengthField
         label="Wall thickness"
