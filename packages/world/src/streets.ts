@@ -49,8 +49,8 @@ const HIGHWAYS: Partial<Record<RoadKind, string>> = {
   path: 'pedestrian',
 }
 
-/** A street's cross-section from what the map says of it (as a site made from the map gets). */
-function propsOf(road: RoadFeature, town: boolean) {
+/** A street's cross-section from what the map says of it (as a site made from the map gets), or null if it isn't built. */
+export function propsOf(road: RoadFeature, town: boolean) {
   const highway = HIGHWAYS[road.kind]
   if (!highway) return null
   if (road.kind === 'service' && road.service && road.service !== 'alley') return null
@@ -90,6 +90,14 @@ export function streetMesh(
     const last = line.length - 2
     for (const i of [0, last]) apart.add(placeKey(toPlan(line[i]!, line[i + 1]!)))
   }
+  // Footways on the level: where a city maps its sidewalks as ways of their own, they show where they are.
+  const footways: Vec2[][] = []
+  for (const road of roads) {
+    if (road.kind !== 'path' || road.tunnel || road.bridge || (road.subclass !== 'footway' && road.subclass !== 'path')) continue
+    const points: Vec2[] = []
+    for (let i = 0; i + 1 < road.line.length; i += 2) points.push(toPlan(road.line[i]!, road.line[i + 1]!))
+    footways.push(points)
+  }
   for (const road of roads) {
     if (road.tunnel || road.bridge) continue
     const props = propsOf(road, ground.town)
@@ -105,6 +113,7 @@ export function streetMesh(
   const network = tidyNetwork(lines, {
     keepEnd: (p) => p.x < 1 || p.x > metres - 1 || p.y > -1 || p.y < -metres + 1,
     apart: (p) => apart.has(placeKey(p)),
+    footways,
   })
   const geometry = streetGeometry({ streetNodes: network.nodes, streets: network.streets } as unknown as Snapshot)
 

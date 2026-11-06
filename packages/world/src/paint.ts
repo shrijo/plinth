@@ -1,4 +1,5 @@
 import type { AreaKind, Line, RoadFeature, RoadKind, Shape, TileFeatures } from './features.ts'
+import { propsOf } from './streets.ts'
 import { SIDEWALK, TOWN_STREETS } from './ground.ts'
 import { tileWidth } from './mesh.ts'
 import type { TileId } from './tiles.ts'
@@ -147,6 +148,13 @@ const BRIDGE_ZOOM = 14
 /** From this zoom streets are built in 3D (see streets.ts): the picture keeps only plain asphalt under them. */
 const STREETS_3D_ZOOM = 16
 
+/** Under a 3D street: its lanes at their narrowest (2.5 m), or the road's usual width if it isn't built in 3D. */
+function plainWidth(road: RoadFeature, town: boolean): number {
+  if (road.tunnel) return 0
+  const props = propsOf(road, town)
+  return props ? props.lanes * 2.5 : road.width
+}
+
 /**
  * Streets as layered decals, the way games lay roads over terrain: every
  * street's sidewalks first, then the curbs, then the asphalt, then the
@@ -187,7 +195,11 @@ function paintStreets(
     for (const road of streets) if (TOWN_STREETS.has(road.kind)) stroke(road, road.width + SIDEWALK * 2, style.sidewalk)
   }
   if (metresPerPixel < 0.8 && !plain) for (const road of streets) stroke(road, road.width + 0.5, style.curb)
-  for (const road of streets) stroke(road, road.width, MAJOR.has(road.kind) ? style.majorRoad : style.road, MAJOR.has(road.kind) ? 0.9 : 0.5)
+  for (const road of streets) {
+    // Under the 3D streets only a strip no wider than their narrowest road, so none shows past their kerbs.
+    const width = plain ? plainWidth(road, town) : road.width
+    if (width > 0) stroke(road, width, MAJOR.has(road.kind) ? style.majorRoad : style.road, MAJOR.has(road.kind) ? 0.9 : 0.5)
+  }
   for (const road of roads) if (road.kind === 'rail') stroke(road, 1.6, style.rail, 0.6)
 
   if (metresPerPixel > 0.5 || plain) return

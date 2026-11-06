@@ -55,7 +55,12 @@ interface Segment {
   bx: number
   by: number
   half: number
+  /** The bed at points every few metres along it, worked out when first asked for (see bedAlong). */
+  stations?: Float64Array
 }
+
+/** A street's bed is worked out this often along it (metres), and in between from the nearest two. */
+const STATION = 5
 
 /**
  * The ground for a part of the world, from heights (the finest tile there)
@@ -159,6 +164,29 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return [lon, tileLat(source!.y + y, source!.z)]
   }
 
+  /**
+   * A street's bed a fraction of the way along it: the land at its middle, smoothed along it. Smoothed over
+   * 18 m, it's worked out at stations a few metres apart and taken straight between them (asking the elevation
+   * data again for every point of every street is most of the time it takes to build them).
+   */
+  const bedAlong = (s: Segment, t: number): number => {
+    if (!s.stations) {
+      const length = Math.hypot(s.bx - s.ax, s.by - s.ay)
+      const count = Math.max(1, Math.ceil(length / STATION))
+      s.stations = new Float64Array(count + 1)
+      for (let k = 0; k <= count; k++) {
+        const f = k / count
+        const [lon, lat] = fromSource((s.ax + (s.bx - s.ax) * f) / metres, (s.ay + (s.by - s.ay) * f) / metres)
+        s.stations[k] = smooth(lon, lat, BED_SMOOTHING)
+      }
+    }
+    const stations = s.stations
+    const at = t * (stations.length - 1)
+    const k = Math.min(Math.floor(at), stations.length - 2)
+    if (k < 0) return stations[0]!
+    return stations[k]! + (stations[k + 1]! - stations[k]!) * (at - k)
+  }
+
   /** The bed (street level) and the land (dipped under streets) at a point. */
   const shape = (lon: number, lat: number): { level: number; land: number } => {
     const land = smooth(lon, lat, LAND_SMOOTHING)
@@ -188,9 +216,8 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       const w = d <= s.half ? 1 : smoothstep(1 - (d - s.half) / FALLOFF)
       if (w < 0.005) continue
       // Level across: a street's bed is the land at the middle of the street, smoothed along it.
-      const [qlon, qlat] = fromSource(qx / metres, qy / metres)
       weights += w
-      beds += w * smooth(qlon, qlat, BED_SMOOTHING)
+      beds += w * bedAlong(s, t)
       under = Math.max(under, d <= s.half ? 1 : smoothstep(1 - (d - s.half) / 2))
     }
     if (weights === 0) return { level: land, land: paved ? land - DIP : land }

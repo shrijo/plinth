@@ -32,6 +32,11 @@ export interface NetworkOptions {
    * own, flat, for the bridge to carry on from. Nothing joins, snaps or merges there.
    */
   apart?: (p: Vec2) => boolean
+  /**
+   * Footways (plan metres): where a city maps its sidewalks as ways of their own, each runs down the middle of
+   * a real sidewalk, so a street with one alongside gets its sidewalk there, and its road out to meet it.
+   */
+  footways?: readonly (readonly Vec2[])[]
 }
 
 export interface Network {
@@ -295,6 +300,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     // What's left of a street on either side of a dropped one may end loose.
     segments = withoutStubs(points, segments, stub, keep)
   }
+  if (options.footways && options.footways.length > 0) segments = fittedToFootways(points, segments, options.footways)
   segments = sidewalksBeside(points, segments, median)
 
   const nodes: Record<string, StreetNode> = {}
@@ -502,6 +508,189 @@ const RANK: Record<string, number> = {
   pedestrian: 0,
 }
 const carriageway = (props: StreetProps) => (props.lanes * props.laneWidth) / 2
+
+/** A footway this far beyond a street's road (metres, at most) may be its sidewalk. */
+const FOOTWAY_REACH = 9
+/** A road widens at most this much on a side (metres) to meet a footway: further, the footway is something else's. */
+const MOST_WIDER = 6
+/** Lanes fitted to footways stay this wide (metres). */
+const LANE_WIDTHS = [2.5, 4.5] as const
+
+/**
+ * Streets fitted to the footways mapped alongside them (see
+ * NetworkOptions.footways): per street between junctions and per side, the
+ * footway that runs along most of it (the middle of its distances), if
+ * any, is where the sidewalk's middle goes, and the road reaches out to
+ * the sidewalk's kerb: lanes a little wider or narrower, any more as a
+ * strip at road level beside them (parking, a tram track). Streets without
+ * one stay as they are.
+ */
+function fittedToFootways(points: readonly Vec2[], segments: readonly Segment[], footways: readonly (readonly Vec2[])[]): Segment[] {
+  // Footway segments by grid cell.
+  const pieces: { ax: number; ay: number; bx: number; by: number }[] = []
+  const grid = new Map<string, number[]>()
+  for (const line of footways) {
+    for (let i = 0; i + 1 < line.length; i++) {
+      const a = line[i]!
+      const b = line[i + 1]!
+      const k = pieces.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y }) - 1
+      const pad = FOOTWAY_REACH + 8
+      for (let y = Math.floor((Math.min(a.y, b.y) - pad) / CELL); y <= Math.floor((Math.max(a.y, b.y) + pad) / CELL); y++) {
+        for (let x = Math.floor((Math.min(a.x, b.x) - pad) / CELL); x <= Math.floor((Math.max(a.x, b.x) + pad) / CELL); x++) {
+          const key = `${x}:${y}`
+          const list = grid.get(key)
+          if (list) list.push(k)
+          else grid.set(key, [k])
+        }
+      }
+    }
+  }
+  const roadSide = (props: StreetProps, left: boolean) => carriageway(props) + (left ? props.bikeLeft + props.parkingLeft : props.bikeRight + props.parkingRight)
+  // The streets too: a footway beyond another street is that street's.
+  const streetGrid = new Map<string, number[]>()
+  segments.forEach((s, k) => {
+    const a = points[s.a]!
+    const b = points[s.b]!
+    for (let y = Math.floor(Math.min(a.y, b.y) / CELL); y <= Math.floor(Math.max(a.y, b.y) / CELL); y++) {
+      for (let x = Math.floor(Math.min(a.x, b.x) / CELL); x <= Math.floor(Math.max(a.x, b.x) / CELL); x++) {
+        const key = `${x}:${y}`
+        const list = streetGrid.get(key)
+        if (list) list.push(k)
+        else streetGrid.set(key, [k])
+      }
+    }
+  })
+
+  const out = segments.slice()
+  for (const { run, length } of chainsOf(points, segments)) {
+    const own = new Set(run.map(({ k }) => k))
+    if (length < 8) continue
+    // Per side (as the street is walked): the nearest footway running alongside each segment, by length.
+    const found: { left: { d: number; w: number }[]; right: { d: number; w: number }[] } = { left: [], right: [] }
+    for (const { k, forward } of run) {
+      const s = segments[k]!
+      const a = points[forward ? s.a : s.b]!
+      const b = points[forward ? s.b : s.a]!
+      const l = Math.hypot(b.x - a.x, b.y - a.y)
+      if (l < 1e-6) continue
+      const dx = (b.x - a.x) / l
+      const dy = (b.y - a.y) / l
+      // The grid cells along the segment, and one beyond.
+      const cells: string[] = []
+      for (let gy = Math.floor(Math.min(a.y, b.y) / CELL) - 1; gy <= Math.floor(Math.max(a.y, b.y) / CELL) + 1; gy++) {
+        for (let gx = Math.floor(Math.min(a.x, b.x) / CELL) - 1; gx <= Math.floor(Math.max(a.x, b.x) / CELL) + 1; gx++) cells.push(`${gx}:${gy}`)
+      }
+      // The nearest other street alongside, each side: footways beyond it are its own.
+      const other = { left: Infinity, right: Infinity }
+      const others = new Set<number>()
+      for (const key of cells) for (const j of streetGrid.get(key) ?? []) others.add(j)
+      for (const j of others) {
+        if (own.has(j)) continue
+        const o = segments[j]!
+        const p = points[o.a]!
+        const q = points[o.b]!
+        const ol = Math.hypot(q.x - p.x, q.y - p.y)
+        if (ol < 1e-6 || Math.abs(((q.x - p.x) * dx + (q.y - p.y) * dy) / ol) < 0.8) continue
+        const t0 = (p.x - a.x) * dx + (p.y - a.y) * dy
+        const t1 = (q.x - a.x) * dx + (q.y - a.y) * dy
+        if (Math.min(l, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1)) <= 0) continue
+        const tm = (Math.max(0, Math.min(t0, t1)) + Math.min(l, Math.max(t0, t1))) / 2
+        const u = Math.abs(t1 - t0) < 1e-9 ? 0 : (tm - t0) / (t1 - t0)
+        const across = -(p.x + (q.x - p.x) * u - a.x) * dy + (p.y + (q.y - p.y) * u - a.y) * dx
+        const side = across > 0 ? 'left' : 'right'
+        other[side] = Math.min(other[side], Math.abs(across) - carriageway(o.props))
+      }
+      // Per side: the nearest footway's distance, and how far along the segment footways run alongside.
+      const near = { left: Infinity, right: Infinity }
+      const along = { left: 0, right: 0 }
+      const seen = new Set<number>()
+      for (const j of cells.flatMap((key) => grid.get(key) ?? [])) {
+        if (seen.has(j)) continue
+        seen.add(j)
+        const f = pieces[j]!
+        const fl = Math.hypot(f.bx - f.ax, f.by - f.ay)
+        if (fl < 1) continue
+        // Alongside: parallel either way, overlapping along.
+        if (Math.abs(((f.bx - f.ax) * dx + (f.by - f.ay) * dy) / fl) < 0.94) continue
+        const t0 = (f.ax - a.x) * dx + (f.ay - a.y) * dy
+        const t1 = (f.bx - a.x) * dx + (f.by - a.y) * dy
+        const overlap = Math.min(l, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1))
+        if (overlap < Math.min(l, fl) * 0.5) continue
+        // How far to the side, at the overlap's middle.
+        const tm = (Math.max(0, Math.min(t0, t1)) + Math.min(l, Math.max(t0, t1))) / 2
+        const u = Math.abs(t1 - t0) < 1e-9 ? 0 : (tm - t0) / (t1 - t0)
+        const px = f.ax + (f.bx - f.ax) * u
+        const py = f.ay + (f.by - f.ay) * u
+        const across = -(px - a.x) * dy + (py - a.y) * dx
+        const side = across > 0 ? 'left' : 'right'
+        const road = roadSide(s.props, forward ? side === 'left' : side === 'right')
+        const d = Math.abs(across)
+        // Beyond the middle of where the road could end, and not much further than the road could reach.
+        if (d < Math.max(road - 1.5, 2.5) || d > road + FOOTWAY_REACH || d > other[side]) continue
+        near[side] = Math.min(near[side], d)
+        along[side] += overlap
+      }
+      if (Number.isFinite(near.left)) found.left.push({ d: near.left, w: Math.min(along.left, l) })
+      if (Number.isFinite(near.right)) found.right.push({ d: near.right, w: Math.min(along.right, l) })
+    }
+    // Along most of the street: the middle of its distances.
+    const middle = (list: { d: number; w: number }[]) => {
+      const total = list.reduce((sum, e) => sum + e.w, 0)
+      if (total < length * 0.5) return null
+      const sorted = [...list].sort((p, q) => p.d - q.d)
+      let walked = 0
+      for (const e of sorted) {
+        walked += e.w
+        if (walked >= total / 2) return e.d
+      }
+      return null
+    }
+    const sideways = { left: middle(found.left), right: middle(found.right) }
+    if (sideways.left === null && sideways.right === null) continue
+    for (const { k, forward } of run) {
+      const s = segments[k]!
+      // The footways as the segment is drawn.
+      const left = forward ? sideways.left : sideways.right
+      const right = forward ? sideways.right : sideways.left
+      out[k] = { ...s, props: fitted(s.props, left, right) }
+    }
+  }
+  return out
+}
+
+/** A cross-section fitted to footways at these distances from its middle (null: none on that side). */
+function fitted(given: StreetProps, left: number | null, right: number | null): StreetProps {
+  const props = { ...given }
+  // A sidewalk as wide as the street's own (or a usual one), its middle on the footway.
+  const width = (own: number) => Math.min(Math.max(own || 2, 2), 4)
+  const kerb = (d: number, own: number) => Math.max(d - width(own) / 2, 1.5)
+  const target = {
+    left: left === null ? null : kerb(left, given.sidewalkLeft),
+    right: right === null ? null : kerb(right, given.sidewalkRight),
+  }
+  const side = (isLeft: boolean) => carriageway(props) + (isLeft ? props.bikeLeft + props.parkingLeft : props.bikeRight + props.parkingRight)
+  // Both sides: the lanes take what they share (within reason).
+  if (target.left !== null && target.right !== null) {
+    const common = Math.min(target.left - side(true), target.right - side(false))
+    const laneWidth = Math.min(Math.max(props.laneWidth + (2 * common) / props.lanes, LANE_WIDTHS[0]), LANE_WIDTHS[1])
+    props.laneWidth = Math.round(laneWidth * 100) / 100
+  }
+  // The rest on each side: a strip at road level (parking), or less of one.
+  for (const isLeft of [true, false]) {
+    const goal = isLeft ? target.left : target.right
+    if (goal === null) continue
+    const key = isLeft ? 'parkingLeft' : 'parkingRight'
+    const delta = Math.min(goal - side(isLeft), MOST_WIDER)
+    props[key] = Math.round(Math.max(0, Math.min(props[key] + delta, MOST_WIDER)) * 100) / 100
+    // The sidewalk from the kerb as it now is out past the footway.
+    const d = (isLeft ? left : right)!
+    const own = isLeft ? given.sidewalkLeft : given.sidewalkRight
+    const sidewalk = Math.min(Math.max(d + width(own) / 2 - side(isLeft), 1.5), 6)
+    if (isLeft) props.sidewalkLeft = Math.round(sidewalk * 100) / 100
+    else props.sidewalkRight = Math.round(sidewalk * 100) / 100
+  }
+  return props
+}
 
 /**
  * Streets that lie on another all along (closer than their carriageways

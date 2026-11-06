@@ -46,6 +46,7 @@ export function overpassQuery(b: LonLatBounds): string {
   way["building"](${box});
   relation["building"]["type"="multipolygon"](${box});
   way["highway"~"^(${STREETS})$"](${box});
+  way["highway"~"^(footway|path)$"]["footway"="sidewalk"](${box});
 );
 out body geom;`
 }

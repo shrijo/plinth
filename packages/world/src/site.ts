@@ -152,7 +152,10 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
 
   let streets: PlannedStreet[] = []
   const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
+  // Sidewalks mapped as footways of their own: the streets' sidewalks go where they are.
+  const footways: Vec2[][] = []
   for (const way of osm.streets) {
+    if (way.tags.footway === 'sidewalk' && (way.tags.highway === 'footway' || way.tags.highway === 'path')) footways.push(way.points.map(toSite))
     const props = streetFromTags(way.tags)
     if (!props) continue
     const drawn = isReversed(way.tags) ? [...way.points].reverse() : way.points
@@ -166,7 +169,7 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
     }
   }
 
-  streets = tidied(streets, half)
+  streets = tidied(streets, half, footways)
   return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets, spots: spotsFor(input, frame), source: 'osm' }
 }
 
@@ -355,11 +358,11 @@ export function isReversed(tags: Record<string, string>): boolean {
 }
 
 /** Planned streets tidied into a network (see tidyNetwork), as two-point streets again. */
-function tidied(streets: PlannedStreet[], half: number): PlannedStreet[] {
+function tidied(streets: PlannedStreet[], half: number, footways: Vec2[][] = []): PlannedStreet[] {
   const network = tidyNetwork(
     streets.map((s) => ({ points: s.points, props: { ...DEFAULT_STREET, ...s.props } })),
     // Ends on the square's edge are where the streets were cut, not dead ends.
-    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5 },
+    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5, footways },
   )
   return Object.values(network.streets).map((street) => {
     const { id: _id, a, b, control: _control, ...props } = street
@@ -386,6 +389,8 @@ export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]):
   const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
   const buildings: PlannedBuilding[] = []
   const streets: PlannedStreet[] = []
+  // Footways in the tiles: where sidewalks are mapped as their own, the streets' sidewalks go there.
+  const footways: Vec2[][] = []
   for (const data of tiles) {
     const { z, x, y } = data.tile
     const toSite = (u: number, v: number): Vec2 => {
@@ -425,6 +430,7 @@ export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]):
       }
     }
     for (const road of data.roads) {
+      if (road.kind === 'path' && (road.subclass === 'footway' || road.subclass === 'path') && !road.tunnel && !road.bridge) footways.push(ring(road.line))
       const highway = TILE_STREETS[road.kind]
       if (!highway || road.tunnel) continue
       const props = streetFromTags({ highway, ...(road.oneway ? { oneway: 'yes' } : {}) })!
@@ -436,7 +442,7 @@ export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]):
       }
     }
   }
-  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets: tidied(streets, half), spots: spotsFor(input, frame), source: 'tiles' }
+  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets: tidied(streets, half, footways), spots: spotsFor(input, frame), source: 'tiles' }
 }
 
 /** A tile's own extent in site metres, near enough as a rectangle at site scale. */

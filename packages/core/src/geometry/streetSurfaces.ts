@@ -84,26 +84,39 @@ function inside(x: number, y: number, ring: Ring): boolean {
 /** Whether two rings overlap by more than a touch: a corner of one well inside the other, or edges crossing. */
 function overlap(a: Surface, b: Surface): boolean {
   if (a.maxX <= b.minX + TOUCH || b.maxX <= a.minX + TOUCH || a.maxY <= b.minY + TOUCH || b.maxY <= a.minY + TOUCH) return false
-  for (const [x, y] of a.ring) if (inside(x, y, b.ring) && edgeDistance(x, y, b.ring) > TOUCH) return true
-  for (const [x, y] of b.ring) if (inside(x, y, a.ring) && edgeDistance(x, y, a.ring) > TOUCH) return true
+  // Only what lies where the two's bounds overlap can matter (a large square against a small road: most of its
+  // edges are far away).
+  const x0 = Math.max(a.minX, b.minX) - TOUCH
+  const x1 = Math.min(a.maxX, b.maxX) + TOUCH
+  const y0 = Math.max(a.minY, b.minY) - TOUCH
+  const y1 = Math.min(a.maxY, b.maxY) + TOUCH
+  const within = (x: number, y: number) => x >= x0 && x <= x1 && y >= y0 && y <= y1
+  for (const [x, y] of a.ring) if (within(x, y) && inside(x, y, b.ring) && edgeDistance(x, y, b.ring) > TOUCH) return true
+  for (const [x, y] of b.ring) if (within(x, y) && inside(x, y, a.ring) && edgeDistance(x, y, a.ring) > TOUCH) return true
   // Edges crossing well inside both (two strips crossing each other have no corner inside the other).
-  const ra = a.ring
-  const rb = b.ring
-  for (let i = 0, j = ra.length - 1; i < ra.length; j = i++) {
-    const [px, py] = ra[j]!
-    const [qx, qy] = ra[i]!
+  const edges = (ring: Ring) => {
+    const list: [number, number, number, number][] = []
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [px, py] = ring[j]!
+      const [qx, qy] = ring[i]!
+      if (Math.max(px, qx) < x0 || Math.min(px, qx) > x1 || Math.max(py, qy) < y0 || Math.min(py, qy) > y1) continue
+      list.push([px, py, qx, qy])
+    }
+    return list
+  }
+  const eb = edges(b.ring)
+  if (eb.length === 0) return false
+  for (const [px, py, qx, qy] of edges(a.ring)) {
     const dx = qx - px
     const dy = qy - py
-    for (let k = 0, m = rb.length - 1; k < rb.length; m = k++) {
-      const [rx, ry] = rb[m]!
-      const [sx, sy] = rb[k]!
+    const la = Math.hypot(dx, dy)
+    for (const [rx, ry, sx, sy] of eb) {
       const ex = sx - rx
       const ey = sy - ry
       const den = dx * ey - dy * ex
       if (Math.abs(den) < 1e-12) continue
       const t = ((rx - px) * ey - (ry - py) * ex) / den
       const u = ((rx - px) * dy - (ry - py) * dx) / den
-      const la = Math.hypot(dx, dy)
       const lb = Math.hypot(ex, ey)
       // Clear of the ends, and not at a grazing angle (strips running along each other only touch).
       if (t * la > TOUCH && (1 - t) * la > TOUCH && u * lb > TOUCH && (1 - u) * lb > TOUCH && Math.abs(den) / (la * lb) > 0.05) return true

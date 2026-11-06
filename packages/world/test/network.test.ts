@@ -180,4 +180,44 @@ describe('tidying map data into a street network', () => {
     ])
     for (const street of Object.values(network.streets)) expect(street.sidewalkRight).toBeGreaterThan(0)
   })
+
+  it('puts the sidewalks where footways are mapped alongside, and the road out to meet them', () => {
+    // A residential street (2.75 m either side of its middle) with footways 8 m out on both sides.
+    const network = tidyNetwork([line([[-100, 0], [100, 0]])], {
+      footways: [
+        [{ x: -100, y: 8 }, { x: 100, y: 8 }],
+        [{ x: 100, y: -8 }, { x: -100, y: -8 }],
+      ],
+    })
+    for (const street of Object.values(network.streets)) {
+      const road = (street.lanes * street.laneWidth) / 2
+      const left = road + street.bikeLeft + street.parkingLeft
+      const right = road + street.bikeRight + street.parkingRight
+      // The footway runs down the middle of the sidewalk.
+      expect(left + street.sidewalkLeft / 2).toBeCloseTo(8, 1)
+      expect(right + street.sidewalkRight / 2).toBeCloseTo(8, 1)
+      expect(left).toBeGreaterThan(5)
+    }
+  })
+
+  it("leaves a street as it is where a footway runs along only a little of it, or belongs to the street beyond", () => {
+    const network = tidyNetwork(
+      [
+        line([[-100, 0], [100, 0]]),
+        // Another street 14 m off, with its own footway just beyond it.
+        line([[-100, 14], [100, 14]]),
+      ],
+      {
+        footways: [
+          // Along 30 m of 200.
+          [{ x: 0, y: -7 }, { x: 30, y: -7 }],
+          [{ x: -100, y: 19 }, { x: 100, y: 19 }],
+        ],
+      },
+    )
+    const street = Object.values(network.streets).find((s) => network.nodes[s.a]!.y === 0)!
+    expect(street.parkingLeft).toBe(0)
+    expect(street.parkingRight).toBe(0)
+    expect(street.laneWidth).toBe(STREET_TYPES.residential.props.laneWidth)
+  })
 })

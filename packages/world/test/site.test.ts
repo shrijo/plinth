@@ -96,6 +96,26 @@ describe('planning a site from OpenStreetMap', () => {
   })
 })
 
+describe('a site from OpenStreetMap with its sidewalks mapped as footways', () => {
+  it('puts the street\'s sidewalks where the footways are', () => {
+    const data: OsmData = {
+      buildings: [],
+      streets: [
+        { id: 'w1', points: [lonLat(-200, 0), lonLat(200, 0)], tags: { highway: 'residential' } },
+        { id: 'w2', points: [lonLat(-200, 9), lonLat(200, 9)], tags: { highway: 'footway', footway: 'sidewalk' } },
+        { id: 'w3', points: [lonLat(200, -9), lonLat(-200, -9)], tags: { highway: 'footway', footway: 'sidewalk' } },
+      ],
+    }
+    const plan = planFromOsm({ name: 'Test', lon: LON, lat: LAT, size: 300, heightAt: () => 400 }, data)
+    // The footways aren't streets of the site; the street reaches out to them.
+    expect(plan.streets.every((s) => s.props.kind === 'residential')).toBe(true)
+    for (const { props } of plan.streets) {
+      const road = ((props.lanes ?? 2) * (props.laneWidth ?? 3)) / 2 + (props.parkingLeft ?? 0)
+      expect(road + (props.sidewalkLeft ?? 0) / 2).toBeCloseTo(9, 0)
+    }
+  })
+})
+
 describe('streets from tags', () => {
   it('reads lanes, sidewalks and bike lanes', () => {
     const props = streetFromTags({ highway: 'primary', lanes: '4', sidewalk: 'right', cycleway: 'lane' })!
