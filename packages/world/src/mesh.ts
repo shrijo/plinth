@@ -51,6 +51,8 @@ export interface GroundMesh extends MeshBuffers {
   uvs: Float32Array
   low: number
   high: number
+  /** The heights at the grid's points, row by row from the north-west corner ((segments + 1)² of them). */
+  heights: Float32Array
 }
 
 /**
@@ -132,7 +134,7 @@ export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, w
     // Both ways round, so a gap seen from either side shows the skirt (lit as the ground is: it shares its normals).
     indices.push(a, b, a2, b, b2, a2, a, a2, b, b, a2, b2)
   }
-  return { positions, normals, uvs, indices: Uint32Array.from(indices), low, high }
+  return { positions, normals, uvs, indices: Uint32Array.from(indices), low, high, heights }
 }
 
 function gridNormals(positions: Float32Array, indices: number[], count: number): Float32Array {

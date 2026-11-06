@@ -19,6 +19,8 @@ export interface GroundResult {
   mesh: MeshBuffers & { uvs: Float32Array }
   low: number
   high: number
+  /** The ground's heights on the tile's grid (see GroundMesh.heights), for answering questions without the GPU. */
+  heights: Float32Array
   image: ImageBitmap
   /** Lakes, rivers and sea in the tile, at their surface; `level` is their average height. */
   water: (MeshBuffers & { level: number }) | null

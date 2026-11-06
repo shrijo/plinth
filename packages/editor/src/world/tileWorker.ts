@@ -123,6 +123,7 @@ async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signa
       mesh: { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, uvs: mesh.uvs },
       low: mesh.low,
       high: mesh.high,
+      heights: mesh.heights,
       image,
       water,
     },
@@ -196,8 +197,8 @@ function transfers(response: WorkerResponse): Transferable[] {
   const buffers = (mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; colors?: Float32Array; edges?: Float32Array } | null) =>
     mesh ? [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer, ...(mesh.colors ? [mesh.colors.buffer] : []), ...(mesh.edges ? [mesh.edges.buffer] : [])] : []
   if (response.type === 'ground') {
-    const { mesh, image, water } = response.result
-    return [...buffers(mesh), mesh.uvs.buffer, image, ...buffers(water)] as Transferable[]
+    const { mesh, image, water, heights } = response.result
+    return [...buffers(mesh), mesh.uvs.buffer, heights.buffer, image, ...buffers(water)] as Transferable[]
   }
   return buffers(response.result) as Transferable[]
 }

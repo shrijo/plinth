@@ -11,12 +11,10 @@ import {
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
-  Raycaster,
   SRGBColorSpace,
   Sphere,
   Texture,
   Vector3,
-  type Intersection,
   type Object3D,
   type Plane,
   type WebGLRenderer,
@@ -104,6 +102,8 @@ interface GroundEntry {
   mesh: Mesh | null
   low: number
   high: number
+  /** Ground heights on the tile's grid, once loaded. */
+  heights: Float32Array | null
   used: number
   /** When the view last asked for it (ms). */
   wanted: number
@@ -328,7 +328,7 @@ export class WorldTiles {
       const key = tileKey(tile)
       let entry = this.ground.get(key)
       if (!entry) {
-        entry = { tile, key, state: 'failed', job: 0, mesh: null, low: 0, high: 0, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
+        entry = { tile, key, state: 'failed', job: 0, mesh: null, low: 0, high: 0, heights: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
         this.ground.set(key, entry)
       }
       entry.used = this.clock
@@ -530,6 +530,7 @@ export class WorldTiles {
     entry.mesh = mesh
     entry.low = result.low
     entry.high = result.high
+    entry.heights = result.heights
     entry.state = 'ready'
   }
 
@@ -580,38 +581,36 @@ export class WorldTiles {
 
   // Questions about what's shown
 
-  /** The nearest world surface (ground or building) a ray meets, in the scene. */
-  raycast(raycaster: Raycaster): Intersection | null {
-    const hits = raycaster.intersectObjects(this.drawn, false)
-    return hits[0] ?? null
-  }
-
   /**
    * The height of the ground at a point on the globe (above sea level), from
-   * the finest tile loaded there (drawn or not: behind the camera too), or
-   * null where none is loaded yet. `minZoom` leaves out coarser tiles
-   * (their hills are too rough to keep a camera off the ground by).
+   * the finest tile loaded there (drawn or not: behind the camera too), read
+   * off its grid of heights; null where none is loaded yet. `minZoom` leaves
+   * out coarser tiles (their hills are too rough to keep a camera off the
+   * ground by). Cheap: no rays, no triangles.
    */
   groundHeight(lon: number, lat: number, minZoom = 0): number | null {
-    const n = (z: number) => 2 ** z
-    const latR = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
+    const φ = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
     const fx = (lon + 180) / 360
-    const fy = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2
-    let mesh: Mesh | null = null
-    for (let z = MAX_ZOOM; z >= minZoom && !mesh; z--) {
-      const entry = this.ground.get(`${z}/${Math.floor(fx * n(z))}/${Math.floor(fy * n(z))}`)
-      if (entry?.state === 'ready' && entry.mesh) mesh = entry.mesh
+    const fy = (1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2
+    for (let z = MAX_ZOOM; z >= minZoom; z--) {
+      const n = 2 ** z
+      const x = Math.floor(fx * n)
+      const y = Math.floor(fy * n)
+      const entry = this.ground.get(`${z}/${x}/${y}`)
+      if (entry?.state !== 'ready' || !entry.heights) continue
+      const heights = entry.heights
+      const side = Math.round(Math.sqrt(heights.length))
+      const segments = side - 1
+      const gx = Math.min(Math.max((fx * n - x) * segments, 0), segments - 1e-9)
+      const gy = Math.min(Math.max((fy * n - y) * segments, 0), segments - 1e-9)
+      const i = Math.floor(gx)
+      const j = Math.floor(gy)
+      const tx = gx - i
+      const ty = gy - j
+      const h = (a: number, b: number) => heights[b * side + a]!
+      return (h(i, j) * (1 - tx) + h(i + 1, j) * tx) * (1 - ty) + (h(i, j + 1) * (1 - tx) + h(i + 1, j + 1) * tx) * ty
     }
-    if (!mesh) return null
-    const frame = enuFrame(lon, lat, 0)
-    const from = this.toScene(fromFrame(frame, [0, 0, 12000]))
-    const down = this.directionToScene([-frame.up[0], -frame.up[1], -frame.up[2]]).normalize()
-    ray.ray.set(from, down)
-    ray.far = 24000
-    mesh.updateMatrixWorld()
-    const hit = ray.intersectObject(mesh, false)[0]
-    if (!hit) return null
-    return lonLatFromEcef(this.toEcef(hit.point)).height
+    return null
   }
 
   dispose(): void {
@@ -631,7 +630,6 @@ export class WorldTiles {
   }
 }
 
-const ray = new Raycaster()
 
 /** A cap over a pole, from the map's last latitude to the pole, in a frame at the pole. */
 function polarCap(north: boolean): { mesh: MeshBuffers; frame: Frame } {

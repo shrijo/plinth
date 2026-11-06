@@ -1,15 +1,26 @@
-import { Matrix4, PerspectiveCamera, Quaternion, Raycaster, Vector2, Vector3 } from 'three'
+import { PerspectiveCamera, Raycaster, Vector2, Vector3 } from 'three'
 import { distanceBetween, ecefFromLonLat, enuFrame, fromFrame, lonLatFromEcef, type Vec3 } from '@plinth/world'
 import type { WorldTiles } from './WorldTiles.ts'
 
 /**
  * Moving over the globe. The view looks at a point on the ground (its
  * target) from a distance, turned by a heading (clockwise from north) and
- * tilted by a pitch (0 looks straight down). Dragging pulls the ground
- * along under the pointer, the wheel or a pinch moves closer to what's
- * under the pointer, and a right-drag (or two fingers twisting and
- * sliding) turns and tilts round the target. From far out the view looks
- * straight down; tilting opens up as it nears the ground.
+ * tilted by a pitch (0 looks straight down).
+ *
+ * - Drag: the ground follows the pointer (from space, the globe turns), and
+ *   carries on a little when let go.
+ * - Wheel, pinch, double-click: closer to (or away from) what's under the
+ *   pointer, which stays under it. The wheel glides; a pinch follows the
+ *   fingers.
+ * - Right-drag (or Ctrl, Shift or Cmd and drag; two fingers twisting, or
+ *   sliding up and down together): turns round and tilts about the middle
+ *   of the view.
+ * - Keys: arrows move, Shift and arrows turn and tilt, + and - zoom.
+ *
+ * The camera follows every input at once (not a frame later), picks the
+ * ground by marching along the pointer's ray over the ground's heights (no
+ * meshes, so it's cheap enough for every event), and is lifted over hills
+ * rather than having its tilt taken away.
  */
 
 export interface GlobeView {
@@ -26,11 +37,20 @@ export interface GlobeView {
 /** Where the world opens: Europe, from far out. */
 export const DEFAULT_VIEW: GlobeView = { lon: 8.5, lat: 47, height: 0, range: 1.6e7, heading: 0, pitch: 0 }
 
-export const MIN_RANGE = 25
+export const MIN_RANGE = 20
 export const MAX_RANGE = 2.4e7
-const STEEPEST = (80 * Math.PI) / 180
+const STEEPEST = (82 * Math.PI) / 180
 /** The camera keeps at least this far above the ground (metres). */
-const CLEARANCE = 4
+const CLEARANCE = 3
+/** How quickly a let-go drag slows down, and a let-go turn (time constants, ms). */
+const COAST = 220
+const COAST_TURN = 140
+/** The fastest a throw carries on (pixels per ms). */
+const FASTEST_THROW = 2.5
+/** How quickly the wheel's zoom glides to where it's going (time constant, ms). */
+const GLIDE = 75
+/** How quickly the target settles onto the ground under it (time constant, ms). */
+const SETTLE = 120
 
 /** How far the view may tilt at a distance: fully near the ground, not at all from space. */
 export function maxPitch(range: number): number {
@@ -72,6 +92,8 @@ export function poseOf(view: GlobeView): Pose {
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const length = (a: Vec3) => Math.hypot(a[0], a[1], a[2])
 const scale = (a: Vec3, s: number): Vec3 => [a[0] * s, a[1] * s, a[2] * s]
+const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 
 /** Turns `p` about `axis` (a unit vector through the Earth's middle) by `angle`. */
@@ -87,7 +109,7 @@ function rotate(p: Vec3, axis: Vec3, angle: number): Vec3 {
 function turnBetween(from: Vec3, to: Vec3): { axis: Vec3; angle: number } | null {
   const axis = cross(from, to)
   const s = length(axis)
-  if (s < 1e-15) return null
+  if (s < 1e-9) return null
   // |a × b| and a · b are both scaled by |a||b|, so their angle comes out right.
   return { axis: scale(axis, 1 / s), angle: Math.atan2(s, dot(from, to)) }
 }
@@ -101,19 +123,23 @@ interface Flight {
   lift: number
 }
 
-interface Touch {
+interface Point {
   x: number
   y: number
 }
 
+/** Where the pointer was and when, kept for a moment to carry on with when let go. */
+interface Trace {
+  x: number
+  y: number
+  t: number
+}
+
 const raycaster = new Raycaster()
 const pointer = new Vector2()
-const basis = new Matrix4()
 const position = new Vector3()
-const quaternion = new Quaternion()
-const axisX = new Vector3()
-const axisY = new Vector3()
-const axisZ = new Vector3()
+const lookAt = new Vector3()
+const upHint = new Vector3()
 
 export class GlobeControls {
   view: GlobeView
@@ -125,15 +151,24 @@ export class GlobeControls {
   private readonly element: HTMLElement
   private readonly world: WorldTiles
   private readonly getCamera: () => PerspectiveCamera
-  private readonly touches = new Map<number, Touch>()
+  private last = performance.now()
+
+  // Input in progress.
+  private readonly touches = new Map<number, Point>()
   private mode: 'pan' | 'orbit' | null = null
-  /** The point on the globe (ECEF) being dragged, and the radius of the sphere it's dragged on. */
+  /** The point on the globe (ECEF) being dragged; it stays under the pointer. */
   private grab: Vec3 | null = null
-  private last: Touch | null = null
+  private previous: Point | null = null
+  private trail: Trace[] = []
   private gestureScale: number | null = null
-  private pinch: { distance: number; angle: number; mid: Touch } | null = null
+  private pinch: { distance: number; angle: number; mid: Point } | null = null
   /** What a two-finger gesture turned out to be, once it has moved far enough to tell. */
-  private gesture: { kind: 'tilt' | 'pinch' | null; start: Touch[] } | null = null
+  private gesture: { kind: 'tilt' | 'pinch' | null; start: Point[] } | null = null
+
+  // Carrying on after input: a pointer that keeps going (pixels per ms), the ground following it, or the turn.
+  private spin: { grab: Vec3; x: number; y: number; vx: number; vy: number } | null = null
+  private turn: { vx: number; vy: number } | null = null
+  private zoom: { remaining: number; anchor: Vec3 | null; at: Point } | null = null
 
   constructor(element: HTMLElement, world: WorldTiles, getCamera: () => PerspectiveCamera, view: GlobeView) {
     this.element = element
@@ -144,51 +179,53 @@ export class GlobeControls {
 
   attach(): () => void {
     const el = this.element
-    el.addEventListener('pointerdown', this.onDown)
-    el.addEventListener('pointermove', this.onMove)
-    el.addEventListener('pointerup', this.onUp)
-    el.addEventListener('pointercancel', this.onUp)
-    el.addEventListener('wheel', this.onWheel, { passive: false })
-    el.addEventListener('contextmenu', this.onContextMenu)
+    const on = <K extends keyof HTMLElementEventMap>(type: K, fn: (e: HTMLElementEventMap[K]) => void, options?: AddEventListenerOptions) =>
+      el.addEventListener(type, fn as EventListener, options)
+    on('pointerdown', this.onDown)
+    on('pointermove', this.onMove)
+    on('pointerup', this.onUp)
+    on('pointercancel', this.onUp)
+    on('wheel', this.onWheel, { passive: false })
+    on('dblclick', this.onDoubleClick)
+    on('contextmenu', this.onContextMenu)
     el.addEventListener('gesturestart', this.onGestureStart as EventListener)
     el.addEventListener('gesturechange', this.onGestureChange as EventListener)
     el.addEventListener('gestureend', this.onGestureEnd as EventListener)
+    window.addEventListener('keydown', this.onKey)
     return () => {
       el.removeEventListener('pointerdown', this.onDown)
       el.removeEventListener('pointermove', this.onMove)
       el.removeEventListener('pointerup', this.onUp)
       el.removeEventListener('pointercancel', this.onUp)
       el.removeEventListener('wheel', this.onWheel)
+      el.removeEventListener('dblclick', this.onDoubleClick)
       el.removeEventListener('contextmenu', this.onContextMenu)
       el.removeEventListener('gesturestart', this.onGestureStart as EventListener)
       el.removeEventListener('gesturechange', this.onGestureChange as EventListener)
       el.removeEventListener('gestureend', this.onGestureEnd as EventListener)
+      window.removeEventListener('keydown', this.onKey)
     }
   }
 
-  // The camera
+  // Each frame
 
   /**
-   * Places the camera for the view (after any flight), keeps it above the
-   * ground and the world's anchor near it. Call every frame.
+   * Moves the view on (a flight, a glide, a let-go drag), keeps the target on
+   * the ground and the world's anchor near, and places the camera. Call
+   * every frame.
    */
   update(now: number): void {
+    const dt = Math.min(Math.max(now - this.last, 0), 100)
+    this.last = now
     if (this.flight) this.fly(now)
-    const view = this.view
-    // The target sits on the ground, as far as it's known.
-    const ground = this.world.groundHeight(view.lon, view.lat)
-    if (ground !== null && !this.flight) view.height += (ground - view.height) * 0.25
-    else if (ground !== null && this.flight) view.height = ground
-    view.range = Math.min(Math.max(view.range, MIN_RANGE), MAX_RANGE)
-    view.pitch = Math.min(Math.max(view.pitch, 0), maxPitch(view.range))
-
-    // Never below the ground: tilt up until the camera is clear of it.
-    for (let i = 0; i < 12; i++) {
-      const camera = lonLatFromEcef(poseOf(view).position)
-      const below = this.world.groundHeight(camera.lon, camera.lat, 10)
-      if (below === null || camera.height > below + CLEARANCE || view.pitch <= 0) break
-      view.pitch = Math.max(0, view.pitch - 0.05)
+    else {
+      this.coast(dt)
+      this.glide(dt)
     }
+    const view = this.view
+    const ground = this.world.groundHeight(view.lon, view.lat)
+    if (ground !== null) view.height += (ground - view.height) * (this.flight ? 1 : 1 - Math.exp(-dt / SETTLE))
+    this.clamp()
 
     // Keep the scene's anchor close, so what's near the camera is precise.
     const anchor = this.world.getAnchor()
@@ -199,25 +236,32 @@ export class GlobeControls {
     this.apply()
   }
 
+  private clamp(): void {
+    const view = this.view
+    view.range = Math.min(Math.max(view.range, MIN_RANGE), MAX_RANGE)
+    view.pitch = Math.min(Math.max(view.pitch, 0), maxPitch(view.range))
+    view.heading = Math.atan2(Math.sin(view.heading), Math.cos(view.heading))
+  }
+
+  /** Puts the camera where the view says, lifted clear of the ground if it would be in it. */
   private apply(): void {
     const camera = this.getCamera()
     const pose = poseOf(this.view)
-    this.world.toScene(pose.position, position)
-    this.world.directionToScene(pose.right, axisX).normalize()
-    this.world.directionToScene(pose.up, axisY).normalize()
-    this.world.directionToScene(pose.back, axisZ).normalize()
-    basis.makeBasis(axisX, axisY, axisZ)
-    quaternion.setFromRotationMatrix(basis)
+    let at = pose.position
+    const place = lonLatFromEcef(at)
+    const below = this.world.groundHeight(place.lon, place.lat, 10)
+    if (below !== null && place.height < below + CLEARANCE) {
+      // Straight up over the hill, still looking at the target.
+      const up = enuFrame(place.lon, place.lat, 0).up
+      at = add(at, scale(up, below + CLEARANCE - place.height))
+    }
+    this.world.toScene(at, position)
+    this.world.toScene(ecefFromLonLat(this.view.lon, this.view.lat, this.view.height), lookAt)
+    this.world.directionToScene(pose.up, upHint).normalize()
     camera.position.copy(position)
-    camera.quaternion.copy(quaternion)
+    camera.up.copy(upHint)
+    camera.lookAt(lookAt)
     camera.updateMatrixWorld()
-  }
-
-  /** The distance at which, looking straight down, `size` metres take up `share` of the view's narrower side. */
-  rangeToFit(size: number, share = 0.6): number {
-    const camera = this.getCamera()
-    const tall = 2 * Math.tan((camera.fov * Math.PI) / 360)
-    return size / (share * tall * Math.min(camera.aspect, 1))
   }
 
   /** The camera's height above the ground under it, in metres. */
@@ -227,10 +271,18 @@ export class GlobeControls {
     return Math.max(1, camera.height - ground)
   }
 
+  /** The distance at which, looking straight down, `size` metres take up `share` of the view's narrower side. */
+  rangeToFit(size: number, share = 0.6): number {
+    const camera = this.getCamera()
+    const tall = 2 * Math.tan((camera.fov * Math.PI) / 360)
+    return size / (share * tall * Math.min(camera.aspect, 1))
+  }
+
   // Flying
 
   /** Flies to a view, rising on the way if it's far. */
   flyTo(to: Partial<GlobeView>, duration?: number): void {
+    this.stopCoasting()
     const from = { ...this.view }
     const target: GlobeView = { ...from, ...to }
     target.pitch = Math.min(target.pitch, maxPitch(target.range))
@@ -249,6 +301,13 @@ export class GlobeControls {
 
   stop(): void {
     this.flight = null
+    this.stopCoasting()
+  }
+
+  private stopCoasting(): void {
+    this.spin = null
+    this.turn = null
+    this.zoom = null
   }
 
   private fly(now: number): void {
@@ -256,7 +315,6 @@ export class GlobeControls {
     const t = Math.min(1, (now - flight.start) / flight.duration)
     const s = t * t * (3 - 2 * t)
     const { from, to } = flight
-    // Along the great circle.
     const a = ecefFromLonLat(from.lon, from.lat, 0)
     const b = ecefFromLonLat(to.lon, to.lat, 0)
     const turn = turnBetween(a, b)
@@ -278,29 +336,93 @@ export class GlobeControls {
     this.onChange?.()
   }
 
-  // Picking
-
-  private ray(x: number, y: number): { origin: Vec3; direction: Vec3 } {
-    const rect = this.element.getBoundingClientRect()
-    pointer.set(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1)
-    raycaster.setFromCamera(pointer, this.getCamera())
-    return {
-      origin: this.world.toEcef(raycaster.ray.origin),
-      direction: this.world.directionToEcef(raycaster.ray.direction),
+  /** A let-go drag or turn carrying on, slowing down: as if the pointer kept going. */
+  private coast(dt: number): void {
+    const fade = Math.exp(-dt / COAST)
+    const spin = this.spin
+    if (spin) {
+      spin.x += spin.vx * dt
+      spin.y += spin.vy * dt
+      spin.vx *= fade
+      spin.vy *= fade
+      const grab = this.grab
+      this.grab = spin.grab
+      this.dragTo(spin.x, spin.y)
+      this.grab = grab
+      if (Math.hypot(spin.vx, spin.vy) < 0.01) this.spin = null
+    }
+    const turn = this.turn
+    if (turn) {
+      // Turning round carries on; tilting stops where it's let go.
+      this.orbit(turn.vx * dt, 0)
+      turn.vx *= Math.exp(-dt / COAST_TURN)
+      if (Math.abs(turn.vx) < 0.005) this.turn = null
     }
   }
 
-  /** What's under a screen point: the ground or a building shown there, or else the globe. */
-  surfaceAt(x: number, y: number): Vec3 | null {
-    const rect = this.element.getBoundingClientRect()
-    pointer.set(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1)
-    raycaster.setFromCamera(pointer, this.getCamera())
-    const hit = this.world.raycast(raycaster)
-    if (hit) return this.world.toEcef(hit.point)
-    return this.sphereAt(x, y, length(ecefFromLonLat(this.view.lon, this.view.lat, this.view.height)))
+  /** The wheel's zoom, gliding to where it's going. */
+  private glide(dt: number): void {
+    const zoom = this.zoom
+    if (!zoom) return
+    const step = zoom.remaining * (1 - Math.exp(-dt / GLIDE))
+    this.scaleAbout(zoom.anchor, Math.exp(step))
+    zoom.remaining -= step
+    if (Math.abs(zoom.remaining) < 1e-3) this.zoom = null
   }
 
-  /** Where a screen point's ray meets a sphere round the Earth's middle. */
+  // Picking
+
+  private rect(): DOMRect {
+    return this.element.getBoundingClientRect()
+  }
+
+  private ray(x: number, y: number): { origin: Vec3; direction: Vec3 } {
+    const rect = this.rect()
+    pointer.set(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1)
+    raycaster.setFromCamera(pointer, this.getCamera())
+    const direction = this.world.directionToEcef(raycaster.ray.direction)
+    const l = length(direction)
+    return { origin: this.world.toEcef(raycaster.ray.origin), direction: scale(direction, 1 / l) }
+  }
+
+  /**
+   * The ground under a screen point: found by stepping along the pointer's
+   * ray over the ground's heights (sea level where none are loaded) and
+   * narrowing in where it goes under. Null for a point in the sky.
+   */
+  surfaceAt(x: number, y: number): Vec3 | null {
+    const { origin, direction } = this.ray(x, y)
+    const start = lonLatFromEcef(origin)
+    const r = length(origin)
+    // Nothing is closer than the camera's height above the highest ground, and nothing seen beyond the horizon (and a mountain behind it).
+    let t = Math.max(0.5, start.height - 9000)
+    const horizon = Math.sqrt(Math.max(r * r - 6.35e6 * 6.35e6, 0)) + 4e5
+    const under = (d: number): boolean => {
+      const p = add(origin, scale(direction, d))
+      const place = lonLatFromEcef(p)
+      return place.height <= (this.world.groundHeight(place.lon, place.lat) ?? 0)
+    }
+    if (under(t)) return null
+    let before = t
+    for (let k = 0; k < 700 && t < horizon; k++) {
+      t += Math.max(0.5, t * 0.015)
+      if (!under(t)) {
+        before = t
+        continue
+      }
+      let low = before
+      let high = t
+      for (let i = 0; i < 24; i++) {
+        const mid = (low + high) / 2
+        if (under(mid)) high = mid
+        else low = mid
+      }
+      return add(origin, scale(direction, high))
+    }
+    return null
+  }
+
+  /** Where a screen point's ray meets a sphere round the Earth's middle (the near side). */
   private sphereAt(x: number, y: number, radius: number): Vec3 | null {
     const { origin, direction } = this.ray(x, y)
     const b = dot(origin, direction)
@@ -309,7 +431,22 @@ export class GlobeControls {
     if (disc < 0) return null
     const t = -b - Math.sqrt(disc)
     if (t < 0) return null
-    return [origin[0] + direction[0] * t, origin[1] + direction[1] * t, origin[2] + direction[2] * t]
+    return add(origin, scale(direction, t))
+  }
+
+  /**
+   * What to hold on to under a screen point: the ground there, but never
+   * further than a few times the camera's height (near the horizon a pixel is
+   * kilometres; holding a point in the air above the far ground keeps a drag
+   * from racing away), or, pointing at the sky, the same.
+   */
+  private holdAt(x: number, y: number): Vec3 {
+    const { origin, direction } = this.ray(x, y)
+    const camera = poseOf(this.view).position
+    const most = Math.max(this.altitude() * 12, this.view.range * 1.5)
+    const ground = this.surfaceAt(x, y)
+    if (ground && length(sub(ground, camera)) <= most) return ground
+    return add(origin, scale(direction, ground ? Math.min(most, length(sub(ground, origin))) : most))
   }
 
   /** The view's target as a point on the globe. */
@@ -317,48 +454,104 @@ export class GlobeControls {
     return ecefFromLonLat(this.view.lon, this.view.lat, this.view.height)
   }
 
-  private setTarget(p: Vec3): void {
-    const place = lonLatFromEcef(p)
+  // Moving
+
+  private moveTarget(axis: Vec3, angle: number): void {
+    const place = lonLatFromEcef(rotate(this.targetEcef(), axis, angle))
     this.view.lon = place.lon
     this.view.lat = place.lat
   }
 
-  // Moving
-
-  /** Turns the globe so the grabbed point comes under a screen point. */
+  /** Turns the globe so the held point comes under a screen point. */
   private dragTo(x: number, y: number): void {
     if (!this.grab) return
     const under = this.sphereAt(x, y, length(this.grab))
     if (!under) return
     const turn = turnBetween(under, this.grab)
     if (!turn) return
-    // Near the horizon a pixel is a long way: never more than a few views' worth at once.
-    const most = Math.max((this.view.range * 3) / 6.371e6, 1e-7)
-    this.setTarget(rotate(this.targetEcef(), turn.axis, Math.min(turn.angle, most)))
+    this.moveTarget(turn.axis, turn.angle)
+    this.apply()
     this.onChange?.()
   }
 
-  /** Moves closer (factor below 1) or further, towards or away from what's under a screen point. */
-  zoomAt(factor: number, x: number, y: number): void {
-    this.flight = null
-    const range = Math.min(Math.max(this.view.range * factor, MIN_RANGE), MAX_RANGE)
-    const share = 1 - range / this.view.range
-    const hit = this.surfaceAt(x, y)
-    if (hit && share !== 0) {
+  /**
+   * Moves the camera towards (factor below 1) or away from a point, keeping
+   * it where it is on the screen: camera and target both close in on it.
+   */
+  private scaleAbout(anchor: Vec3 | null, factor: number): void {
+    const before = this.view.range
+    const range = Math.min(Math.max(before * factor, MIN_RANGE), MAX_RANGE)
+    const f = range / before
+    if (anchor && f !== 1) {
       const target = this.targetEcef()
-      const turn = turnBetween(target, hit)
-      if (turn) this.setTarget(rotate(target, turn.axis, turn.angle * Math.max(share, -1)))
+      const moved = add(anchor, scale(sub(target, anchor), f))
+      const place = lonLatFromEcef(moved)
+      this.view.lon = place.lon
+      this.view.lat = place.lat
+      this.view.height = place.height
     }
     this.view.range = range
     this.view.pitch = Math.min(this.view.pitch, maxPitch(range))
+    this.apply()
     this.onChange?.()
   }
 
-  orbit(dx: number, dy: number): void {
+  /** Closer (factor below 1) or further, towards what's under a screen point, at once. */
+  zoomAt(factor: number, x: number, y: number): void {
     this.flight = null
-    this.view.heading -= dx * 0.005
-    this.view.pitch = Math.min(Math.max(this.view.pitch - dy * 0.005, 0), maxPitch(this.view.range))
+    this.zoom = null
+    this.scaleAbout(this.surfaceAt(x, y), factor)
+  }
+
+  /** Starts (or adds to) a gliding zoom towards what's under a screen point. */
+  private glideAt(logFactor: number, x: number, y: number): void {
+    this.flight = null
+    this.spin = null
+    const zoom = this.zoom
+    // The same point while the pointer stays; a new one when it moves.
+    if (zoom && Math.hypot(zoom.at.x - x, zoom.at.y - y) < 4) zoom.remaining += logFactor
+    else this.zoom = { remaining: (zoom?.remaining ?? 0) + logFactor, anchor: this.surfaceAt(x, y), at: { x, y } }
+  }
+
+  private orbit(dx: number, dy: number): void {
+    const rect = this.rect()
+    // Across the whole view turns half way round; up the whole view tilts about a right angle.
+    const heading = (-dx / Math.max(rect.width, 1)) * Math.PI
+    const pitch = (-dy / Math.max(rect.height, 1)) * Math.PI * 0.7
+    this.view.heading += heading
+    this.view.pitch = Math.min(Math.max(this.view.pitch + pitch, 0), maxPitch(this.view.range))
+    this.apply()
     this.onChange?.()
+  }
+
+  /** Notes where the pointer is (and was, between frames), for carrying on when let go. */
+  private trace(e: PointerEvent): void {
+    const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : []
+    for (const c of events.length > 0 ? events : [e]) this.trail.push({ x: c.clientX, y: c.clientY, t: c.timeStamp })
+    const cut = e.timeStamp - 150
+    while (this.trail.length > 2 && this.trail[0]!.t < cut) this.trail.shift()
+  }
+
+  /** On letting go: carry on as the last moment of the drag went, if it was still moving. */
+  private letGo(now: number): void {
+    const recent = this.trail.filter((p) => now - p.t < 100)
+    this.trail = []
+    if (recent.length < 2) return
+    const first = recent[0]!
+    const last = recent[recent.length - 1]!
+    // Held still before letting go: no throw.
+    if (now - last.t > 60) return
+    const span = Math.max(last.t - first.t, 8)
+    let vx = (last.x - first.x) / span
+    let vy = (last.y - first.y) / span
+    const speed = Math.hypot(vx, vy)
+    if (speed < 0.05) return
+    if (speed > FASTEST_THROW) {
+      vx *= FASTEST_THROW / speed
+      vy *= FASTEST_THROW / speed
+    }
+    if (this.mode === 'pan' && this.grab) this.spin = { grab: this.grab, x: last.x, y: last.y, vx, vy }
+    else if (this.mode === 'orbit') this.turn = { vx, vy }
   }
 
   // Input
@@ -368,22 +561,28 @@ export class GlobeControls {
   private onDown = (e: PointerEvent) => {
     if (!this.enabled) return
     this.flight = null
-    this.element.setPointerCapture(e.pointerId)
+    this.stopCoasting()
+    this.trail = [{ x: e.clientX, y: e.clientY, t: e.timeStamp }]
+    try {
+      this.element.setPointerCapture(e.pointerId)
+    } catch {
+      // A pointer the browser no longer tracks; the drag works without capture.
+    }
     this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (this.touches.size === 1) {
       this.mode = e.button === 2 || e.button === 1 || e.ctrlKey || e.metaKey || e.shiftKey ? 'orbit' : 'pan'
-      this.grab = this.mode === 'pan' ? this.surfaceAt(e.clientX, e.clientY) : null
-      this.last = { x: e.clientX, y: e.clientY }
+      this.grab = this.mode === 'pan' ? this.holdAt(e.clientX, e.clientY) : null
+      this.previous = { x: e.clientX, y: e.clientY }
     } else if (this.touches.size === 2) {
       this.mode = null
       this.pinch = this.pinchState()
-      this.grab = this.surfaceAt(this.pinch.mid.x, this.pinch.mid.y)
+      this.grab = this.holdAt(this.pinch.mid.x, this.pinch.mid.y)
       this.gesture = { kind: null, start: [...this.touches.values()].map((t) => ({ ...t })) }
     }
   }
 
-  private pinchState(): { distance: number; angle: number; mid: Touch } {
-    const [a, b] = [...this.touches.values()] as [Touch, Touch]
+  private pinchState(): { distance: number; angle: number; mid: Point } {
+    const [a, b] = [...this.touches.values()] as [Point, Point]
     return {
       distance: Math.hypot(b.x - a.x, b.y - a.y),
       angle: Math.atan2(b.y - a.y, b.x - a.x),
@@ -396,12 +595,13 @@ export class GlobeControls {
     if (!touch || !this.enabled) return
     touch.x = e.clientX
     touch.y = e.clientY
-    if (this.touches.size === 1 && this.last) {
+    if (this.touches.size === 1 && this.previous) {
+      this.trace(e)
       if (this.mode === 'pan') this.dragTo(e.clientX, e.clientY)
-      else if (this.mode === 'orbit') this.orbit(e.clientX - this.last.x, e.clientY - this.last.y)
-      this.last = { x: e.clientX, y: e.clientY }
+      else if (this.mode === 'orbit') this.orbit(e.clientX - this.previous.x, e.clientY - this.previous.y)
+      this.previous = { x: e.clientX, y: e.clientY }
     } else if (this.touches.size === 2 && this.pinch && this.gesture) {
-      const now = this.pinchState()
+      const next = this.pinchState()
       const before = this.pinch
       const gesture = this.gesture
       if (!gesture.kind) {
@@ -415,56 +615,73 @@ export class GlobeControls {
           gesture.kind = together && spread < Math.max(Math.abs(a.dy), Math.abs(b.dy)) * 0.5 ? 'tilt' : 'pinch'
         }
       }
-      if (gesture.kind === 'tilt') this.orbit(0, now.mid.y - before.mid.y)
+      if (gesture.kind === 'tilt') this.orbit(0, next.mid.y - before.mid.y)
       else if (gesture.kind === 'pinch') {
-        const spread = now.distance / Math.max(before.distance, 1)
-        if (Math.abs(spread - 1) > 1e-4) this.zoomAt(1 / spread, now.mid.x, now.mid.y)
-        let turn = now.angle - before.angle
-        turn = Math.atan2(Math.sin(turn), Math.cos(turn))
-        this.view.heading -= turn
-        this.dragTo(now.mid.x, now.mid.y)
+        const spread = next.distance / Math.max(before.distance, 1)
+        if (Math.abs(spread - 1) > 1e-4) this.scaleAbout(this.grab, 1 / spread)
+        let twist = next.angle - before.angle
+        twist = Math.atan2(Math.sin(twist), Math.cos(twist))
+        this.view.heading -= twist
+        this.apply()
+        this.dragTo(next.mid.x, next.mid.y)
       }
-      this.pinch = now
+      this.pinch = next
     }
   }
 
   private onUp = (e: PointerEvent) => {
+    const now = e.timeStamp
     this.touches.delete(e.pointerId)
     if (this.element.hasPointerCapture(e.pointerId)) this.element.releasePointerCapture(e.pointerId)
     this.gesture = null
     if (this.touches.size === 1) {
       // From two fingers back to one: carry on dragging from where it is.
-      const [rest] = [...this.touches.values()] as [Touch]
+      const [rest] = [...this.touches.values()] as [Point]
       this.mode = 'pan'
-      this.grab = this.surfaceAt(rest.x, rest.y)
-      this.last = { ...rest }
+      this.grab = this.holdAt(rest.x, rest.y)
+      this.previous = { ...rest }
+      this.trail = []
     } else if (this.touches.size === 0) {
+      // Where the pointer let go counts too.
+      this.trail.push({ x: e.clientX, y: e.clientY, t: now })
+      this.letGo(now)
       this.mode = null
       this.grab = null
-      this.last = null
+      this.previous = null
     }
     this.pinch = null
+  }
+
+  private onDoubleClick = (e: MouseEvent) => {
+    if (!this.enabled) return
+    e.preventDefault()
+    this.glideAt(Math.log(e.shiftKey || e.altKey ? 2.5 : 0.4), e.clientX, e.clientY)
   }
 
   private onWheel = (e: WheelEvent) => {
     if (!this.enabled) return
     e.preventDefault()
+    this.flight = null
+    this.spin = null
+    this.turn = null
     if (e.ctrlKey) {
+      // A trackpad pinch: follows the fingers at once.
       if (this.gestureScale !== null) return
       const delta = Math.max(-50, Math.min(50, e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY))
       this.zoomAt(Math.exp(delta * 0.012), e.clientX, e.clientY)
       return
     }
     if (!isTrackpadScroll(e)) {
-      const delta = Math.max(-150, Math.min(150, e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY))
-      this.zoomAt(Math.exp(delta * 0.002), e.clientX, e.clientY)
+      // A mouse wheel: glides, a notch about a fifth of the way.
+      const delta = Math.max(-240, Math.min(240, e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY))
+      this.glideAt(delta * 0.0022, e.clientX, e.clientY)
       return
     }
     // Two fingers on a trackpad: the ground follows them.
-    this.flight = null
+    this.zoom = null
     const x = e.clientX
     const y = e.clientY
-    this.grab = this.surfaceAt(x, y)
+    this.grab = this.holdAt(x, y)
     this.dragTo(x - e.deltaX, y - e.deltaY)
     this.grab = null
   }
@@ -477,15 +694,45 @@ export class GlobeControls {
   private onGestureChange = (e: Event & { scale?: number; clientX?: number; clientY?: number }) => {
     e.preventDefault()
     if (this.gestureScale === null) return
-    const scale = e.scale ?? 1
-    const rect = this.element.getBoundingClientRect()
-    this.zoomAt(this.gestureScale / scale, e.clientX ?? rect.left + rect.width / 2, e.clientY ?? rect.top + rect.height / 2)
-    this.gestureScale = scale
+    const scaleNow = e.scale ?? 1
+    const rect = this.rect()
+    this.zoomAt(this.gestureScale / scaleNow, e.clientX ?? rect.left + rect.width / 2, e.clientY ?? rect.top + rect.height / 2)
+    this.gestureScale = scaleNow
   }
 
   private onGestureEnd = (e: Event) => {
     e.preventDefault()
     this.gestureScale = null
+  }
+
+  /** Arrows move a quarter of the view; with Shift they turn and tilt; + and - zoom. */
+  private onKey = (e: KeyboardEvent) => {
+    if (!this.enabled || e.metaKey || e.ctrlKey || e.altKey) return
+    const target = e.target as HTMLElement | null
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+    const view = this.view
+    const rect = this.rect()
+    if (e.key === '+' || e.key === '=') this.glideAt(Math.log(0.6), rect.left + rect.width / 2, rect.top + rect.height / 2)
+    else if (e.key === '-' || e.key === '_') this.glideAt(Math.log(1 / 0.6), rect.left + rect.width / 2, rect.top + rect.height / 2)
+    else if (e.key.startsWith('Arrow')) {
+      const key = e.key.slice(5)
+      if (e.shiftKey) {
+        const turn = Math.PI / 12
+        if (key === 'Left') this.flyTo({ heading: view.heading + turn }, 0.3)
+        if (key === 'Right') this.flyTo({ heading: view.heading - turn }, 0.3)
+        if (key === 'Up') this.flyTo({ pitch: Math.min(view.pitch + turn, maxPitch(view.range)) }, 0.3)
+        if (key === 'Down') this.flyTo({ pitch: Math.max(view.pitch - turn, 0) }, 0.3)
+      } else {
+        // A quarter of what's in view, the way the view faces.
+        const step = Math.min(view.range, this.altitude() * 3) * 0.5
+        const [fe, fn] = [Math.sin(view.heading), Math.cos(view.heading)]
+        const [de, dn] = key === 'Up' ? [fe, fn] : key === 'Down' ? [-fe, -fn] : key === 'Left' ? [-fn, fe] : [fn, -fe]
+        const frame = enuFrame(view.lon, view.lat, view.height)
+        const to = lonLatFromEcef(fromFrame(frame, [de * step, dn * step, 0]))
+        this.flyTo({ lon: to.lon, lat: to.lat }, 0.3)
+      }
+    } else return
+    e.preventDefault()
   }
 }
 
