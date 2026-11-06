@@ -232,11 +232,11 @@ export function buildingMesh(
 
 /** A ring turned so it runs anticlockwise on the map (outer) or clockwise (hole). */
 function orient(ring: Line, outer: boolean): Line {
-  // Shoelace with y southwards: positive is anticlockwise on the map.
+  // Shoelace in tile units, with y running south: negative is anticlockwise on the map.
   let sum = 0
   const n = ring.length / 2
   for (let i = 0, j = n - 1; i < n; j = i++) sum += ring[j * 2]! * ring[i * 2 + 1]! - ring[i * 2]! * ring[j * 2 + 1]!
-  if (sum > 0 === outer) return ring
+  if (sum < 0 === outer) return ring
   const reversed = new Float64Array(ring.length)
   for (let i = 0; i < n; i++) {
     reversed[i * 2] = ring[(n - 1 - i) * 2]!

@@ -75,11 +75,17 @@ const MAX_ERROR = COARSE ? 1.6 : 1.15
 const MAX_ZOOM = 17
 /** Buildings come with tiles at this zoom (the finest of the map data). */
 const BUILDING_ZOOM = 14
-const MAX_GROUND = COARSE ? 90 : 220
+const MAX_GROUND = COARSE ? 120 : 300
 const MAX_BUILDINGS = COARSE ? 24 : 64
 const MAX_IN_FLIGHT = 14
-/** New tiles added to the scene per frame, so arrivals never stall a frame. */
-const ADDS_PER_FRAME = 4
+/** Time spent adding new tiles to the scene per frame (ms), so arrivals never stall a frame; at least one goes in. */
+const ADD_BUDGET = 4
+/** A load the view hasn't asked for in this long (ms) gives way to others. */
+const CANCEL_AFTER = 1500
+/** Tiles this coarse are kept once loaded: they stand in wherever finer ones are still on their way. */
+const KEEP_ZOOM = 5
+/** The ground under the camera is loaded at this zoom (out of view, behind it), to keep the camera above it. */
+const UNDER_ZOOM = 13
 
 type State = 'loading' | 'ready' | 'failed'
 
@@ -92,6 +98,8 @@ interface GroundEntry {
   low: number
   high: number
   used: number
+  /** When the view last asked for it (ms). */
+  wanted: number
   retryAt: number
   frame: Frame
 }
@@ -103,6 +111,7 @@ interface BuildingEntry {
   job: number
   mesh: Mesh | null
   used: number
+  wanted: number
   retryAt: number
   frame: Frame
 }
@@ -251,19 +260,26 @@ export class WorldTiles {
       },
     )
 
-    // Arrivals first, a few a frame.
-    for (let i = 0; i < ADDS_PER_FRAME && this.arrived.length > 0; i++) this.arrived.shift()!()
+    const now = performance.now()
+
+    // Arrivals first, as many as fit in a few milliseconds.
+    const until = now + ADD_BUDGET
+    do this.arrived.shift()?.()
+    while (this.arrived.length > 0 && performance.now() < until)
 
     // What to show.
     for (const mesh of this.drawn) mesh.visible = false
     this.drawn = []
-    const buildingKeys = new Set<string>()
     for (const tile of selection.draw) {
       const entry = this.ground.get(tileKey(tile))
       if (!entry?.mesh) continue
       entry.used = this.clock
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
+    }
+    // Buildings wherever the view calls for that detail, even while the ground there is still coarse.
+    const buildingKeys = new Set<string>()
+    for (const tile of [...selection.ideal, ...selection.draw]) {
       if (tile.z >= BUILDING_ZOOM) buildingKeys.add(tileKey(ancestorAt(tile, BUILDING_ZOOM)))
     }
     for (const key of buildingKeys) {
@@ -271,43 +287,54 @@ export class WorldTiles {
       if (!entry) {
         const [z, x, y] = key.split('/').map(Number) as [number, number, number]
         const tile = { z, x, y }
-        entry = { tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, retryAt: 0, frame: tileFrame(tile) }
+        entry = { tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
         this.buildings.set(key, entry)
       }
       entry.used = this.clock
+      entry.wanted = now
       if (entry.mesh) {
         entry.mesh.visible = true
         this.drawn.push(entry.mesh)
       }
     }
 
-    // What to load: buildings for what's shown, then ground, the coarsest first.
+    // What to load: the ground, the coarsest first, and the ground under the camera (to keep above it); then buildings.
+    const under = lonLatFromEcef(cameraEcef)
+    const want = [...selection.want]
+    if (under.height - this.anchor.height < 30000) {
+      const n = 2 ** UNDER_ZOOM
+      const lat = Math.max(-85, Math.min(85, under.lat)) * (Math.PI / 180)
+      want.push({
+        z: UNDER_ZOOM,
+        x: Math.floor(((under.lon + 180) / 360) * n),
+        y: Math.floor(((1 - Math.log(Math.tan(lat) + 1 / Math.cos(lat)) / Math.PI) / 2) * n),
+      })
+    }
+    for (const tile of want) {
+      const key = tileKey(tile)
+      let entry = this.ground.get(key)
+      if (!entry) {
+        entry = { tile, key, state: 'failed', job: 0, mesh: null, low: 0, high: 0, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
+        this.ground.set(key, entry)
+      }
+      entry.used = this.clock
+      entry.wanted = now
+      if (entry.state === 'failed' && this.clock >= entry.retryAt && this.pending.size < MAX_IN_FLIGHT) this.requestGround(entry)
+    }
     for (const key of buildingKeys) {
       const entry = this.buildings.get(key)!
       if (entry.state === 'failed' && this.clock >= entry.retryAt && this.pending.size < MAX_IN_FLIGHT) this.requestBuildings(entry)
     }
-    const wanted = new Set<string>()
-    for (const tile of selection.want) {
-      const key = tileKey(tile)
-      wanted.add(key)
-      let entry = this.ground.get(key)
-      if (!entry) {
-        entry = { tile, key, state: 'failed', job: 0, mesh: null, low: 0, high: 0, used: this.clock, retryAt: 0, frame: tileFrame(tile) }
-        this.ground.set(key, entry)
-      }
-      entry.used = this.clock
-      if (entry.state === 'failed' && this.clock >= entry.retryAt && this.pending.size < MAX_IN_FLIGHT) this.requestGround(entry)
-    }
-    // Loads the view has moved away from give way.
+    // Loads the view has long moved away from give way (not at once: a turn back shouldn't start them again).
     for (const [job, { worker, entry }] of this.pending) {
-      if (entry.used < this.clock - 30) {
+      if (now - entry.wanted > CANCEL_AFTER) {
         worker.postMessage({ id: job, type: 'cancel' } satisfies WorkerRequest)
         this.pending.delete(job)
         entry.state = 'failed'
         entry.retryAt = 0
       }
     }
-    this.evict()
+    this.evict(selection.draw)
   }
 
   /** How many tiles are in each state, and what's drawn: for looking into it while developing. */
@@ -455,9 +482,16 @@ export class WorldTiles {
     entry.mesh = mesh
   }
 
-  private evict(): void {
+  /**
+   * Lets go of the least recently used tiles beyond the cache's size, but
+   * never what's drawn, the tiles under what's drawn (they stand in when
+   * the view moves and finer tiles aren't ready), or the coarsest few.
+   */
+  private evict(drawn: readonly TileId[]): void {
+    const keep = new Set<string>()
+    for (const tile of drawn) for (let z = tile.z - 1; z >= 0; z--) keep.add(tileKey(ancestorAt(tile, z)))
     const drop = <E extends GroundEntry | BuildingEntry>(map: Map<string, E>, limit: number) => {
-      const loaded = [...map.values()].filter((e) => e.mesh && e.used < this.clock)
+      const loaded = [...map.values()].filter((e) => e.mesh && e.used < this.clock && !keep.has(e.key) && e.tile.z > KEEP_ZOOM)
       if (map.size <= limit && loaded.length <= limit) return
       loaded.sort((a, b) => a.used - b.used)
       for (const entry of loaded.slice(0, Math.max(0, loaded.length - limit))) {
@@ -480,15 +514,30 @@ export class WorldTiles {
     return hits[0] ?? null
   }
 
-  /** The height of the ground shown at a point on the globe (above sea level), or null where there's none yet. */
-  groundHeight(lon: number, lat: number): number | null {
+  /**
+   * The height of the ground at a point on the globe (above sea level), from
+   * the finest tile loaded there (drawn or not: behind the camera too), or
+   * null where none is loaded yet. `minZoom` leaves out coarser tiles
+   * (their hills are too rough to keep a camera off the ground by).
+   */
+  groundHeight(lon: number, lat: number, minZoom = 0): number | null {
+    const n = (z: number) => 2 ** z
+    const latR = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
+    const fx = (lon + 180) / 360
+    const fy = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2
+    let mesh: Mesh | null = null
+    for (let z = MAX_ZOOM; z >= minZoom && !mesh; z--) {
+      const entry = this.ground.get(`${z}/${Math.floor(fx * n(z))}/${Math.floor(fy * n(z))}`)
+      if (entry?.state === 'ready' && entry.mesh) mesh = entry.mesh
+    }
+    if (!mesh) return null
     const frame = enuFrame(lon, lat, 0)
     const from = this.toScene(fromFrame(frame, [0, 0, 12000]))
     const down = this.directionToScene([-frame.up[0], -frame.up[1], -frame.up[2]]).normalize()
     ray.ray.set(from, down)
     ray.far = 24000
-    const ground = this.drawn.filter((m) => m.userData.worldGround)
-    const hit = ray.intersectObjects(ground, false)[0]
+    mesh.updateMatrixWorld()
+    const hit = ray.intersectObject(mesh, false)[0]
     if (!hit) return null
     return lonLatFromEcef(this.toEcef(hit.point)).height
   }

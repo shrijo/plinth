@@ -132,6 +132,8 @@ export class GlobeControls {
   private last: Touch | null = null
   private gestureScale: number | null = null
   private pinch: { distance: number; angle: number; mid: Touch } | null = null
+  /** What a two-finger gesture turned out to be, once it has moved far enough to tell. */
+  private gesture: { kind: 'tilt' | 'pinch' | null; start: Touch[] } | null = null
 
   constructor(element: HTMLElement, world: WorldTiles, getCamera: () => PerspectiveCamera, view: GlobeView) {
     this.element = element
@@ -183,7 +185,7 @@ export class GlobeControls {
     // Never below the ground: tilt up until the camera is clear of it.
     for (let i = 0; i < 12; i++) {
       const camera = lonLatFromEcef(poseOf(view).position)
-      const below = this.world.groundHeight(camera.lon, camera.lat)
+      const below = this.world.groundHeight(camera.lon, camera.lat, 10)
       if (below === null || camera.height > below + CLEARANCE || view.pitch <= 0) break
       view.pitch = Math.max(0, view.pitch - 0.05)
     }
@@ -376,6 +378,7 @@ export class GlobeControls {
       this.mode = null
       this.pinch = this.pinchState()
       this.grab = this.surfaceAt(this.pinch.mid.x, this.pinch.mid.y)
+      this.gesture = { kind: null, start: [...this.touches.values()].map((t) => ({ ...t })) }
     }
   }
 
@@ -397,15 +400,24 @@ export class GlobeControls {
       if (this.mode === 'pan') this.dragTo(e.clientX, e.clientY)
       else if (this.mode === 'orbit') this.orbit(e.clientX - this.last.x, e.clientY - this.last.y)
       this.last = { x: e.clientX, y: e.clientY }
-    } else if (this.touches.size === 2 && this.pinch) {
+    } else if (this.touches.size === 2 && this.pinch && this.gesture) {
       const now = this.pinchState()
       const before = this.pinch
-      const spread = now.distance / Math.max(before.distance, 1)
-      const dy = now.mid.y - before.mid.y
-      // Both fingers sliding up or down together, without spreading: tilt.
-      if (Math.abs(spread - 1) < 0.01 && Math.abs(dy) > Math.abs(now.mid.x - before.mid.x) * 1.5 && Math.abs(dy) > 1) {
-        this.orbit(0, dy)
-      } else {
+      const gesture = this.gesture
+      if (!gesture.kind) {
+        // Both fingers sliding up or down together, without spreading or turning, is a tilt; anything else a pinch.
+        const moved = [...this.touches.values()].map((t, i) => ({ dx: t.x - gesture.start[i]!.x, dy: t.y - gesture.start[i]!.y }))
+        const [a, b] = moved as [{ dx: number; dy: number }, { dx: number; dy: number }]
+        const travel = Math.max(Math.hypot(a.dx, a.dy), Math.hypot(b.dx, b.dy))
+        if (travel > 12) {
+          const together = Math.sign(a.dy) === Math.sign(b.dy) && Math.abs(a.dy) > Math.abs(a.dx) * 1.5 && Math.abs(b.dy) > Math.abs(b.dx) * 1.5
+          const spread = Math.abs(Math.abs(a.dy) - Math.abs(b.dy))
+          gesture.kind = together && spread < Math.max(Math.abs(a.dy), Math.abs(b.dy)) * 0.5 ? 'tilt' : 'pinch'
+        }
+      }
+      if (gesture.kind === 'tilt') this.orbit(0, now.mid.y - before.mid.y)
+      else if (gesture.kind === 'pinch') {
+        const spread = now.distance / Math.max(before.distance, 1)
         if (Math.abs(spread - 1) > 1e-4) this.zoomAt(1 / spread, now.mid.x, now.mid.y)
         let turn = now.angle - before.angle
         turn = Math.atan2(Math.sin(turn), Math.cos(turn))
@@ -419,6 +431,7 @@ export class GlobeControls {
   private onUp = (e: PointerEvent) => {
     this.touches.delete(e.pointerId)
     if (this.element.hasPointerCapture(e.pointerId)) this.element.releasePointerCapture(e.pointerId)
+    this.gesture = null
     if (this.touches.size === 1) {
       // From two fingers back to one: carry on dragging from where it is.
       const [rest] = [...this.touches.values()] as [Touch]

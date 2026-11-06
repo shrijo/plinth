@@ -53,6 +53,8 @@ export function tileSphere(tile: TileId, low: number, high: number): Bounds {
 export interface Selection {
   /** Tiles to draw: ready, covering the view once each. */
   draw: TileId[]
+  /** The tiles the view calls for, ready or not (where splitting stops). */
+  ideal: TileId[]
   /** Tiles to load, the most needed first. */
   want: TileId[]
 }
@@ -86,6 +88,7 @@ function behindHorizon(camera: Vec3, bounds: Bounds): boolean {
 
 export function selectTiles(view: View, selector: Selector): Selection {
   const draw: TileId[] = []
+  const ideal: TileId[] = []
   const want: { tile: TileId; priority: number }[] = []
   const cover = (tile: TileId): TileId[] | null => {
     const key = tileKey(tile)
@@ -101,6 +104,7 @@ export function selectTiles(view: View, selector: Selector): Selection {
     const texel = tileWidth(tile) / view.textureSize
     const error = (texel / distance) * view.pixelsPerMetre
     const refine = tile.z < view.maxZoom && (tile.z < 2 || error > view.maxError)
+    if (!refine) ideal.push(tile)
     if (refine) {
       const parts: TileId[] = []
       let covered = true
@@ -117,7 +121,7 @@ export function selectTiles(view: View, selector: Selector): Selection {
   }
   draw.push(...(cover({ z: 0, x: 0, y: 0 }) ?? []))
   want.sort((a, b) => a.priority - b.priority)
-  return { draw, want: want.map((w) => w.tile) }
+  return { draw, ideal, want: want.map((w) => w.tile) }
 }
 
 /** Metres from the Earth's middle to its surface at the equator. */

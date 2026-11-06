@@ -64,6 +64,45 @@ describe('ground heights', async () => {
   })
 })
 
+describe('buildings', () => {
+  const square = (x0: number, y0: number, x1: number, y1: number, clockwise: boolean) => {
+    // Tile units, y running south.
+    const ring = [x0, y0, x1, y0, x1, y1, x0, y1]
+    if (!clockwise) for (let i = 0; i < 2; i++) [ring[2 + i], ring[6 + i]] = [ring[6 + i]!, ring[2 + i]!]
+    return Float64Array.from(ring)
+  }
+
+  for (const clockwise of [true, false]) {
+    it(`faces walls outwards and the roof up, whichever way the outline runs (${clockwise ? 'clockwise' : 'anticlockwise'})`, () => {
+      const outer = square(0.4, 0.4, 0.6, 0.6, clockwise)
+      const mesh = buildingMesh(tile, [{ shape: { outer, holes: [] }, height: 20, minHeight: 0 }], () => 400, {
+        wall: [1, 1, 1],
+        roof: [0.9, 0.9, 0.9],
+      })!
+      const p = mesh.positions
+      const centre = [0, 0, 0]
+      for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) centre[k]! += p[i + k]! / (p.length / 3)
+      let walls = 0
+      for (let t = 0; t < mesh.indices.length; t += 3) {
+        const [a, b, c] = [mesh.indices[t]!, mesh.indices[t + 1]!, mesh.indices[t + 2]!].map((k) => [p[k * 3]!, p[k * 3 + 1]!, p[k * 3 + 2]!])
+        const u = [b![0]! - a![0]!, b![1]! - a![1]!, b![2]! - a![2]!]
+        const v = [c![0]! - a![0]!, c![1]! - a![1]!, c![2]! - a![2]!]
+        // The way the triangle faces (anticlockwise front), and the normal given with it.
+        const face = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!]
+        const k = mesh.indices[t]! * 3
+        const normal = [mesh.normals[k]!, mesh.normals[k + 1]!, mesh.normals[k + 2]!]
+        expect(face[0]! * normal[0]! + face[1]! * normal[1]! + face[2]! * normal[2]!).toBeGreaterThan(0)
+        if (Math.abs(normal[1]!) < 0.1) {
+          walls++
+          const out = [a![0]! - centre[0]!, 0, a![2]! - centre[2]!]
+          expect(out[0]! * normal[0]! + out[2]! * normal[2]!).toBeGreaterThan(0)
+        } else expect(normal[1]).toBeGreaterThan(0.9)
+      }
+      expect(walls).toBe(8)
+    })
+  }
+})
+
 describe('the Earth', () => {
   it('goes to ECEF and back', () => {
     const p = ecefFromLonLat(8.54, 47.37, 410)

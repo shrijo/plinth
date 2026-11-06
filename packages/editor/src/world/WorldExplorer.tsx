@@ -256,7 +256,6 @@ const skyMaterial = new ShaderMaterial({
     }`,
 })
 
-const EARTH = 6371000
 const corner = new Vector3()
 
 function ExplorerScene({
@@ -320,8 +319,9 @@ function ExplorerScene({
     const view = controls.view
 
     // Depth: from close in to past the horizon (and the mountains beyond it).
-    const fromCentre = Math.hypot(...ecefFromLonLat(view.lon, view.lat, view.height)) + altitude
-    const horizon = Math.sqrt(Math.max(fromCentre * fromCentre - EARTH * EARTH, 0))
+    const surface = Math.hypot(...ecefFromLonLat(view.lon, view.lat, 0))
+    const fromCentre = surface + view.height + altitude
+    const horizon = Math.sqrt(Math.max(fromCentre * fromCentre - surface * surface, 0))
     const near = Math.min(Math.max(altitude * 0.02, 0.3), 2e5)
     const far = Math.min(horizon + 300e3, 6e7)
     if (Math.abs(camera.near - near) > near * 0.2 || Math.abs(camera.far - far) > far * 0.05) {
