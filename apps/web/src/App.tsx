@@ -12,11 +12,21 @@ import {
   serializeProject,
   type Snapshot,
 } from '@plinth/core'
-import { exportModel as exportModelFile, PlinthEditor, type ExportedFile, type ModelFormat, type PlinthEditorApi } from '@plinth/editor'
+import {
+  exportModel as exportModelFile,
+  PlinthEditor,
+  WorldExplorer,
+  type ExportedFile,
+  type GlobeView,
+  type ModelFormat,
+  type PlinthEditorApi,
+  type WorldArea,
+} from '@plinth/editor'
+import { buildSite, planSite } from '@plinth/world'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { fileSafe } from './files.ts'
 import { Gallery } from './gallery/Gallery.tsx'
-import { createProject, getProject, letGo, openProject, statsOf, updateProject, type OpenProject } from './gallery/store.ts'
+import { createProject, getProject, handOver, letGo, openProject, statsOf, updateProject, type OpenProject } from './gallery/store.ts'
 import { loadPlatform, type Platform } from './platform/index.ts'
 import { ProjectSync, type Peer, type SyncStatus } from '@plinth/sync'
 import { useSession } from './cloud/session.ts'
@@ -26,13 +36,25 @@ import { cloudServices } from './cloud/supabase.ts'
 const THUMB_WIDTH = 640
 const THUMB_HEIGHT = 400
 
-/** The open city is in the address (#/city/<id>), so a reload stays in it and Back returns to the gallery. */
-function readRoute(): string | null {
-  const match = /^#\/city\/([\w-]+)/.exec(window.location.hash)
-  return match?.[1] ?? null
+/**
+ * Where the app is, kept in the address so a reload stays there and Back
+ * returns: the gallery (#/), a city (#/city/<id>), or the world
+ * (#/world/<lat>,<lon>,<metres away>).
+ */
+type Route = { kind: 'gallery' } | { kind: 'city'; id: string } | { kind: 'world'; view: Partial<GlobeView> | null }
+
+function readRoute(): Route {
+  const city = /^#\/city\/([\w-]+)/.exec(window.location.hash)
+  if (city) return { kind: 'city', id: city[1]! }
+  const world = /^#\/world(?:\/(-?[\d.]+),(-?[\d.]+)(?:,([\d.]+))?)?/.exec(window.location.hash)
+  if (world) {
+    const [, lat, lon, range] = world
+    return { kind: 'world', view: lat && lon ? { lat: Number(lat), lon: Number(lon), ...(range ? { range: Number(range) } : {}) } : null }
+  }
+  return { kind: 'gallery' }
 }
 
-function useRoute(): [string | null, (id: string | null) => void] {
+function useRoute(): [Route, (id: string | null) => void, () => void] {
   const [route, setRoute] = useState(readRoute)
   useEffect(() => {
     const onChange = () => setRoute(readRoute())
@@ -42,13 +64,16 @@ function useRoute(): [string | null, (id: string | null) => void] {
   const navigate = useCallback((id: string | null) => {
     window.location.hash = id ? `#/city/${id}` : '#/'
   }, [])
-  return [route, navigate]
+  const explore = useCallback(() => {
+    window.location.hash = '#/world'
+  }, [])
+  return [route, navigate, explore]
 }
 
 export function App() {
   const [platform, setPlatform] = useState<Platform | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [cityId, navigate] = useRoute()
+  const [route, navigate, explore] = useRoute()
 
   useEffect(() => {
     loadPlatform()
@@ -58,8 +83,50 @@ export function App() {
 
   if (error) return <div className="app-message">Plinth could not start: {error}</div>
   if (!platform) return <div className="app-message">Loading…</div>
-  if (cityId) return <City key={cityId} id={cityId} platform={platform} navigate={navigate} />
-  return <Gallery platform={platform} onOpen={navigate} />
+  if (route.kind === 'city') return <City key={route.id} id={route.id} platform={platform} navigate={navigate} />
+  if (route.kind === 'world') return <World initial={route.view} navigate={navigate} />
+  return <Gallery platform={platform} onOpen={navigate} onExplore={explore} />
+}
+
+/** The world: look round, and make a site from a square of it. */
+function World({ initial, navigate }: { initial: Partial<GlobeView> | null; navigate: (id: string | null) => void }) {
+  // Read once: the address follows the view from here on, and mustn't move it.
+  const [start] = useState(initial)
+  const keepView = useCallback((view: GlobeView) => {
+    const hash = `#/world/${view.lat.toFixed(5)},${view.lon.toFixed(5)},${Math.round(view.range)}`
+    if (window.location.hash !== hash) window.history.replaceState(null, '', hash)
+  }, [])
+  const makeSite = useCallback(
+    async (area: WorldArea, report: (text: string) => void) => {
+      const plan = await planSite(area, { onProgress: report })
+      report(`Building ${plan.buildings.length} buildings and the streets…`)
+      // A moment for the message to show before the work.
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const project = await createProject(plan.name, (doc) => doc.build((tx) => buildSite(tx, plan)))
+      handOver(project)
+      navigate(project.id)
+    },
+    [navigate],
+  )
+  return (
+    <div className="app">
+      <main className="app-main">
+        <WorldExplorer initialView={start ?? undefined} onViewChange={keepView} onMakeSite={makeSite} />
+      </main>
+      <header className="app-header app-header-floating">
+        <div className="app-pill">
+          <button type="button" className="app-back" onClick={() => navigate(null)} title="All cities">
+            <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
+            <span>Cities</span>
+          </button>
+          <span className="app-divider" aria-hidden="true">
+            /
+          </span>
+          <span className="app-place">World</span>
+        </div>
+      </header>
+    </div>
+  )
 }
 
 /** Opens a city from the gallery and shows it in the editor. */

@@ -1,0 +1,239 @@
+/* The world explorer: the globe full screen, search at the top, the site square and its panel at the bottom. */
+
+.pw-explorer {
+  background: #f1f1ef;
+}
+
+.pw-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.pw-square {
+  fill: rgba(31, 35, 40, 0.06);
+  stroke: var(--pe-accent);
+  stroke-width: 2;
+  stroke-dasharray: 8 6;
+  stroke-linejoin: round;
+}
+
+.pw-search {
+  position: absolute;
+  top: var(--pe-top);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100% - 2 * var(--pe-gap)));
+  z-index: 2;
+}
+
+.pw-search form {
+  position: relative;
+}
+
+.pw-search input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 40px 0 16px;
+  border: 1px solid var(--pe-border);
+  border-radius: 999px;
+  background: var(--pe-surface);
+  box-shadow: var(--pe-shadow);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font: inherit;
+  font-size: 14px;
+  color: var(--pe-text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.pw-search input:focus-visible {
+  outline: 2px solid var(--pe-accent);
+  outline-offset: 1px;
+}
+
+.pw-spinner {
+  position: absolute;
+  right: 14px;
+  top: 12px;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--pe-accent-soft);
+  border-top-color: var(--pe-accent);
+  border-radius: 50%;
+  animation: pw-spin 0.8s linear infinite;
+}
+
+@keyframes pw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pw-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 6px;
+  border-radius: var(--pe-radius);
+  background: var(--pe-surface-solid);
+  box-shadow: var(--pe-shadow);
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.pw-results button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pw-results button:hover,
+.pw-results button:focus-visible {
+  background: var(--pe-input-bg);
+  outline: none;
+}
+
+.pw-results span,
+.pw-empty {
+  color: var(--pe-muted);
+  font-size: 12px;
+}
+
+.pw-empty {
+  padding: 8px 10px;
+}
+
+.pw-dock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--pe-gap) + 22px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  width: min(440px, calc(100% - 2 * var(--pe-gap)));
+  z-index: 2;
+}
+
+.pw-primary,
+.pw-secondary {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--pe-shadow);
+}
+
+.pw-primary {
+  background: var(--pe-accent);
+  color: #fff !important;
+}
+
+.pw-primary:hover:not(:disabled) {
+  background: var(--pe-accent-strong);
+}
+
+.pw-secondary {
+  background: var(--pe-surface-solid);
+  border-color: var(--pe-border);
+  box-shadow: none;
+}
+
+.pw-primary:disabled,
+.pw-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pw-panel {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--pe-radius);
+  background: var(--pe-surface);
+  box-shadow: var(--pe-shadow);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.pw-size {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pw-size span {
+  color: var(--pe-muted);
+}
+
+.pw-size input {
+  flex: 1;
+  accent-color: var(--pe-accent);
+}
+
+.pw-size output {
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pw-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pw-hint {
+  margin: 10px 0 0;
+  color: var(--pe-muted);
+  font-size: 12px;
+}
+
+.pw-hint[data-error] {
+  color: var(--pe-danger);
+}
+
+.pw-credit {
+  position: absolute;
+  right: 8px;
+  bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--pe-muted);
+  font-size: 10.5px;
+  pointer-events: none;
+  max-width: calc(100% - 16px);
+  text-align: right;
+}
+
+@media (max-width: 600px) {
+  .pw-search {
+    top: calc(var(--pe-top) + 52px);
+  }
+
+  .pw-dock {
+    bottom: calc(var(--pe-gap) + 34px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .pw-credit {
+    font-size: 9.5px;
+  }
+}
+
+.pw-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}

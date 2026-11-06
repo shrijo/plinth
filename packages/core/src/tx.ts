@@ -1,4 +1,5 @@
 import type * as Y from 'yjs'
+import type { Vec2 } from './math.ts'
 import {
   DEFAULT_META,
   type Building,
@@ -302,6 +303,15 @@ export function isGeoOrigin(v: unknown): v is GeoOrigin {
   return (o.kind === 'lonlat' && finite(o.lon) && finite(o.lat)) || (o.kind === 'projected' && finite(o.x) && finite(o.y))
 }
 
+/** A polygon of at least three finite points. */
+export function isRing(v: unknown): v is Vec2[] {
+  return (
+    Array.isArray(v) &&
+    v.length >= 3 &&
+    v.every((p) => typeof p === 'object' && p !== null && Number.isFinite((p as Vec2).x) && Number.isFinite((p as Vec2).y))
+  )
+}
+
 export function readMeta(map: Y.Map<unknown>): Meta {
   const name = map.get('name')
   const positive = (key: 'wallThickness' | 'slabThickness'): number => {
@@ -311,6 +321,7 @@ export function readMeta(map: Y.Map<unknown>): Meta {
   const standard = map.get('areaStandard')
   const origin = map.get('origin')
   const ground = map.get('ground')
+  const worldArea = map.get('worldArea')
   return {
     schemaVersion: 3,
     name: typeof name === 'string' ? name : DEFAULT_META.name,
@@ -319,5 +330,6 @@ export function readMeta(map: Y.Map<unknown>): Meta {
     areaStandard: standard === 'sia416' || standard === 'din277' ? (standard as AreaStandard) : DEFAULT_META.areaStandard,
     ...(isGeoOrigin(origin) ? { origin } : {}),
     ...(typeof ground === 'number' && Number.isFinite(ground) ? { ground } : {}),
+    ...(isRing(worldArea) ? { worldArea: worldArea.map((p) => ({ x: p.x, y: p.y })) } : {}),
   }
 }

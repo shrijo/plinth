@@ -25,10 +25,12 @@ interface GalleryProps {
   platform: Platform
   /** Opens a project in the editor. */
   onOpen: (id: string) => void
+  /** Opens the world, to make a site from a real place. */
+  onExplore: () => void
 }
 
 /** Every city the user has, newest first, and the example to start from. */
-export function Gallery({ platform, onOpen }: GalleryProps) {
+export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +103,9 @@ export function Gallery({ platform, onOpen }: GalleryProps) {
           <AccountButton session={session} />
           <button type="button" className="app-button" onClick={() => void importFile()} disabled={!!busy}>
             Open file…
+          </button>
+          <button type="button" className="app-button" onClick={onExplore} disabled={!!busy} title="Make a site from a real place">
+            Explore the world
           </button>
           <button type="button" className="app-button app-button-primary" onClick={() => void newCity()} disabled={!!busy}>
             New city

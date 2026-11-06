@@ -5,6 +5,8 @@ A 3D site and building editor for the browser, the desktop and phones. Cities li
 - **Site editor** (where it starts): streets with lanes, sidewalks, bike lanes, parking and zebra crossings, straight or curved, joined where they meet; and buildings as shells (outer walls, floors and roof) that you draw, place and rotate; their shape is edited in the building editor. Far away, windows and doors drop out.
 - **Building editor** (double-click a building): one building in detail. Draw walls directly in 3D; walls that cross or meet in a T stay separate until you join them with the button over the intersection. Enclosed spaces become rooms with live areas, floors stack into the building, and windows and doors cut into walls and open and close.
 
+And **the world** (Explore the world, in the gallery): the whole globe with real streets, buildings, water and hills, built as you look from open map data. Search for a place, fly there, and make a site from a square of it; the real city stays around the site.
+
 The concept doc lives at https://claude.ai/artifact/1Mvw2qn1LBB8vHTZZPhmj7.
 
 ## Layout
@@ -13,6 +15,7 @@ The concept doc lives at https://claude.ai/artifact/1Mvw2qn1LBB8vHTZZPhmj7.
 | --- | --- |
 | `packages/core` | The site model, stored in a Yjs document: buildings, levels, walls and openings, roofs, streets, parcels, spot heights, room tags; rooms, areas and slabs derived from the walls; street surfaces and junctions; roofs (with a straight skeleton), terrain, area figures by SIA 416 and DIN 277; IFC and DXF writers, GeoJSON and XYZ readers; geometry, snapping, undo, file format. Plain TypeScript, no React or three.js. |
 | `packages/editor` | `<PlinthEditor document={doc} />`: the React Three Fiber view with the site and building editors, tools, toolbar, level list, properties panel; `exportModel(snapshot, format)` for glTF, OBJ, STL and USDZ. Embeddable in other React apps. |
+| `packages/world` | The real world from open data: geodesy (WGS 84, local frames), web map tiles, reading vector tiles (OpenMapTiles scheme) and terrain tiles (terrarium PNGs, read without a canvas), meshes for a tile's ground and buildings, painting the ground's picture, choosing tiles for a view, place search (Photon, Nominatim), OpenStreetMap through Overpass, and planning and building a site from a square of the world. No React or three.js. |
 | `packages/sync` | Keeping a project's Yjs document in step with other copies: a change store and a live channel (interfaces), with memory versions for tests. |
 | `apps/web` | The web app: a gallery of cities kept in the browser (each saved as it changes, with a thumbnail), the editor, opening and saving `.plinth` files, imports and exports, and the optional cloud (Supabase: accounts, sharing, live collaboration). |
 | `supabase` | The database set-up for the cloud. |
@@ -64,8 +67,29 @@ File › Export writes the whole site:
 ## Parcels and terrain
 
 - **Parcels** (Parcel tool, P): draw an outline like a building's; drag its corners with the tool; click inside one to select it. The panel gives its area, the buildings on it, site coverage (ÜZ with SIA, GRZ with DIN) and floor area ratio (GFZ). File › Import parcels reads GeoJSON (cadastral or OpenStreetMap exports), in longitude and latitude or projected metres such as Swiss LV95.
-- **Terrain** (Terrain tool, G): spot heights, clicked onto the ground (each starts at the ground's height there) and dragged, or imported from XYZ or CSV files (x, y, height per line). A surface is drawn through them with contour lines; parcels follow it. A building's panel offers **Set on the terrain**, which puts its ground floor at the lowest ground under it. Streets stay level at the site's zero.
+- **Terrain** (Terrain tool, G): spot heights, clicked onto the ground (each starts at the ground's height there) and dragged, or imported from XYZ or CSV files (x, y, height per line). A surface is drawn through them with contour lines; parcels follow it. A building's panel offers **Set on the terrain**, which puts its ground floor at the lowest ground under it. Streets follow the terrain.
 - Imports remember the real-world point at the site's zero, so parcels and terrain imported later line up. The first terrain import sets which height the site's zero stands for (its lowest ground); it can be changed in the Terrain tool's panel.
+
+## The world
+
+**Explore the world** in the gallery opens the globe. Everything on it is made while you look, from open data:
+
+- **Map data**: OpenStreetMap, as vector tiles from [OpenFreeMap](https://openfreemap.org) (OpenMapTiles scheme, zoom 0 to 14). The ground's picture (land, water, parks and woods, roads, railways and building outlines) is painted per tile, and buildings are extruded from their footprints to their heights.
+- **Ground heights**: terrarium tiles from the open terrain tiles on AWS (SRTM and other public sources, zoom 0 to 15). The ground is a grid draped over them, following the Earth's curve.
+- Tiles load finer as you come closer (a quadtree, split while a texel would cover more than about a pixel), are built in web workers and kept in a cache. Everything is drawn in a local frame round a point near the view (re-anchored as you move), so even street level on the far side of the globe is precise.
+
+Moving: drag pulls the ground along (from space, it turns the globe); the wheel, a pinch or a trackpad pinch moves closer to what's under the pointer; right-drag (or Ctrl or Shift and drag, or two fingers twisting and sliding up or down) turns and tilts. Tilting opens up as you come down. Search takes place names, addresses or coordinates (`47.37, 8.54`) and flies there. The address keeps the view (`#/world/<lat>,<lon>,<distance>`).
+
+**Make a site here** marks out a square (100 to 1000 m) at the middle of the view. **Make site** turns it into a new city in the gallery:
+
+- **Buildings** from OpenStreetMap through Overpass, one by one, with their floors (`building:levels`, or from `height`), roof shapes (gabled, hipped, skillion and the like, with their pitch), names or addresses. Buildings round a courtyard are cut into wings (Plinth's outlines are solid). Each gets a ground floor and a run of copies above it, and stands on the terrain under it.
+- **Streets** with lanes, sidewalks, bike lanes and parking from their tags; footpaths, tunnels and parking aisles are left out. Ways that share a point are joined.
+- **Terrain**: spot heights on a grid over the square (8 to 25 m apart). The site's zero is the ground at its middle, and its streets follow the terrain.
+- The public Overpass servers are often busy. They are asked one after the other, a few seconds apart; if none answers in 18 s the site is made from the map tiles instead (buildings with their heights, flat roofs; streets by class).
+
+A site made from the world keeps where it is (longitude and latitude, its ground height and its square), and the editor draws **the real world around it** (View › Real world around): the ground, water and buildings for 20 km, with the world's buildings and ground inside the square left out, as the site's own model stands there. The square's water and green are laid over the site's terrain. Any site with a longitude and latitude (from a GeoJSON import, say) gets the world around it too.
+
+Credits: © OpenStreetMap contributors (ODbL), OpenFreeMap, OpenMapTiles, terrain from Mapzen and AWS open data; shown in the corner of the world.
 
 ## Cloud
 

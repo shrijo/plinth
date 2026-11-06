@@ -26,7 +26,13 @@ const cache = new WeakMap<object, Terrain | null>()
 export function terrainOf(snapshot: Snapshot): Terrain | null {
   const hit = cache.get(snapshot.spotHeights)
   if (hit !== undefined) return hit
-  const points = Object.values(snapshot.spotHeights)
+  const terrain = terrainThrough(Object.values(snapshot.spotHeights))
+  cache.set(snapshot.spotHeights, terrain)
+  return terrain
+}
+
+/** The terrain through some spot heights (as terrainOf, for points not yet in a site). */
+export function terrainThrough(points: readonly SpotHeight[]): Terrain | null {
   let terrain: Terrain | null = null
   if (points.length >= 3) {
     const delaunay = Delaunator.from(
@@ -36,10 +42,9 @@ export function terrainOf(snapshot: Snapshot): Terrain | null {
     )
     if (delaunay.triangles.length >= 3) {
       const zs = points.map((p) => p.z)
-      terrain = { points, triangles: delaunay.triangles, low: Math.min(...zs), high: Math.max(...zs) }
+      terrain = { points, triangles: delaunay.triangles, low: zs.reduce((a, b) => Math.min(a, b)), high: zs.reduce((a, b) => Math.max(a, b)) }
     }
   }
-  cache.set(snapshot.spotHeights, terrain)
   return terrain
 }
 
@@ -182,4 +187,54 @@ export function groundUnder(terrain: Terrain, corners: readonly Vec2[]): number 
     if (z !== null) lowest = lowest === null ? z : Math.min(lowest, z)
   }
   return lowest === null ? null : Math.round(lowest * 100) / 100
+}
+
+/**
+ * A quick way to the ground's height at many points (draping streets, say):
+ * the triangles sorted into a grid of cells, so each look-up tries only
+ * the few in its cell.
+ */
+export function terrainSampler(terrain: Terrain): (p: Vec2) => number | null {
+  const { points, triangles } = terrain
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of points) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+  const count = triangles.length / 3
+  const side = Math.max(1, Math.ceil(Math.sqrt(count / 2)))
+  const cellW = Math.max((maxX - minX) / side, 1e-6)
+  const cellH = Math.max((maxY - minY) / side, 1e-6)
+  const cells: number[][] = Array.from({ length: side * side }, () => [])
+  const cellOf = (v: number, min: number, size: number) => Math.min(side - 1, Math.max(0, Math.floor((v - min) / size)))
+  for (let t = 0; t < count; t++) {
+    const a = points[triangles[t * 3]!]!
+    const b = points[triangles[t * 3 + 1]!]!
+    const c = points[triangles[t * 3 + 2]!]!
+    const x0 = cellOf(Math.min(a.x, b.x, c.x), minX, cellW)
+    const x1 = cellOf(Math.max(a.x, b.x, c.x), minX, cellW)
+    const y0 = cellOf(Math.min(a.y, b.y, c.y), minY, cellH)
+    const y1 = cellOf(Math.max(a.y, b.y, c.y), minY, cellH)
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) cells[y * side + x]!.push(t)
+  }
+  return (p) => {
+    if (p.x < minX - 1e-9 || p.x > maxX + 1e-9 || p.y < minY - 1e-9 || p.y > maxY + 1e-9) return null
+    for (const t of cells[cellOf(p.y, minY, cellH) * side + cellOf(p.x, minX, cellW)]!) {
+      const a = points[triangles[t * 3]!]!
+      const b = points[triangles[t * 3 + 1]!]!
+      const c = points[triangles[t * 3 + 2]!]!
+      const det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+      if (Math.abs(det) < 1e-12) continue
+      const u = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / det
+      const v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / det
+      const w = 1 - u - v
+      if (u >= -1e-9 && v >= -1e-9 && w >= -1e-9) return u * a.z + v * b.z + w * c.z
+    }
+    return null
+  }
 }

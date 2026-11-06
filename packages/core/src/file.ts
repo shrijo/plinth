@@ -19,7 +19,7 @@ import {
   type Wall,
   type WallNode,
 } from './model.ts'
-import { isGeoOrigin } from './tx.ts'
+import { isGeoOrigin, isRing } from './tx.ts'
 
 /** The on-disk project format: a `.plinth` file is this as JSON. */
 export interface ProjectFile {
@@ -143,6 +143,7 @@ export function parseProject(text: string): ProjectFile {
         : DEFAULT_META.areaStandard,
       ...(isGeoOrigin(meta.origin) ? { origin: meta.origin } : {}),
       ...(isFiniteNumber(meta.ground) ? { ground: meta.ground } : {}),
+      ...(isRing(meta.worldArea) ? { worldArea: meta.worldArea.map((p) => ({ x: p.x, y: p.y })) } : {}),
     },
     buildings,
     levels,

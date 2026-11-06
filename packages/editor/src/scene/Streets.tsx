@@ -2,6 +2,8 @@ import {
   buildSlabMesh,
   CURB_HEIGHT,
   streetGeometry,
+  terrainOf,
+  terrainSampler,
   toRing,
   type Id,
   type MeshData,
@@ -18,6 +20,10 @@ import { Outline } from './Outline.tsx'
 import { apparentDistance } from './lens.ts'
 import { HIDE_IN_PICTURES } from './pictures.ts'
 import { concatMeshes } from './shellMesh.ts'
+import { drapeMesh } from './drape.ts'
+
+/** The ground's height under a plan point, from the site's zero; null off the terrain. */
+type Ground = ((x: number, y: number) => number | null) | null
 
 /** Streets are drawn in square tiles of this size (metres): a base mesh and a paint mesh per tile. */
 const TILE = 400
@@ -47,7 +53,18 @@ export function Streets() {
   const outlines = useEditor((s) => s.showOutlines)
   const palette = PALETTES[useEditor((s) => s.style)]
   const [tiler] = useState(() => new StreetTiler())
-  const tiles = useMemo(() => tiler.update(geometry.pieces, palette), [tiler, geometry.pieces, palette])
+  const terrain = terrainOf(snapshot)
+  const zero = snapshot.meta.ground ?? 0
+  // Streets follow the terrain, where there is one.
+  const ground = useMemo<Ground>(() => {
+    if (!terrain) return null
+    const sample = terrainSampler(terrain)
+    return (x, y) => {
+      const h = sample({ x, y })
+      return h === null ? null : h - zero
+    }
+  }, [terrain, zero])
+  const tiles = useMemo(() => tiler.update(geometry.pieces, palette, ground), [tiler, geometry.pieces, palette, ground])
 
   const lit: [Id, 'hover' | 'selected'][] = []
   if (site) {
@@ -62,7 +79,7 @@ export function Streets() {
       ))}
       {lit.map(([id, look]) => {
         const outline = geometry.outlines.get(id)
-        return outline ? <StreetHighlight key={id} outline={outline} look={look} /> : null
+        return outline ? <StreetHighlight key={id} outline={outline} look={look} ground={ground} /> : null
       })}
     </group>
   )
@@ -80,6 +97,7 @@ interface StreetTileData {
 class StreetTiler {
   private parts = new WeakMap<StreetPiece, { palette: Palette; base: PaintedMesh; paint: MeshData }>()
   private tiles = new Map<string, StreetTileData>()
+  private ground: Ground = null
 
   private partsOf(piece: StreetPiece, palette: Palette) {
     const hit = this.parts.get(piece)
@@ -96,7 +114,12 @@ class StreetTiler {
     return parts
   }
 
-  update(pieces: readonly StreetPiece[], palette: Palette): StreetTileData[] {
+  update(pieces: readonly StreetPiece[], palette: Palette, ground: Ground): StreetTileData[] {
+    // New terrain: every tile is laid again.
+    if (ground !== this.ground) {
+      this.ground = ground
+      this.tiles.clear()
+    }
     const groups = new Map<string, StreetPiece[]>()
     for (const piece of pieces) {
       const key = `${Math.floor(piece.centre.x / TILE)},${Math.floor(piece.centre.y / TILE)}`
@@ -113,11 +136,13 @@ class StreetTiler {
       }
       const parts = list.map((p) => this.partsOf(p, palette))
       const [ix, iy] = key.split(',').map(Number) as [number, number]
+      const base = concatMeshes(parts.map((p) => p.base))
+      const paint = concatMeshes(parts.map((p) => p.paint))
       next.set(key, {
         key,
         pieces: list,
-        base: concatMeshes(parts.map((p) => p.base)),
-        paint: concatMeshes(parts.map((p) => p.paint)),
+        base: ground ? drapeMesh(base, ground) : base,
+        paint: ground ? drapeMesh(paint, ground) : paint,
         centre: [(ix + 0.5) * TILE, -(iy + 0.5) * TILE],
       })
     }
@@ -172,8 +197,11 @@ const StreetTile = memo(function StreetTile({ tile, outlines }: { tile: StreetTi
 })
 
 /** A hovered or selected street, tinted over its whole width. */
-const StreetHighlight = memo(function StreetHighlight({ outline, look }: { outline: Vec2[]; look: 'hover' | 'selected' }) {
-  const data = useMemo(() => buildSlabMesh([[toRing(outline)]], 0, CURB_HEIGHT + 0.01), [outline])
+const StreetHighlight = memo(function StreetHighlight({ outline, look, ground }: { outline: Vec2[]; look: 'hover' | 'selected'; ground: Ground }) {
+  const data = useMemo(() => {
+    const slab = buildSlabMesh([[toRing(outline)]], 0, CURB_HEIGHT + 0.01)
+    return ground ? drapeMesh(slab, ground) : slab
+  }, [outline, ground])
   const geometry = useBufferGeometry(data)
   return <mesh geometry={geometry} material={streetHighlight[look]} renderOrder={3} raycast={noRaycast} userData={HIDE_IN_PICTURES} />
 })

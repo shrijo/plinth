@@ -30,6 +30,12 @@ export interface Meta {
    * Buildings and streets are measured from the site's zero.
    */
   ground?: number
+  /**
+   * The real-world area the site was made from (from map data, see the
+   * world explorer), in site metres: around it the real world shows as
+   * context; inside it the site's own model stands in for it.
+   */
+  worldArea?: Vec2[]
 }
 
 /**
@@ -341,7 +347,10 @@ export interface SpotHeight {
   id: Id
   x: number
   y: number
-  /** Height above the site's zero, in metres. */
+  /**
+   * Its height in metres, in the same terms as Meta.ground (above sea level
+   * for imported terrain); the site draws it from its zero (z − ground).
+   */
   z: number
 }
 

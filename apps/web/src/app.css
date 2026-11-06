@@ -123,6 +123,12 @@ input {
   color: var(--app-muted);
 }
 
+.app-place {
+  padding: 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
 .app-name {
   min-width: 0;
   max-width: 280px;

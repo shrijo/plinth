@@ -135,6 +135,8 @@ export interface EditorState {
   timeOfDay: number
   /** Shading from the sky blocked in corners, at the foot of walls and down streets (costs some speed). */
   ambientOcclusion: boolean
+  /** The real world drawn round a site placed on the map (one with a longitude and latitude). */
+  showWorld: boolean
   /** The only buildings drawn while the others are hidden, to focus on them; null draws them all. */
   isolated: readonly Id[] | null
   /** Whether levels above the active one are drawn. */
@@ -162,6 +164,7 @@ export const VIEW_PREFERENCES = [
   'style',
   'timeOfDay',
   'ambientOcclusion',
+  'showWorld',
 ] as const
 export type ViewPreferences = { [K in (typeof VIEW_PREFERENCES)[number]]: EditorState[K] }
 
@@ -180,6 +183,7 @@ const DEFAULT_VIEW: ViewPreferences = {
   timeOfDay: DEFAULT_HOUR,
   // On by default, except on phones and tablets, where it costs too much battery.
   ambientOcclusion: !(typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches),
+  showWorld: true,
 }
 const PREFERENCES_KEY = 'plinth:view:2'
 

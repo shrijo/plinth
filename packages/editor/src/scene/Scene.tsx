@@ -18,6 +18,7 @@ import { Terrain } from './Terrain.tsx'
 import { SiteHandles } from './SiteHandles.tsx'
 import { Streets } from './Streets.tsx'
 import { WorkPlane } from './WorkPlane.tsx'
+import { WorldContext } from './WorldContext.tsx'
 
 export function Scene() {
   const mode = useEditor((s) => s.mode)
@@ -28,6 +29,7 @@ export function Scene() {
       <Environment />
       <CameraRig />
       <Ground />
+      <WorldContext />
       <Streets />
       <Terrain />
       <Parcels />

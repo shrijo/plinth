@@ -1,0 +1,22 @@
+{
+  "name": "@plinth/world",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@mapbox/vector-tile": "2.0.4",
+    "@plinth/core": "workspace:*",
+    "earcut": "^3.2.4",
+    "pbf": "4.0.1"
+  },
+  "devDependencies": {
+    "vitest": "^5.1.0"
+  }
+}

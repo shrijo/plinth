@@ -29,6 +29,8 @@ function ViewOptions({ site }: { site: boolean }) {
   const openId = useEditor((s) => s.buildingId)
   const isolated = useEditor((s) => s.isolated !== null)
   const occlusion = useEditor((s) => s.ambientOcclusion)
+  const world = useEditor((s) => s.showWorld)
+  const placed = useSnapshot().meta.origin?.kind === 'lonlat'
   return (
     <div className="pe-view-options">
       <label className="pe-daylight">
@@ -98,6 +100,12 @@ function ViewOptions({ site }: { site: boolean }) {
         <input type="checkbox" checked={outlines} onChange={(e) => ctx.store.setState({ showOutlines: e.target.checked })} />
         Outlines
       </label>
+      {placed && (
+        <label className="pe-check" title="The streets, buildings and land around the site, from open map data">
+          <input type="checkbox" checked={world} onChange={(e) => ctx.store.setState({ showWorld: e.target.checked })} />
+          Real world around
+        </label>
+      )}
     </div>
   )
 }

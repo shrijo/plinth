@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { CanvasTexture, MeshStandardMaterial, RepeatWrapping, SRGBColorSpace } from 'three'
 import { useEditor, useSnapshot } from '../context.ts'
 import { COLORS, PALETTES, type Palette } from './materials.ts'
+import { useWorldShown } from './worldShown.ts'
 
 /** The ground reaches this far out (metres) and fades into the haze. */
 const GROUND_RADIUS = 9000
@@ -59,6 +60,8 @@ export function Ground() {
   const buildingId = useEditor((s) => s.buildingId)
   const style = useEditor((s) => s.style)
   const palette = PALETTES[style]
+  // The real world has ground of its own.
+  const world = useWorldShown()
   const ground = site ? 0 : (sortedLevels(snapshot, buildingId ?? undefined)[0]?.elevation ?? 0)
   // Below the terrain, where there is one, so it never covers it.
   const terrain = terrainOf(snapshot)
@@ -73,7 +76,7 @@ export function Ground() {
 
   return (
     <>
-      <mesh rotation-x={-Math.PI / 2} position-y={groundLevel} material={groundMaterial} receiveShadow raycast={() => null}>
+      <mesh rotation-x={-Math.PI / 2} position-y={groundLevel} material={groundMaterial} receiveShadow raycast={() => null} visible={!world}>
         <circleGeometry args={[GROUND_RADIUS, 64]} />
       </mesh>
       {drawing && (
