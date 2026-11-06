@@ -55,6 +55,8 @@ export interface RoadFeature {
   oneway: boolean
   /** For service roads: what kind (driveway, parking aisle, alley...), or ''. */
   service: string
+  /** OpenStreetMap's highway type where the class lumps several (a path may be a footway, steps, a pedestrian street). */
+  subclass: string
 }
 
 export type AreaKind =
@@ -197,7 +199,7 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
       for (const shape of shapesOf(feature.loadGeometry(), extent)) features.areas.push({ shape, kind })
     } else if (feature.type === 2 && (cls === 'runway' || cls === 'taxiway')) {
       for (const line of linesOf(feature.loadGeometry(), extent)) {
-        features.roads.push({ line, kind: 'motorway', width: cls === 'runway' ? 45 : 18, tunnel: false, bridge: false, layer: -1, name: '', oneway: false, service: 'runway' })
+        features.roads.push({ line, kind: 'motorway', width: cls === 'runway' ? 45 : 18, tunnel: false, bridge: false, layer: -1, name: '', oneway: false, service: 'runway', subclass: cls })
       }
     }
   })
@@ -230,6 +232,7 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
         name,
         oneway: p.oneway === 1 || p.oneway === -1,
         service: typeof p.service === 'string' ? p.service : '',
+        subclass: typeof p.subclass === 'string' ? p.subclass : '',
       })
     }
   })

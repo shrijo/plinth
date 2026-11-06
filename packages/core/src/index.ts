@@ -1,5 +1,6 @@
 export * from './math.ts'
 export * from './model.ts'
+export * from './streetTypes.ts'
 export * from './ids.ts'
 export * from './tx.ts'
 export * from './document.ts'

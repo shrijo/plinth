@@ -242,6 +242,45 @@ export interface Street {
   /** Zebra crossings near each end. */
   crosswalkA: boolean
   crosswalkB: boolean
+  /**
+   * What kind of street it is, as OpenStreetMap's highway types: it sets the
+   * cross-section's defaults, and living streets and pedestrian zones are
+   * one paved surface, without curbs or lane lines. Residential when missing.
+   */
+  kind?: StreetKind
+  /** Traffic one way (from a to b): no line down the middle. */
+  oneway?: boolean
+}
+
+/** Street types, as OpenStreetMap's `highway=*` values. */
+export type StreetKind =
+  | 'motorway'
+  | 'trunk'
+  | 'primary'
+  | 'secondary'
+  | 'tertiary'
+  | 'unclassified'
+  | 'residential'
+  | 'living_street'
+  | 'pedestrian'
+  | 'service'
+
+export const STREET_KINDS: readonly StreetKind[] = [
+  'motorway',
+  'trunk',
+  'primary',
+  'secondary',
+  'tertiary',
+  'unclassified',
+  'residential',
+  'living_street',
+  'pedestrian',
+  'service',
+]
+
+/** Whether a street is one shared surface (a living street or pedestrian zone): paved, no curbs, no lane lines. */
+export function isSharedStreet(street: Pick<Street, 'kind'>): boolean {
+  return street.kind === 'living_street' || street.kind === 'pedestrian'
 }
 
 export interface Vec2Like {

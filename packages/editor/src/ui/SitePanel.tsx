@@ -25,7 +25,11 @@ import {
   updateLevel,
   type Id,
   type Snapshot,
+  isSharedStreet,
+  STREET_KINDS,
+  STREET_TYPES,
   type Street,
+  type StreetKind,
   type StreetProps,
 } from '@plinth/core'
 import { useMemo, useState } from 'react'
@@ -255,29 +259,61 @@ function StreetProperties({ streets, snapshot }: { streets: Street[]; snapshot: 
   )
 }
 
-/** The lane count, lane width and both sides of a street. Left and right are as drawn, looking from the start. */
+/**
+ * A street's type (OpenStreetMap's highway types: picking one sets the
+ * cross-section), whether it's one way, then the lane count, lane width and
+ * both sides. Left and right are as drawn, looking from the start.
+ */
 function StreetFields({ props, onChange }: { props: StreetProps; onChange: (props: Partial<StreetProps>) => void }) {
+  const kind = props.kind ?? 'residential'
   return (
     <>
-      <Stepper
-        label="Driving lanes"
-        value={props.lanes}
-        min={1}
-        max={MAX_LANES}
-        fewer="One lane fewer"
-        more="One more lane"
-        onChange={(lanes) => onChange({ lanes })}
-      />
-      <LengthField label="Lane width" value={props.laneWidth} onCommit={(laneWidth) => onChange({ laneWidth })} />
-      <div className="pe-sides">
-        <span />
-        <span className="pe-sides-head">Left</span>
-        <span className="pe-sides-head">Right</span>
-        <SideRow label="Sidewalk" left={props.sidewalkLeft} right={props.sidewalkRight} onLeft={(sidewalkLeft) => onChange({ sidewalkLeft })} onRight={(sidewalkRight) => onChange({ sidewalkRight })} />
-        <SideRow label="Bike lane" left={props.bikeLeft} right={props.bikeRight} onLeft={(bikeLeft) => onChange({ bikeLeft })} onRight={(bikeRight) => onChange({ bikeRight })} />
-        <SideRow label="Parking" left={props.parkingLeft} right={props.parkingRight} onLeft={(parkingLeft) => onChange({ parkingLeft })} onRight={(parkingRight) => onChange({ parkingRight })} />
-      </div>
-      <p className="pe-note">Widths in metres; 0 leaves it out. Left and right as drawn, looking from the start.</p>
+      <label className="pe-field">
+        <span className="pe-field-label">Type</span>
+        <select
+          className="pe-input"
+          value={kind}
+          onChange={(e) => {
+            const next = e.target.value as StreetKind
+            onChange({ ...STREET_TYPES[next].props, oneway: props.oneway ?? false })
+          }}
+        >
+          {STREET_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {STREET_TYPES[k].name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <CheckField label="One way (in the drawn direction)" checked={!!props.oneway} onChange={(oneway) => onChange({ oneway })} />
+      {isSharedStreet(props) ? (
+        <>
+          <LengthField label="Width" value={props.laneWidth * props.lanes} onCommit={(width) => onChange({ laneWidth: width / Math.max(props.lanes, 1) })} />
+          <p className="pe-note">One paved surface, wall to wall: no curbs, no lane lines.</p>
+        </>
+      ) : (
+        <>
+          <Stepper
+            label="Driving lanes"
+            value={props.lanes}
+            min={1}
+            max={MAX_LANES}
+            fewer="One lane fewer"
+            more="One more lane"
+            onChange={(lanes) => onChange({ lanes })}
+          />
+          <LengthField label="Lane width" value={props.laneWidth} onCommit={(laneWidth) => onChange({ laneWidth })} />
+          <div className="pe-sides">
+            <span />
+            <span className="pe-sides-head">Left</span>
+            <span className="pe-sides-head">Right</span>
+            <SideRow label="Sidewalk" left={props.sidewalkLeft} right={props.sidewalkRight} onLeft={(sidewalkLeft) => onChange({ sidewalkLeft })} onRight={(sidewalkRight) => onChange({ sidewalkRight })} />
+            <SideRow label="Bike lane" left={props.bikeLeft} right={props.bikeRight} onLeft={(bikeLeft) => onChange({ bikeLeft })} onRight={(bikeRight) => onChange({ bikeRight })} />
+            <SideRow label="Parking" left={props.parkingLeft} right={props.parkingRight} onLeft={(parkingLeft) => onChange({ parkingLeft })} onRight={(parkingRight) => onChange({ parkingRight })} />
+          </div>
+          <p className="pe-note">Widths in metres; 0 leaves it out. Left and right as drawn, looking from the start.</p>
+        </>
+      )}
     </>
   )
 }

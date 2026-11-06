@@ -104,7 +104,8 @@ class StreetTiler {
     if (hit && hit.palette === palette) return hit
     const curb = shade(palette.sidewalk, -0.06)
     const base = concatMeshes([
-      paint(buildSlabMesh(piece.road, -0.02, ROAD_TOP), () => palette.road),
+      // A living street or pedestrian zone is paved like a sidewalk, wall to wall.
+      paint(buildSlabMesh(piece.road, -0.02, ROAD_TOP), () => (piece.shared ? palette.sidewalk : palette.road)),
       paint(buildSlabMesh(piece.bike, -0.02, ROAD_TOP), () => palette.bike),
       paint(buildSlabMesh(piece.parking, -0.02, ROAD_TOP), () => palette.parking),
       paint(buildSlabMesh(piece.sidewalks, 0, CURB_HEIGHT), (_x, ny) => (ny > 0.5 ? palette.sidewalk : curb)),

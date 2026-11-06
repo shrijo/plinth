@@ -1,19 +1,10 @@
 import earcut from 'earcut'
-import {
-  CURB_HEIGHT,
-  DEFAULT_STREET,
-  difference,
-  streetGeometry,
-  type MultiPolygon,
-  type Snapshot,
-  type Street,
-  type StreetNode,
-  type Vec2,
-} from '@plinth/core'
+import { CURB_HEIGHT, difference, streetGeometry, type MultiPolygon, type Snapshot, type Vec2 } from '@plinth/core'
 import type { RoadFeature, RoadKind } from './features.ts'
 import type { Ground } from './ground.ts'
 import { ecefFromLonLat, type Frame } from './geo.ts'
 import { tileFrame, tileWidth, type MeshBuffers } from './mesh.ts'
+import { tidyNetwork, type StreetLine } from './network.ts'
 import { streetFromTags } from './site.ts'
 import { tileLat, type TileId } from './tiles.ts'
 
@@ -55,6 +46,7 @@ const HIGHWAYS: Partial<Record<RoadKind, string>> = {
   tertiary: 'tertiary',
   minor: 'residential',
   service: 'service',
+  path: 'pedestrian',
 }
 
 /** A street's cross-section from what the map says of it (as a site made from the map gets). */
@@ -62,11 +54,13 @@ function propsOf(road: RoadFeature, town: boolean) {
   const highway = HIGHWAYS[road.kind]
   if (!highway) return null
   if (road.kind === 'service' && road.service && road.service !== 'alley') return null
+  // Of the paths, only pedestrian streets: footways (often a street's own sidewalk, mapped apart), steps and trails stay painted.
+  if (road.kind === 'path' && road.subclass !== 'pedestrian') return null
   const props = streetFromTags({ highway, ...(road.oneway ? { oneway: 'yes' } : {}) })
   if (!props) return null
   // Out of town, no sidewalks.
   if (!town) props.sidewalkLeft = props.sidewalkRight = 0
-  return { ...DEFAULT_STREET, ...props }
+  return props
 }
 
 /**
@@ -84,30 +78,23 @@ export function streetMesh(
   const metres = tileWidth(tile)
   // Plan metres: x east, y north (tile units run south), as the editor's sites.
   const toPlan = (u: number, v: number): Vec2 => ({ x: u * metres, y: -v * metres })
-  const nodes: Record<string, StreetNode> = {}
-  const streets: Record<string, Street> = {}
-  const nodeAt = (u: number, v: number): string => {
-    // The map's points are on a grid of 4096 a tile: points that meet are the same point.
-    const id = `${Math.round(u * 4096)}:${Math.round(v * 4096)}`
-    if (!nodes[id]) nodes[id] = { id, ...toPlan(u, v) }
-    return id
-  }
-  let count = 0
+  const lines: StreetLine[] = []
   for (const road of roads) {
     if (road.tunnel || road.bridge) continue
     const props = propsOf(road, ground.town)
     if (!props) continue
     const line = simplify(road.line, 0.4 / metres)
-    for (let i = 0; i + 3 < line.length; i += 2) {
-      const a = nodeAt(line[i]!, line[i + 1]!)
-      const b = nodeAt(line[i + 2]!, line[i + 3]!)
-      if (a === b) continue
-      const id = `s${count++}`
-      streets[id] = { ...props, id, a, b, control: null }
-    }
+    const points: Vec2[] = []
+    for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
+    lines.push({ points, props })
   }
-  if (count === 0) return null
-  const geometry = streetGeometry({ streetNodes: nodes, streets } as unknown as Snapshot)
+  if (lines.length === 0) return null
+  // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
+  // data's edge (beyond the tile) are where it was cut, not dead ends.
+  const network = tidyNetwork(lines, {
+    keepEnd: (p) => p.x < 1 || p.x > metres - 1 || p.y > -1 || p.y < -metres + 1,
+  })
+  const geometry = streetGeometry({ streetNodes: network.nodes, streets: network.streets } as unknown as Snapshot)
 
   // The tile itself, in plan metres: everything is cut to it.
   const rect = { minX: 0, maxX: metres, minY: -metres, maxY: 0 }
@@ -128,41 +115,39 @@ export function streetMesh(
     minY: Math.min(...hole.map((p) => p[1])),
     maxY: Math.max(...hole.map((p) => p[1])),
   }
+  // Whether a region's bounds overlap the area's (a long street can cross it with no corner near it).
   const near = (region: MultiPolygon) =>
     !!holeBox &&
-    region.some((polygon) =>
-      polygon[0]!.some(([x, y]) => x > holeBox.minX - 60 && x < holeBox.maxX + 60 && y > holeBox.minY - 60 && y < holeBox.maxY + 60),
-    )
+    region.some((polygon) => {
+      let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity]
+      for (const [x, y] of polygon[0]!) {
+        x0 = Math.min(x0, x)
+        x1 = Math.max(x1, x)
+        y0 = Math.min(y0, y)
+        y1 = Math.max(y1, y)
+      }
+      return x1 > holeBox.minX && x0 < holeBox.maxX && y1 > holeBox.minY && y0 < holeBox.maxY
+    })
   const cut = (region: MultiPolygon): MultiPolygon => {
     const own = clip(region, rect)
     return hole && near(own) ? difference(own, [[hole]]) : own
-  }
-  const inHole = (quad: Vec2[]) => {
-    if (!hole) return false
-    const x = quad.reduce((s, p) => s + p.x, 0) / quad.length
-    const y = quad.reduce((s, p) => s + p.y, 0) / quad.length
-    let inside = false
-    for (let i = 0, j = hole.length - 1; i < hole.length; j = i++) {
-      const [xi, yi] = hole[i]!
-      const [xj, yj] = hole[j]!
-      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
-    }
-    return inside
   }
   const writer = new StreetWriter(tile, metres, ground)
   for (const piece of geometry.pieces) {
     // A road between sidewalks needs no sides of its own: the sidewalks' solids flank it.
     const flanked = piece.sidewalks.length > 0
     const road = cut(piece.road)
-    if (flanked) writer.top(road, ROAD, colours.road)
+    // A living street or pedestrian zone is paved like a sidewalk, wall to wall, at sidewalk height.
+    if (piece.shared) writer.slab(road, ROAD + 0.04, colours.sidewalk, colours.curb)
+    else if (flanked) writer.top(road, ROAD, colours.road)
     else writer.slab(road, ROAD, colours.road, colours.curb)
     writer.top(cut(piece.bike), LANES, colours.bike)
     writer.top(cut(piece.parking), LANES, colours.parking)
     writer.slab(cut(piece.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
-    for (const quad of [...piece.markings, ...piece.crosswalks]) {
-      if (inHole(quad)) continue
-      const ring = clipRingPlan(quad.map((p) => [p.x, p.y] as [number, number]), rect)
-      if (ring) writer.top([[ring]], PAINT, colours.marking)
+    for (const mark of [...piece.markings, ...piece.crosswalks]) {
+      // A line can run the length of a long street: cut like the surfaces, not judged by its middle.
+      const region = cut([[mark.map((p) => [p.x, p.y] as [number, number])]])
+      if (region.length > 0) writer.top(region, PAINT, colours.marking)
     }
   }
   return writer.finish()

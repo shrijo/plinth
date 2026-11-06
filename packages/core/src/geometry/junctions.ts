@@ -13,6 +13,8 @@ export const CURB_RADIUS = 6
 /** Two streets within this angle of a straight line just continue (with a taper if their widths differ). */
 const STRAIGHT = (15 * Math.PI) / 180
 /** A change of width tapers over this many times the difference, on each side of the junction. */
+/** Neighbouring streets closer than this angle (radians, about 20°) leave a junction side by side. */
+const TIGHT = 0.35
 const TAPER = 2
 const ARC_STEP = Math.PI / 24
 
@@ -62,7 +64,7 @@ interface Fillet {
 }
 
 interface Sector {
-  kind: 'fillet' | 'straight' | 'round'
+  kind: 'fillet' | 'straight' | 'round' | 'tight'
   fillet: Record<Layer, Fillet | null>
 }
 
@@ -183,9 +185,15 @@ export function buildJunction(node: Vec2, given: readonly JunctionEnd[], radius 
     const next = order[(k + 1) % n]!
     let phi = angleOf(next.dir) - angleOf(current.dir)
     if (phi <= 1e-6) phi += 2 * Math.PI
-    const kind = phi < Math.PI - STRAIGHT ? 'fillet' : phi <= Math.PI + STRAIGHT ? 'straight' : 'round'
+    // Streets leaving almost side by side (as the two halves of a divided road do) have no kerb between
+    // them to round: their edges are joined straight, where the two strips part.
+    const kind = phi < TIGHT ? 'tight' : phi < Math.PI - STRAIGHT ? 'fillet' : phi <= Math.PI + STRAIGHT ? 'straight' : 'round'
     const sector: Sector = { kind, fillet: { road: null, outer: null } }
-    if (kind === 'fillet') {
+    if (kind === 'tight') {
+      const apart = (current.end.outer.left + next.end.outer.right) / Math.max(Math.tan(phi), 1e-3)
+      need(k, apart)
+      need((k + 1) % n, apart)
+    } else if (kind === 'fillet') {
       const road = fillet(current.end, current.end.road.left, next.end, next.end.road.right, radius)
       // The back of the sidewalk follows the kerb, the sidewalk's width further in.
       const sidewalk = Math.max(
@@ -194,8 +202,10 @@ export function buildJunction(node: Vec2, given: readonly JunctionEnd[], radius 
       )
       const outerRadius = Math.max(0, (road?.radius ?? 0) - sidewalk)
       const outer = fillet(current.end, current.end.outer.left, next.end, next.end.outer.right, outerRadius)
-      sector.fillet = { road, outer }
-      for (const f of [road, outer]) {
+      // A kerb that would reach past either street's end (a short street, a shallow angle) is joined straight instead.
+      const fits = (f: typeof road) => !!f && f.along[0] <= current.end.limit * 1.01 && f.along[1] <= next.end.limit * 1.01
+      sector.fillet = { road: fits(road) ? road : null, outer: fits(outer) ? outer : null }
+      for (const f of [sector.fillet.road, sector.fillet.outer]) {
         if (!f) continue
         need(k, f.along[0])
         need((k + 1) % n, f.along[1])

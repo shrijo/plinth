@@ -1,4 +1,5 @@
 import {
+  STREET_KINDS,
   DEFAULT_META,
   AREA_STANDARDS,
   DEFAULT_STREET,
@@ -228,7 +229,13 @@ function isStreetRecord(v: unknown): v is Street {
   const control = v.control
   const validControl = control === null || control === undefined || (isObject(control) && isFiniteNumber(control.x) && isFiniteNumber(control.y))
   const widths = ['laneWidth', 'bikeLeft', 'bikeRight', 'parkingLeft', 'parkingRight', 'sidewalkLeft', 'sidewalkRight']
-  return validControl && widths.every((k) => v[k] === undefined || isNonNegative(v[k])) && (v.lanes === undefined || isNonNegative(v.lanes))
+  return (
+    validControl &&
+    widths.every((k) => v[k] === undefined || isNonNegative(v[k])) &&
+    (v.lanes === undefined || isNonNegative(v.lanes)) &&
+    (v.kind === undefined || (STREET_KINDS as readonly unknown[]).includes(v.kind)) &&
+    (v.oneway === undefined || typeof v.oneway === 'boolean')
+  )
 }
 
 function isLevel(v: unknown): v is Level {

@@ -15,6 +15,9 @@ import {
   type MultiPolygon,
   type Roof,
   type RoofKind,
+  DEFAULT_STREET,
+  STREET_TYPES,
+  type StreetKind,
   type StreetProps,
   type Tx,
   type Vec2,
@@ -23,6 +26,7 @@ import type { BuildingFeature, RoadKind, TileFeatures } from './features.ts'
 import { clipLine, type Rect } from './clip.ts'
 import { enuFrame, frameToLonLat, lonLatToFrame, type Frame } from './geo.ts'
 import type { OsmBuilding, OsmData } from './osm.ts'
+import { tidyNetwork } from './network.ts'
 import { tileLat, tileLon, tilesCovering, type LonLatBounds } from './tiles.ts'
 
 /**
@@ -146,12 +150,13 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
     }
   }
 
-  const streets: PlannedStreet[] = []
+  let streets: PlannedStreet[] = []
   const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
   for (const way of osm.streets) {
     const props = streetFromTags(way.tags)
     if (!props) continue
-    const line = Float64Array.from(way.points.flatMap((p) => {
+    const drawn = isReversed(way.tags) ? [...way.points].reverse() : way.points
+    const line = Float64Array.from(drawn.flatMap((p) => {
       const s = toSite(p)
       return [s.x, s.y]
     }))
@@ -161,6 +166,7 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
     }
   }
 
+  streets = tidied(streets, half)
   return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets, spots: spotsFor(input, frame), source: 'osm' }
 }
 
@@ -268,37 +274,52 @@ function buildingFromTags(outline: Vec2[], building: OsmBuilding, named: Map<str
   return { name, outline, floors, floorHeight, roof }
 }
 
-/** Kinds of street, their lanes and widths. */
-const STREET_KINDS: Record<string, Partial<StreetProps> & { lanes: number }> = {
-  motorway: { lanes: 2, laneWidth: 3.5, sidewalkLeft: 0, sidewalkRight: 0 },
-  trunk: { lanes: 2, laneWidth: 3.5, sidewalkLeft: 0, sidewalkRight: 0 },
-  primary: { lanes: 2, laneWidth: 3.25, sidewalkLeft: 3, sidewalkRight: 3 },
-  secondary: { lanes: 2, laneWidth: 3.25, sidewalkLeft: 2.5, sidewalkRight: 2.5 },
-  tertiary: { lanes: 2, laneWidth: 3, sidewalkLeft: 2, sidewalkRight: 2 },
-  unclassified: { lanes: 2, laneWidth: 2.75, sidewalkLeft: 1.5, sidewalkRight: 1.5 },
-  residential: { lanes: 2, laneWidth: 2.75, sidewalkLeft: 1.8, sidewalkRight: 1.8 },
-  road: { lanes: 2, laneWidth: 2.75, sidewalkLeft: 1.5, sidewalkRight: 1.5 },
-  living_street: { lanes: 1, laneWidth: 4, sidewalkLeft: 0, sidewalkRight: 0 },
-  pedestrian: { lanes: 1, laneWidth: 5, sidewalkLeft: 0, sidewalkRight: 0 },
-  busway: { lanes: 1, laneWidth: 3.5, sidewalkLeft: 0, sidewalkRight: 0 },
-  service: { lanes: 1, laneWidth: 3, sidewalkLeft: 0, sidewalkRight: 0 },
+/** OpenStreetMap's highway types as the street types they are. */
+const KINDS: Record<string, StreetKind> = {
+  motorway: 'motorway',
+  trunk: 'trunk',
+  primary: 'primary',
+  secondary: 'secondary',
+  tertiary: 'tertiary',
+  unclassified: 'unclassified',
+  road: 'unclassified',
+  residential: 'residential',
+  living_street: 'living_street',
+  pedestrian: 'pedestrian',
+  service: 'service',
+  busway: 'service',
 }
 
-/** A street's cross-section from its tags, or null for ways that aren't streets to model. */
-export function streetFromTags(tags: Record<string, string>): Partial<StreetProps> | null {
+/**
+ * A street's cross-section from its tags (as OpenStreetMap describes one:
+ * highway type, lanes, width, oneway, sidewalk, cycleway and parking on
+ * either side), starting from its type's usual one. Null for ways that
+ * aren't streets to model. (A one-way street mapped against its drawing,
+ * `oneway=-1`, is to be turned round: see isReversed.)
+ */
+export function streetFromTags(tags: Record<string, string>): StreetProps | null {
   const highway = (tags.highway ?? '').replace(/_link$/, '')
-  const base = STREET_KINDS[highway]
-  if (!base) return null
+  const kind = KINDS[highway]
+  if (!kind) return null
   if (tags.area === 'yes' || tags.tunnel === 'yes' || tags.tunnel === 'building_passage' || tags.covered === 'yes') return null
   if (highway === 'service' && tags.service && tags.service !== 'alley') return null
-  const props: Partial<StreetProps> & { lanes: number } = { crosswalkA: false, crosswalkB: false, ...base }
-  const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === '-1' || highway === 'motorway'
+  const base = STREET_TYPES[kind].props
+  const props: StreetProps = { ...DEFAULT_STREET, ...base, crosswalkA: false, crosswalkB: false }
+  const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.oneway === '-1' || highway === 'motorway'
+  props.oneway = oneway && kind !== 'pedestrian'
   const lanes = tagNumber(tags.lanes)
   if (lanes !== null && lanes >= 1) props.lanes = Math.min(Math.round(lanes), 8)
-  else if (oneway && highway !== 'motorway' && highway !== 'trunk') props.lanes = 1
-  if ((tags.highway ?? '').endsWith('_link')) props.lanes = Math.min(props.lanes, 1)
-  const width = props.laneWidth ?? 3
-  if (props.lanes === 1 && width < 3.25 && highway !== 'service') props.laneWidth = 3.5
+  else if (oneway && kind !== 'motorway' && kind !== 'trunk') props.lanes = 1
+  const link = (tags.highway ?? '').endsWith('_link')
+  if (link) {
+    // Slip roads: one lane, no sidewalks.
+    props.lanes = Math.min(props.lanes, 1)
+    props.sidewalkLeft = props.sidewalkRight = 0
+  }
+  // The carriageway's width, if given, shared between the lanes.
+  const width = tagNumber(tags.width)
+  if (width !== null && width > 2 && width < 40) props.laneWidth = Math.round((width / props.lanes) * 100) / 100
+  else if (props.lanes === 1 && props.laneWidth < 3.25 && kind !== 'service') props.laneWidth = 3.5
   // Sidewalks as tagged, where they are; mapped separately, the street has none of its own.
   const sidewalk = tags.sidewalk ?? tags['sidewalk:both']
   const side = base.sidewalkLeft || 1.8
@@ -310,6 +331,8 @@ export function streetFromTags(tags: Record<string, string>): Partial<StreetProp
     props.sidewalkLeft = 0
     props.sidewalkRight = side
   } else if (sidewalk === 'no' || sidewalk === 'none' || sidewalk === 'separate') props.sidewalkLeft = props.sidewalkRight = 0
+  if (tags['sidewalk:left'] === 'no' || tags['sidewalk:left'] === 'separate') props.sidewalkLeft = 0
+  if (tags['sidewalk:right'] === 'no' || tags['sidewalk:right'] === 'separate') props.sidewalkRight = 0
   const cycle = (key: string) => /lane|track|exclusive/.test(tags[key] ?? '')
   if (cycle('cycleway') || cycle('cycleway:both')) props.bikeLeft = props.bikeRight = 1.6
   if (cycle('cycleway:left')) props.bikeLeft = 1.6
@@ -319,6 +342,24 @@ export function streetFromTags(tags: Record<string, string>): Partial<StreetProp
   if (parks('parking:left') || parks('parking:lane:left')) props.parkingLeft = 2.2
   if (parks('parking:right') || parks('parking:lane:right')) props.parkingRight = 2.2
   return props
+}
+
+/** Whether a way's traffic runs against the way it's drawn (`oneway=-1`). */
+export function isReversed(tags: Record<string, string>): boolean {
+  return tags.oneway === '-1' || tags.oneway === 'reverse'
+}
+
+/** Planned streets tidied into a network (see tidyNetwork), as two-point streets again. */
+function tidied(streets: PlannedStreet[], half: number): PlannedStreet[] {
+  const network = tidyNetwork(
+    streets.map((s) => ({ points: s.points, props: { ...DEFAULT_STREET, ...s.props } })),
+    // Ends on the square's edge are where the streets were cut, not dead ends.
+    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5 },
+  )
+  return Object.values(network.streets).map((street) => {
+    const { id: _id, a, b, control: _control, ...props } = street
+    return { points: [network.nodes[a]!, network.nodes[b]!].map((p) => ({ x: round(p.x), y: round(p.y) })), props }
+  })
 }
 
 // From map tiles (when OpenStreetMap's servers are busy)
@@ -381,7 +422,7 @@ export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]):
     for (const road of data.roads) {
       const highway = TILE_STREETS[road.kind]
       if (!highway || road.tunnel) continue
-      const props = streetFromTags({ highway })!
+      const props = streetFromTags({ highway, ...(road.oneway ? { oneway: 'yes' } : {}) })!
       const tileRect = ownRect(toSite)
       const line = Float64Array.from(ring(road.line).flatMap((p) => [p.x, p.y]))
       for (const piece of clipLine(line, tileRect).flatMap((l) => clipLine(l, rect))) {
@@ -390,7 +431,7 @@ export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]):
       }
     }
   }
-  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets, spots: spotsFor(input, frame), source: 'tiles' }
+  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets: tidied(streets, half), spots: spotsFor(input, frame), source: 'tiles' }
 }
 
 /** A tile's own extent in site metres, near enough as a rectangle at site scale. */
