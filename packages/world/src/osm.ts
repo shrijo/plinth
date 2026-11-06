@@ -23,9 +23,27 @@ export interface OsmWay {
   tags: Record<string, string>
 }
 
+/** A surveyed surface: the outline of a carriageway, sidewalk or square (see Key:area:highway). */
+export interface OsmArea {
+  id: string
+  /** The area:highway value: a road class, or footway, pedestrian, ... */
+  kind: string
+  outer: LonLat[]
+  holes: LonLat[][]
+}
+
+/** A pedestrian crossing mapped as a node on the way. */
+export interface OsmCrossing {
+  at: LonLat
+  tags: Record<string, string>
+}
+
 export interface OsmData {
   buildings: OsmBuilding[]
   streets: OsmWay[]
+  /** Surveyed street surfaces, where the city maps them (area:highway). */
+  areas?: OsmArea[]
+  crossings?: OsmCrossing[]
 }
 
 export const OVERPASS_SERVERS = [
@@ -47,6 +65,9 @@ export function overpassQuery(b: LonLatBounds): string {
   relation["building"]["type"="multipolygon"](${box});
   way["highway"~"^(${STREETS})$"](${box});
   way["highway"~"^(footway|path)$"]["footway"="sidewalk"](${box});
+  way["area:highway"](${box});
+  relation["area:highway"]["type"="multipolygon"](${box});
+  node["highway"="crossing"](${box});
 );
 out body geom;`
 }
@@ -100,16 +121,24 @@ interface Point {
 type Element =
   | { type: 'way'; id: number; geometry?: (Point | null)[]; tags?: Record<string, string> }
   | { type: 'relation'; id: number; members?: { type: string; role: string; geometry?: (Point | null)[] }[]; tags?: Record<string, string> }
-  | { type: 'node'; id: number }
+  | { type: 'node'; id: number; lat?: number; lon?: number; tags?: Record<string, string> }
 
-/** Buildings and streets from Overpass's answer. */
+/** Buildings, streets, surveyed surfaces and crossings from Overpass's answer. */
 export function readOverpass(elements: readonly Element[]): OsmData {
-  const data: OsmData = { buildings: [], streets: [] }
+  const data: OsmData = { buildings: [], streets: [], areas: [], crossings: [] }
   for (const element of elements) {
-    if (element.type === 'way') {
+    if (element.type === 'node') {
+      const tags = element.tags ?? {}
+      if (tags.highway === 'crossing' && element.lon !== undefined && element.lat !== undefined) {
+        data.crossings!.push({ at: [element.lon, element.lat], tags })
+      }
+    } else if (element.type === 'way') {
       const tags = element.tags ?? {}
       const points = (element.geometry ?? []).filter((p): p is Point => !!p).map((p): LonLat => [p.lon, p.lat])
-      if (tags.building) {
+      if (tags['area:highway']) {
+        const ring = openRing(points)
+        if (ring.length >= 3) data.areas!.push({ id: `w${element.id}`, kind: tags['area:highway'], outer: ring, holes: [] })
+      } else if (tags.building) {
         const ring = openRing(points)
         if (ring.length >= 3) data.buildings.push({ id: `w${element.id}`, outer: ring, holes: [], tags })
       } else if (tags.highway && points.length >= 2) data.streets.push({ id: `w${element.id}`, points, tags })
@@ -124,7 +153,8 @@ export function readOverpass(elements: readonly Element[]): OsmData {
       const inners = joinRings(lines('inner'))
       outers.forEach((outer, i) => {
         const holes = inners.filter((hole) => hole.length > 0 && insideLonLat(outer, hole[0]!))
-        data.buildings.push({ id: `r${element.id}-${i}`, outer, holes, tags })
+        if (tags['area:highway']) data.areas!.push({ id: `r${element.id}-${i}`, kind: tags['area:highway'], outer, holes })
+        else data.buildings.push({ id: `r${element.id}-${i}`, outer, holes, tags })
       })
     }
   }

@@ -154,6 +154,15 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
   const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
   // Sidewalks mapped as footways of their own: the streets' sidewalks go where they are.
   const footways: Vec2[][] = []
+  // Surveyed surfaces (area:highway): carriageway outlines of road classes, and sidewalk outlines.
+  const roadAreas: Vec2[][] = []
+  const sidewalkAreas: Vec2[][] = []
+  for (const area of osm.areas ?? []) {
+    const ring = area.outer.map(toSite)
+    if (ring.length < 3) continue
+    if (KINDS[area.kind.replace(/_link$/, '')] && area.kind !== 'pedestrian') roadAreas.push(ring)
+    else if (area.kind === 'footway') sidewalkAreas.push(ring)
+  }
   for (const way of osm.streets) {
     if (way.tags.footway === 'sidewalk' && (way.tags.highway === 'footway' || way.tags.highway === 'path')) footways.push(way.points.map(toSite))
     const props = streetFromTags(way.tags)
@@ -169,8 +178,35 @@ export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
     }
   }
 
-  streets = tidied(streets, half, footways)
+  streets = tidied(streets, half, footways, { roadAreas, sidewalkAreas })
+
+  // Marked pedestrian crossings (nodes on the ways) become zebras on the street ends they sit at.
+  const zebras = (osm.crossings ?? []).filter((c) => isMarkedCrossing(c.tags)).map((c) => toSite(c.at))
+  if (zebras.length > 0) {
+    for (const street of streets) {
+      const [a, b] = [street.points[0]!, street.points[street.points.length - 1]!]
+      for (const zebra of zebras) {
+        if (Math.hypot(zebra.x - a.x, zebra.y - a.y) < CROSSING_REACH) street.props.crosswalkA = true
+        if (Math.hypot(zebra.x - b.x, zebra.y - b.y) < CROSSING_REACH) street.props.crosswalkB = true
+      }
+    }
+  }
   return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets, spots: spotsFor(input, frame), source: 'osm' }
+}
+
+/** A crossing node's end of street gets a zebra when it lies within this of the end (metres). */
+const CROSSING_REACH = 7
+
+/** Whether a crossing is marked on the ground (a zebra or signals), not just a place people cross. */
+function isMarkedCrossing(tags: Record<string, string>): boolean {
+  if (tags.crossing === 'unmarked' || tags.crossing === 'no' || tags['crossing:markings'] === 'no') return false
+  return (
+    tags.crossing === 'zebra' ||
+    tags.crossing === 'marked' ||
+    tags.crossing === 'traffic_signals' ||
+    tags.crossing_ref === 'zebra' ||
+    (tags['crossing:markings'] ?? '') !== ''
+  )
 }
 
 /** Open structures (carports, canopies) and buildings being demolished aren't buildings to model. */
@@ -294,11 +330,21 @@ const KINDS: Record<string, StreetKind> = {
 }
 
 /**
- * A street's cross-section from its tags (as OpenStreetMap describes one:
- * highway type, lanes, width, oneway, sidewalk, cycleway and parking on
- * either side), starting from its type's usual one. Null for ways that
- * aren't streets to model. (A one-way street mapped against its drawing,
- * `oneway=-1`, is to be turned round: see isReversed.)
+ * A street's cross-section from its tags, read the way OpenStreetMap
+ * data is meant to be read (Key:lanes and its assumptions; osm2lanes'
+ * defaults where a width is untagged):
+ *
+ * - `lanes`, or the sum of `lanes:forward`, `lanes:backward` and
+ *   `lanes:both_ways`. Untagged, a two-way road has 2 lanes and a one-way
+ *   street 1, except motorways and the carriageways of divided trunk
+ *   roads, which have 2 (the wiki's assumed values).
+ * - `width` (or `est_width`) is the carriageway's, shared over the lanes.
+ * - Sidewalks per `sidewalk`/`sidewalk:left`/`sidewalk:right`, with
+ *   `sidewalk:<side>:width` where tagged; cycle lanes per `cycleway:*`
+ *   with their `:width`; parking lanes per `parking:*`.
+ *
+ * Null for ways that aren't streets to model. (A one-way street mapped
+ * against its drawing, `oneway=-1`, is to be turned round: see isReversed.)
  */
 export function streetFromTags(tags: Record<string, string>): StreetProps | null {
   const highway = (tags.highway ?? '').replace(/_link$/, '')
@@ -310,10 +356,16 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   const props: StreetProps = { ...DEFAULT_STREET, ...base, crosswalkA: false, crosswalkB: false }
   const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.oneway === '-1' || highway === 'motorway'
   props.oneway = oneway && kind !== 'pedestrian'
-  const lanes = tagNumber(tags.lanes)
+
+  // Lanes: the tag, or the directional tags summed (lanes:both_ways is a middle turning lane).
+  const forward = tagNumber(tags['lanes:forward'])
+  const backward = tagNumber(tags['lanes:backward'])
+  const bothWays = tagNumber(tags['lanes:both_ways'])
+  const lanes =
+    tagNumber(tags.lanes) ?? (forward !== null || backward !== null ? (forward ?? 0) + (oneway ? 0 : backward ?? 0) + (bothWays ?? 0) : null)
   if (lanes !== null && lanes >= 1) props.lanes = Math.min(Math.round(lanes), 8)
-  // One way, a street has its lanes in one direction: half of a two-way street's (a motorway is always one way).
-  else if (oneway && kind !== 'motorway') props.lanes = Math.max(1, Math.ceil(props.lanes / 2))
+  // Untagged: one lane one way, but 2 on a motorway or a divided trunk road's carriageway.
+  else if (oneway) props.lanes = kind === 'motorway' || kind === 'trunk' ? Math.max(props.lanes, 2) : 1
   const link = (tags.highway ?? '').endsWith('_link')
   if (link) {
     // Slip roads: one lane, no sidewalks.
@@ -321,9 +373,10 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
     props.sidewalkLeft = props.sidewalkRight = 0
   }
   // The carriageway's width, if given, shared between the lanes.
-  const width = tagNumber(tags.width)
+  const width = tagNumber(tags.width) ?? tagNumber(tags.est_width)
   if (width !== null && width > 2 && width < 40) props.laneWidth = Math.round((width / props.lanes) * 100) / 100
   else if (props.lanes === 1 && props.laneWidth < 3.25 && kind !== 'service') props.laneWidth = 3.5
+
   // Sidewalks as tagged, where they are. One mapped as a footway of its own (`separate`) is still there:
   // footways aren't modelled, so the street draws it.
   const sidewalk = tags.sidewalk ?? tags['sidewalk:both']
@@ -341,10 +394,23 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   else if (has(tags['sidewalk:left'])) props.sidewalkLeft = side
   if (tags['sidewalk:right'] === 'no') props.sidewalkRight = 0
   else if (has(tags['sidewalk:right'])) props.sidewalkRight = side
+  // Their widths, where tagged.
+  const span = (key: string, most: number) => {
+    const value = tagNumber(tags[key])
+    return value !== null && value > 0.5 && value < 10 ? Math.min(value, most) : null
+  }
+  const walks = span('sidewalk:both:width', 6) ?? span('sidewalk:width', 6)
+  if (props.sidewalkLeft > 0) props.sidewalkLeft = span('sidewalk:left:width', 6) ?? walks ?? props.sidewalkLeft
+  if (props.sidewalkRight > 0) props.sidewalkRight = span('sidewalk:right:width', 6) ?? walks ?? props.sidewalkRight
+
   const cycle = (key: string) => /lane|track|exclusive/.test(tags[key] ?? '')
   if (cycle('cycleway') || cycle('cycleway:both')) props.bikeLeft = props.bikeRight = 1.6
   if (cycle('cycleway:left')) props.bikeLeft = 1.6
   if (cycle('cycleway:right')) props.bikeRight = 1.6
+  const cycles = span('cycleway:both:width', 3.5) ?? span('cycleway:width', 3.5)
+  if (props.bikeLeft > 0) props.bikeLeft = span('cycleway:left:width', 3.5) ?? cycles ?? props.bikeLeft
+  if (props.bikeRight > 0) props.bikeRight = span('cycleway:right:width', 3.5) ?? cycles ?? props.bikeRight
+
   const parks = (key: string) => /parallel|lane|diagonal|perpendicular|yes/.test(tags[key] ?? '')
   if (parks('parking:both') || parks('parking:lane:both')) props.parkingLeft = props.parkingRight = 2.2
   if (parks('parking:left') || parks('parking:lane:left')) props.parkingLeft = 2.2
@@ -358,11 +424,16 @@ export function isReversed(tags: Record<string, string>): boolean {
 }
 
 /** Planned streets tidied into a network (see tidyNetwork), as two-point streets again. */
-function tidied(streets: PlannedStreet[], half: number, footways: Vec2[][] = []): PlannedStreet[] {
+function tidied(
+  streets: PlannedStreet[],
+  half: number,
+  footways: Vec2[][] = [],
+  surfaces: { roadAreas?: Vec2[][]; sidewalkAreas?: Vec2[][] } = {},
+): PlannedStreet[] {
   const network = tidyNetwork(
     streets.map((s) => ({ points: s.points, props: { ...DEFAULT_STREET, ...s.props } })),
     // Ends on the square's edge are where the streets were cut, not dead ends.
-    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5, footways },
+    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5, footways, ...surfaces },
   )
   return Object.values(network.streets).map((street) => {
     const { id: _id, a, b, control: _control, ...props } = street

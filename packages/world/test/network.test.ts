@@ -220,4 +220,28 @@ describe('tidying map data into a street network', () => {
     expect(street.parkingRight).toBe(0)
     expect(street.laneWidth).toBe(STREET_TYPES.residential.props.laneWidth)
   })
+
+  it('fits kerbs and sidewalks to surveyed surfaces, which win over footways', () => {
+    const ring = (x0: number, y0: number, x1: number, y1: number): Vec2[] => [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 },
+    ]
+    const network = tidyNetwork([line([[-100, 0], [100, 0]])], {
+      roadAreas: [ring(-100, -3.6, 100, 3.6)],
+      sidewalkAreas: [ring(-100, 3.6, 100, 5.6), ring(-100, -5.6, 100, -3.6)],
+      // A footway much further out: the surveyed surfaces decide, not it.
+      footways: [[{ x: -100, y: 9 }, { x: 100, y: 9 }]],
+    })
+    for (const street of Object.values(network.streets)) {
+      const kerb = (street.lanes * street.laneWidth) / 2 + street.parkingLeft
+      expect(kerb).toBeGreaterThan(3.3)
+      expect(kerb).toBeLessThan(3.9)
+      expect(street.sidewalkLeft).toBeGreaterThan(1.6)
+      expect(street.sidewalkLeft).toBeLessThan(2.4)
+      expect(street.sidewalkRight).toBeGreaterThan(1.6)
+      expect(street.sidewalkRight).toBeLessThan(2.4)
+    }
+  })
 })

@@ -96,6 +96,45 @@ describe('planning a site from OpenStreetMap', () => {
   })
 })
 
+describe('a site from OpenStreetMap with surveyed surfaces (area:highway)', () => {
+  it('fits the street between the measured kerbs, and zebras marked crossings at junctions', () => {
+    const data: OsmData = {
+      buildings: [],
+      streets: [
+        { id: 'w1', points: [lonLat(-200, 0), lonLat(200, 0)], tags: { highway: 'residential' } },
+        { id: 'w2', points: [lonLat(0, -200), lonLat(0, 200)], tags: { highway: 'residential' } },
+      ],
+      // The carriageway surveyed 4.1 m to each side, sidewalks from there to 6.1 m out.
+      areas: [
+        { id: 'a1', kind: 'residential', outer: rect(-200, -4.1, 200, 4.1), holes: [] },
+        { id: 'a2', kind: 'footway', outer: rect(-200, 4.1, 200, 6.1), holes: [] },
+        { id: 'a3', kind: 'footway', outer: rect(-200, -6.1, 200, -4.1), holes: [] },
+      ],
+      crossings: [
+        { at: lonLat(5, 0), tags: { crossing: 'zebra' } },
+        { at: lonLat(-120, 0), tags: { crossing: 'unmarked' } },
+      ],
+    }
+    const plan = planFromOsm({ name: 'Test', lon: LON, lat: LAT, size: 300, heightAt: () => 400 }, data)
+    const east = plan.streets.filter((s) => s.points.every((p) => Math.abs(p.y) < 0.1))
+    expect(east.length).toBeGreaterThan(0)
+    for (const { props } of east) {
+      const kerb = ((props.lanes ?? 2) * (props.laneWidth ?? 3)) / 2 + (props.parkingLeft ?? 0)
+      expect(kerb).toBeGreaterThan(3.7)
+      expect(kerb).toBeLessThan(4.5)
+      expect(props.sidewalkLeft ?? 0).toBeGreaterThan(1.5)
+      expect(props.sidewalkLeft ?? 0).toBeLessThan(2.6)
+    }
+    // The zebra sits at the junction's end; the unmarked crossing leaves no zebra mid-block.
+    const flagged = plan.streets.filter((s) => s.props.crosswalkA || s.props.crosswalkB)
+    expect(flagged.length).toBeGreaterThan(0)
+    for (const s of flagged) {
+      const ends = [s.points[0]!, s.points[s.points.length - 1]!]
+      expect(ends.some((p) => Math.hypot(p.x, p.y) < 8)).toBe(true)
+    }
+  })
+})
+
 describe('a site from OpenStreetMap with its sidewalks mapped as footways', () => {
   it('puts the street\'s sidewalks where the footways are', () => {
     const data: OsmData = {
@@ -117,6 +156,30 @@ describe('a site from OpenStreetMap with its sidewalks mapped as footways', () =
 })
 
 describe('streets from tags', () => {
+  it("reads the directional lane tags, as Key:lanes says, and the wiki's assumed defaults", () => {
+    // lanes:forward + lanes:backward + lanes:both_ways make the total.
+    const counted = streetFromTags({ highway: 'secondary', 'lanes:forward': '2', 'lanes:backward': '1', 'lanes:both_ways': '1' })!
+    expect(counted.lanes).toBe(4)
+    // One way: only the forward lanes count.
+    expect(streetFromTags({ highway: 'secondary', oneway: 'yes', 'lanes:forward': '2' })!.lanes).toBe(2)
+    // Untagged one-way streets have 1 lane; motorways and divided trunk roads 2 (the wiki's assumptions).
+    expect(streetFromTags({ highway: 'residential', oneway: 'yes' })!.lanes).toBe(1)
+    expect(streetFromTags({ highway: 'trunk', oneway: 'yes' })!.lanes).toBe(2)
+    expect(streetFromTags({ highway: 'motorway' })!.lanes).toBe(2)
+    // A trunk road mapped as one two-way line: 2 lanes, not a dual carriageway's 4.
+    expect(streetFromTags({ highway: 'trunk' })!.lanes).toBe(2)
+  })
+
+  it('reads widths: est_width, sidewalk and cycle lane widths', () => {
+    expect(streetFromTags({ highway: 'residential', est_width: '7' })!.laneWidth).toBeCloseTo(3.5)
+    const walks = streetFromTags({ highway: 'residential', 'sidewalk:left:width': '3.2' })!
+    expect(walks.sidewalkLeft).toBeCloseTo(3.2)
+    expect(walks.sidewalkRight).toBeCloseTo(1.8)
+    const bikes = streetFromTags({ highway: 'primary', cycleway: 'lane', 'cycleway:both:width': '1.8' })!
+    expect(bikes.bikeLeft).toBeCloseTo(1.8)
+    expect(bikes.bikeRight).toBeCloseTo(1.8)
+  })
+
   it('reads lanes, sidewalks and bike lanes', () => {
     const props = streetFromTags({ highway: 'primary', lanes: '4', sidewalk: 'right', cycleway: 'lane' })!
     expect(props.lanes).toBe(4)

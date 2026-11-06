@@ -37,6 +37,13 @@ export interface NetworkOptions {
    * a real sidewalk, so a street with one alongside gets its sidewalk there, and its road out to meet it.
    */
   footways?: readonly (readonly Vec2[])[]
+  /**
+   * Surveyed carriageway outlines (area:highway polygons of road classes, plan metres): kerb to kerb over the
+   * traffic lanes. A street running inside one takes its measured width, kerbs on its edges.
+   */
+  roadAreas?: readonly (readonly Vec2[])[]
+  /** Surveyed sidewalk outlines (area:highway=footway): a street alongside one gets a sidewalk spanning it. */
+  sidewalkAreas?: readonly (readonly Vec2[])[]
 }
 
 export interface Network {
@@ -300,7 +307,14 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     // What's left of a street on either side of a dropped one may end loose.
     segments = withoutStubs(points, segments, stub, keep)
   }
-  if (options.footways && options.footways.length > 0) segments = fittedToFootways(points, segments, options.footways)
+  // Surveyed surfaces first (they're measured); footways then fit only the streets the surfaces didn't.
+  let measured = new Set<number>()
+  if (options.roadAreas?.length || options.sidewalkAreas?.length) {
+    const fit = fittedToAreas(points, segments, options.roadAreas ?? [], options.sidewalkAreas ?? [])
+    segments = fit.segments
+    measured = fit.measured
+  }
+  if (options.footways && options.footways.length > 0) segments = fittedToFootways(points, segments, options.footways, measured)
   segments = sidewalksBeside(points, segments, median)
 
   const nodes: Record<string, StreetNode> = {}
@@ -525,7 +539,13 @@ const LANE_WIDTHS = [2.5, 4.5] as const
  * strip at road level beside them (parking, a tram track). Streets without
  * one stay as they are.
  */
-function fittedToFootways(points: readonly Vec2[], segments: readonly Segment[], footways: readonly (readonly Vec2[])[]): Segment[] {
+function fittedToFootways(
+  points: readonly Vec2[],
+  segments: readonly Segment[],
+  footways: readonly (readonly Vec2[])[],
+  /** Segments already fitted to surveyed surfaces: their chains are left as they are. */
+  measured?: ReadonlySet<number>,
+): Segment[] {
   // Footway segments by grid cell.
   const pieces: { ax: number; ay: number; bx: number; by: number }[] = []
   const grid = new Map<string, number[]>()
@@ -564,7 +584,7 @@ function fittedToFootways(points: readonly Vec2[], segments: readonly Segment[],
   const out = segments.slice()
   for (const { run, length } of chainsOf(points, segments)) {
     const own = new Set(run.map(({ k }) => k))
-    if (length < 8) continue
+    if (length < 8 || run.some(({ k }) => measured?.has(k))) continue
     // Per side (as the street is walked): the nearest footway running alongside each segment, by length.
     const found: { left: { d: number; w: number }[]; right: { d: number; w: number }[] } = { left: [], right: [] }
     for (const { k, forward } of run) {
@@ -688,6 +708,219 @@ function fitted(given: StreetProps, left: number | null, right: number | null): 
     const sidewalk = Math.min(Math.max(d + width(own) / 2 - side(isLeft), 1.5), 6)
     if (isLeft) props.sidewalkLeft = Math.round(sidewalk * 100) / 100
     else props.sidewalkRight = Math.round(sidewalk * 100) / 100
+  }
+  return props
+}
+
+/** How often a street is probed along its length when fitting it to surveyed surfaces (metres). */
+const PROBE_ALONG = 4
+/** Sideways probing resolution (metres). */
+const PROBE_STEP = 0.25
+/** The farthest a kerb or sidewalk edge is probed for, from the centre line (metres). */
+const PROBE_REACH = 16
+
+/** Closed rings in a grid, for asking what surface lies at a point. */
+class RingIndex {
+  private readonly rings: (readonly Vec2[])[]
+  private readonly boxes: { minX: number; minY: number; maxX: number; maxY: number }[]
+  private readonly grid = new Map<string, number[]>()
+  readonly any: boolean
+
+  constructor(rings: readonly (readonly Vec2[])[]) {
+    this.rings = rings.filter((r) => r.length >= 3)
+    this.any = this.rings.length > 0
+    this.boxes = this.rings.map((ring) => {
+      const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+      for (const p of ring) {
+        box.minX = Math.min(box.minX, p.x)
+        box.maxX = Math.max(box.maxX, p.x)
+        box.minY = Math.min(box.minY, p.y)
+        box.maxY = Math.max(box.maxY, p.y)
+      }
+      return box
+    })
+    this.boxes.forEach((box, k) => {
+      for (let y = Math.floor(box.minY / CELL); y <= Math.floor(box.maxY / CELL); y++) {
+        for (let x = Math.floor(box.minX / CELL); x <= Math.floor(box.maxX / CELL); x++) {
+          const key = `${x}:${y}`
+          const list = this.grid.get(key)
+          if (list) list.push(k)
+          else this.grid.set(key, [k])
+        }
+      }
+    })
+  }
+
+  inside(x: number, y: number): boolean {
+    for (const k of this.grid.get(`${Math.floor(x / CELL)}:${Math.floor(y / CELL)}`) ?? []) {
+      const box = this.boxes[k]!
+      if (x < box.minX || x > box.maxX || y < box.minY || y > box.maxY) continue
+      const ring = this.rings[k]!
+      let hit = false
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i]!
+        const b = ring[j]!
+        if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) hit = !hit
+      }
+      if (hit) return true
+    }
+    return false
+  }
+}
+
+/** The middle of a list of weighted samples, if they cover enough of `length`; null otherwise. */
+function weightedMiddle(samples: { value: number; weight: number }[], length: number, share: number): number | null {
+  const total = samples.reduce((sum, e) => sum + e.weight, 0)
+  if (total < length * share) return null
+  const sorted = [...samples].sort((p, q) => p.value - q.value)
+  let walked = 0
+  for (const e of sorted) {
+    walked += e.weight
+    if (walked >= total / 2) return e.value
+  }
+  return null
+}
+
+/**
+ * Streets fitted to surveyed surfaces (see NetworkOptions.roadAreas): per
+ * street between junctions, where it runs inside a carriageway outline
+ * along most of its length, its kerbs go where the outline's edges are
+ * (the middle of the measured distances); a sidewalk outline alongside
+ * sets the sidewalk's width, kerb to outer edge. Measured kerbs replace
+ * the guessed cross-section: lanes share the measured width, any rest is
+ * a strip at road level.
+ */
+function fittedToAreas(
+  points: readonly Vec2[],
+  segments: readonly Segment[],
+  roadAreas: readonly (readonly Vec2[])[],
+  sidewalkAreas: readonly (readonly Vec2[])[],
+): { segments: Segment[]; measured: Set<number> } {
+  const roads = new RingIndex(roadAreas)
+  const walks = new RingIndex(sidewalkAreas)
+  const out = segments.slice()
+  const measured = new Set<number>()
+  if (!roads.any && !walks.any) return { segments: out, measured }
+
+  for (const { run, length } of chainsOf(points, segments)) {
+    if (length < 6) continue
+    const kerbs = { left: [] as { value: number; weight: number }[], right: [] as { value: number; weight: number }[] }
+    const walkSpans = { left: [] as { value: number; weight: number }[], right: [] as { value: number; weight: number }[] }
+    const roadHalf = carriageway(segments[run[0]!.k]!.props)
+    for (const { k, forward } of run) {
+      const s = segments[k]!
+      const a = points[forward ? s.a : s.b]!
+      const b = points[forward ? s.b : s.a]!
+      const l = Math.hypot(b.x - a.x, b.y - a.y)
+      if (l < 1e-6) continue
+      const dx = (b.x - a.x) / l
+      const dy = (b.y - a.y) / l
+      const count = Math.max(1, Math.round(l / PROBE_ALONG))
+      const weight = l / count
+      for (let i = 0; i < count; i++) {
+        const t = ((i + 0.5) / count) * l
+        const px = a.x + dx * t
+        const py = a.y + dy * t
+        // The street must itself lie on the surveyed road here.
+        const onRoad = roads.any && roads.inside(px, py)
+        for (const side of [1, -1] as const) {
+          // Left of the walking direction.
+          const nx = -dy * side
+          const ny = dx * side
+          const into = side > 0 ? 'left' : 'right'
+          if (onRoad) {
+            let kerb = 0
+            for (let x = PROBE_STEP; x <= PROBE_REACH; x += PROBE_STEP) {
+              if (!roads.inside(px + nx * x, py + ny * x)) break
+              kerb = x
+            }
+            if (kerb > 0) kerbs[into].push({ value: kerb + PROBE_STEP / 2, weight })
+            if (walks.any) {
+              // The sidewalk's outer edge, from the measured kerb on.
+              let outer = 0
+              for (let x = kerb + PROBE_STEP; x <= kerb + 8; x += PROBE_STEP) {
+                if (walks.inside(px + nx * x, py + ny * x)) outer = x
+                else if (outer > 0) break
+              }
+              if (outer > 0) walkSpans[into].push({ value: outer + PROBE_STEP / 2 - (kerb + PROBE_STEP / 2), weight })
+            }
+          } else if (walks.any && !roads.any) {
+            // Only sidewalks surveyed: measure their span beyond the guessed kerb.
+            let first = 0
+            let outer = 0
+            for (let x = Math.max(roadHalf - 1, PROBE_STEP); x <= roadHalf + 8; x += PROBE_STEP) {
+              if (walks.inside(px + nx * x, py + ny * x)) {
+                if (first === 0) first = x
+                outer = x
+              } else if (outer > 0) break
+            }
+            if (outer > first && first > 0) walkSpans[into].push({ value: outer - first + PROBE_STEP, weight })
+          }
+        }
+      }
+    }
+    const kerbLeft = weightedMiddle(kerbs.left, length, 0.5)
+    const kerbRight = weightedMiddle(kerbs.right, length, 0.5)
+    const walkLeft = weightedMiddle(walkSpans.left, length, 0.4)
+    const walkRight = weightedMiddle(walkSpans.right, length, 0.4)
+    if (kerbLeft === null && kerbRight === null && walkLeft === null && walkRight === null) continue
+    for (const { k, forward } of run) {
+      const s = segments[k]!
+      out[k] = {
+        ...s,
+        props: fitKerbs(
+          s.props,
+          forward ? kerbLeft : kerbRight,
+          forward ? kerbRight : kerbLeft,
+          forward ? walkLeft : walkRight,
+          forward ? walkRight : walkLeft,
+        ),
+      }
+      if (kerbLeft !== null || kerbRight !== null) measured.add(k)
+    }
+  }
+  return { segments: out, measured }
+}
+
+/**
+ * A cross-section with its kerbs at measured distances from the centre
+ * line (null: unmeasured, keep the guess), and sidewalk widths where
+ * measured: lanes share the measured width (within reason), any rest is a
+ * strip at road level beside them.
+ */
+function fitKerbs(
+  given: StreetProps,
+  kerbLeft: number | null,
+  kerbRight: number | null,
+  walkLeft: number | null,
+  walkRight: number | null,
+): StreetProps {
+  const props = { ...given }
+  const target = {
+    left: kerbLeft === null ? null : Math.max(kerbLeft, 1.25),
+    right: kerbRight === null ? null : Math.max(kerbRight, 1.25),
+  }
+  const side = (isLeft: boolean) => carriageway(props) + (isLeft ? props.bikeLeft + props.parkingLeft : props.bikeRight + props.parkingRight)
+  // Both kerbs measured: the lanes take what they share (within reason).
+  if (target.left !== null && target.right !== null) {
+    const common = Math.min(target.left - side(true), target.right - side(false))
+    const laneWidth = Math.min(Math.max(props.laneWidth + (2 * common) / props.lanes, LANE_WIDTHS[0]), LANE_WIDTHS[1])
+    props.laneWidth = Math.round(laneWidth * 100) / 100
+  }
+  for (const isLeft of [true, false]) {
+    const goal = isLeft ? target.left : target.right
+    if (goal !== null) {
+      // The rest on this side: a strip at road level (parking), or less of one.
+      const key = isLeft ? 'parkingLeft' : 'parkingRight'
+      const delta = Math.min(goal - side(isLeft), MOST_WIDER)
+      props[key] = Math.round(Math.max(0, Math.min(props[key] + delta, MOST_WIDER)) * 100) / 100
+    }
+    const walk = isLeft ? walkLeft : walkRight
+    if (walk !== null) {
+      const width = Math.round(Math.min(Math.max(walk, 1), 6) * 100) / 100
+      if (isLeft) props.sidewalkLeft = width
+      else props.sidewalkRight = width
+    }
   }
   return props
 }
