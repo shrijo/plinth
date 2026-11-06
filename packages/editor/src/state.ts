@@ -139,6 +139,8 @@ export interface EditorState {
   showWorld: boolean
   /** Clouds in the world: none, the weather's (live), or a chosen sky. */
   clouds: CloudSky
+  /** How much of that cloud is shown: its cover scaled by this (0 to 1). */
+  cloudAmount: number
   /** The only buildings drawn while the others are hidden, to focus on them; null draws them all. */
   isolated: readonly Id[] | null
   /** Whether levels above the active one are drawn. */
@@ -171,6 +173,7 @@ export const VIEW_PREFERENCES = [
   'ambientOcclusion',
   'showWorld',
   'clouds',
+  'cloudAmount',
 ] as const
 export type ViewPreferences = { [K in (typeof VIEW_PREFERENCES)[number]]: EditorState[K] }
 
@@ -191,6 +194,7 @@ const DEFAULT_VIEW: ViewPreferences = {
   ambientOcclusion: !(typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches),
   showWorld: true,
   clouds: 'live',
+  cloudAmount: 0.03,
 }
 const PREFERENCES_KEY = 'plinth:view:2'
 
@@ -202,7 +206,8 @@ function loadPreferences(): Partial<ViewPreferences> {
       (k !== 'lens' || (LENSES as readonly unknown[]).includes(saved[k])) &&
       (k !== 'style' || (SCENE_STYLES as readonly unknown[]).includes(saved[k])) &&
       (k !== 'timeOfDay' || (Number(saved[k]) >= FIRST_HOUR && Number(saved[k]) <= LAST_HOUR)) &&
-      (k !== 'clouds' || (CLOUD_SKIES as readonly unknown[]).includes(saved[k]))
+      (k !== 'clouds' || (CLOUD_SKIES as readonly unknown[]).includes(saved[k])) &&
+      (k !== 'cloudAmount' || (Number(saved[k]) >= 0 && Number(saved[k]) <= 1))
     return Object.fromEntries(VIEW_PREFERENCES.filter(valid).map((k) => [k, saved[k]]))
   } catch {
     return {}

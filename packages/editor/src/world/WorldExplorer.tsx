@@ -58,11 +58,13 @@ interface Look {
   outlines: boolean
   occlusion: boolean
   clouds: CloudSky
+  /** How much of the cloud is shown (0 to 1). */
+  amount: number
 }
 
 function readLook(): Look {
   const p = readViewPreferences()
-  return { hour: p.timeOfDay, outlines: p.showOutlines, occlusion: p.ambientOcclusion, clouds: p.clouds }
+  return { hour: p.timeOfDay, outlines: p.showOutlines, occlusion: p.ambientOcclusion, clouds: p.clouds, amount: p.cloudAmount }
 }
 
 const SKY_NAMES: Record<CloudSky, string> = { off: 'None', live: 'Live weather', fair: 'Fair', mixed: 'Changeable', overcast: 'Overcast' }
@@ -116,7 +118,13 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
   const changeLook = (patch: Partial<Look>) => {
     const next = { ...look, ...patch }
     setLook(next)
-    writeViewPreferences({ timeOfDay: next.hour, showOutlines: next.outlines, ambientOcclusion: next.occlusion, clouds: next.clouds })
+    writeViewPreferences({
+      timeOfDay: next.hour,
+      showOutlines: next.outlines,
+      ambientOcclusion: next.occlusion,
+      clouds: next.clouds,
+      cloudAmount: next.amount,
+    })
   }
   // The clouds, and the weather they're made from.
   // One for the explorer; let go of when it closes (and made again if React mounts it twice while developing).
@@ -132,6 +140,9 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
   useEffect(() => {
     clouds.setWeather(weather.world, weather.local)
   }, [clouds, weather.world, weather.local])
+  useEffect(() => {
+    clouds.setAmount(look.amount)
+  }, [clouds, look.amount])
   const view = useMemo(() => ({ ...DEFAULT_VIEW, ...initialView }), [initialView])
   const keepControls = useCallback((controls: GlobeControls | null) => {
     controlsRef.current = controls
@@ -315,6 +326,22 @@ function ViewPanel({
               ))}
             </select>
           </label>
+          {look.clouds !== 'off' && (
+            <label className="pe-daylight" title="How much of the cloud is shown">
+              <span>Amount</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                // Squared, so the low amounts (where most of the difference is) get most of the slider.
+                value={Math.sqrt(look.amount)}
+                aria-valuetext={`${Math.round(look.amount * 100)}%`}
+                onChange={(e) => onChange({ amount: Number(e.target.value) ** 2 })}
+              />
+              <output>{look.amount < 0.1 ? (look.amount * 100).toFixed(1) : Math.round(look.amount * 100)}%</output>
+            </label>
+          )}
           {weather && <WeatherNote weather={weather} controlsRef={controlsRef} />}
         </div>
       )}

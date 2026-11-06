@@ -70,6 +70,7 @@ const fragmentShader = /* glsl */ `
   uniform vec4 localBounds;
   uniform float hasLocal;
   uniform vec4 coverOverride;
+  uniform float amount;
   uniform float ready;
 
   uniform mat4 projectionInverse;
@@ -130,7 +131,7 @@ const fragmentShader = /* glsl */ `
   }
 
   vec3 coverAt(vec3 p) {
-    if (coverOverride.w > 0.5) return coverOverride.xyz;
+    if (coverOverride.w > 0.5) return coverOverride.xyz * amount;
     float lon = degrees(atan(p.y, p.x));
     float lat = degrees(asin(clamp(p.z / length(p), -1.0, 1.0)));
     // The world's grid: every 20 degrees from 180 W and 80 S.
@@ -144,7 +145,7 @@ const fragmentShader = /* glsl */ `
         cover = mix(cover, near, w);
       }
     }
-    return cover;
+    return cover * amount;
   }
 
   // How much of a layer's cloud there is at a height in it: flat-bottomed, thinning towards the top
@@ -348,6 +349,7 @@ export class CloudsEffect extends Effect {
         localBounds: { value: new Vector4() },
         hasLocal: { value: 0 },
         coverOverride: { value: new Vector4(...SKIES.fair, 1) },
+        amount: { value: 0.03 },
         ready: { value: 0 },
         projectionInverse: { value: new Matrix4() },
         cameraWorld: { value: new Matrix4() },
@@ -432,6 +434,11 @@ export class CloudsEffect extends Effect {
     if (sky === 'live') override.w = 0
     else override.set(sky[0], sky[1], sky[2], 1)
     this.material.uniforms.ready!.value = this.noise && (this.worldTexture || override.w > 0.5) ? 1 : 0
+  }
+
+  /** How much of the cloud to show: its cover scaled by this (0 to 1). */
+  setAmount(amount: number): void {
+    this.material.uniforms.amount!.value = Math.min(Math.max(amount, 0), 1)
   }
 
   /** The weather's grids: the whole world's, and the finer one round the view. */
