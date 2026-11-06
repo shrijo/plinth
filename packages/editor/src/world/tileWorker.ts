@@ -7,6 +7,7 @@ import {
   fetchHeights,
   groundMesh,
   makeGround,
+  streetMesh,
   waterMesh,
   insideRing,
   lonLatToFrame,
@@ -181,6 +182,22 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
   return { id: request.id, ok: true, type: 'area', result: canvas.transferToImageBitmap() }
 }
 
+/** The streets of a tile in 3D, on its ground's street beds. */
+async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, signal: AbortSignal): Promise<WorkerResponse> {
+  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  if (!data || data.roads.length === 0) return { id: request.id, ok: true, type: 'streets', result: null }
+  const shaped = groundFor(request.tile, heights, data)
+  // A site's own streets stand in its area: the world's are left out there.
+  const mask = request.mask
+  const corners = mask
+    ? mask.points.map(([e, n]) => {
+        const p = frameToLonLat(enuFrame(mask.lon, mask.lat, 0), e, n)
+        return { lon: p.lon, lat: p.lat }
+      })
+    : undefined
+  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners) }
+}
+
 /** Keeps buildings outside the mask. */
 function masking(mask: WorldMask): (lon: number, lat: number) => boolean {
   const frame = enuFrame(mask.lon, mask.lat, 0)
@@ -219,7 +236,9 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         ? await ground(request, controller.signal)
         : request.type === 'area'
           ? await area(request, controller.signal)
-          : await buildings(request, controller.signal)
+          : request.type === 'streets'
+            ? await streets(request, controller.signal)
+            : await buildings(request, controller.signal)
   } catch (error) {
     response = { id: request.id, ok: false, error: String(error), aborted: controller.signal.aborted }
   }

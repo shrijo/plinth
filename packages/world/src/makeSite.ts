@@ -36,7 +36,8 @@ export async function planSite(
     lon: area.lon,
     lat: area.lat,
     size: area.size,
-    heightAt: (lon: number, lat: number) => groundAt(lon, lat).at(lon, lat),
+    // The street bed: the site's streets are draped over its terrain, and meet the world's streets at its edge.
+    heightAt: (lon: number, lat: number) => groundAt(lon, lat).level(lon, lat),
     waterAt: (lon: number, lat: number) => groundAt(lon, lat).waterAt(lon, lat),
   }
   onProgress?.('Fetching buildings and streets from OpenStreetMap…')

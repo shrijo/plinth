@@ -21,6 +21,8 @@ export const SIDEWALK = 2.5
 export const TOWN_STREETS = new Set(['minor', 'tertiary', 'secondary', 'primary'])
 /** Over this far beyond its edge (metres) a road's bed blends back into the land. */
 const FALLOFF = 7
+/** Under a street the land lies this much lower than its bed, so it never shows through the street built on it. */
+const DIP = 0.35
 /** Smoothing of the land, and of a road's bed (radius, metres). */
 const LAND_SMOOTHING = 8
 const BED_SMOOTHING = 18
@@ -32,8 +34,10 @@ const BED_SMOOTHING = 18
 const WATER_SMOOTHING = 45
 
 export interface Ground {
-  /** The ground's height at a point, metres above sea level. */
+  /** The ground's height at a point, metres above sea level (a little lower under streets: they're built over it). */
   at(lon: number, lat: number): number
+  /** The height a street is built at: the level bed (the land itself away from streets). */
+  level(lon: number, lat: number): number
   /** Water there: the height of its surface, or null on land. */
   waterAt(lon: number, lat: number): number | null
   /** The height a water surface has at a point (whether or not there's water). */
@@ -136,19 +140,21 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return [lon, tileLat(source!.y + y, source!.z)]
   }
 
-  const at = (lon: number, lat: number): number => {
+  /** The bed (street level) and the land (dipped under streets) at a point. */
+  const shape = (lon: number, lat: number): { level: number; land: number } => {
     const land = smooth(lon, lat, LAND_SMOOTHING)
-    if (segments.length === 0) return land
+    if (segments.length === 0) return { level: land, land }
     const [u, v] = toSource(lon, lat)
     const px = u * metres
     const py = v * metres
     const cell = metres / CELLS
     const list = cells.get((Math.floor(py / cell) + 4) * 64 + (Math.floor(px / cell) + 4))
-    if (!list) return land
-    // The road whose bed reaches here most strongly.
-    let best = 0
-    let bx = 0
-    let by = 0
+    if (!list) return { level: land, land }
+    // Every street whose bed reaches here, weighted by how strongly: where two meet, their beds blend, so the
+    // ground has no step at a junction (taking only the strongest would jump from one to the other).
+    let weights = 0
+    let beds = 0
+    let under = 0
     for (const index of list) {
       const s = segments[index]!
       const dx = s.bx - s.ax
@@ -160,18 +166,19 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       const d = Math.hypot(px - qx, py - qy)
       if (d > s.half + FALLOFF) continue
       const w = d <= s.half ? 1 : smoothstep(1 - (d - s.half) / FALLOFF)
-      if (w > best) {
-        best = w
-        bx = qx
-        by = qy
-      }
+      if (w < 0.005) continue
+      // Level across: a street's bed is the land at the middle of the street, smoothed along it.
+      const [qlon, qlat] = fromSource(qx / metres, qy / metres)
+      weights += w
+      beds += w * smooth(qlon, qlat, BED_SMOOTHING)
+      under = Math.max(under, d <= s.half ? 1 : smoothstep(1 - (d - s.half) / 2))
     }
-    if (best === 0) return land
-    // Level across: the bed's height is the land's at the middle of the road, smoothed along it.
-    const [qlon, qlat] = fromSource(bx / metres, by / metres)
-    const bed = smooth(qlon, qlat, BED_SMOOTHING)
-    return land + (bed - land) * best
+    if (weights === 0) return { level: land, land }
+    const level = land + (beds / weights - land) * Math.min(weights, 1)
+    return { level, land: level - DIP * under }
   }
+  const at = (lon: number, lat: number): number => shape(lon, lat).land
+  const level = (lon: number, lat: number): number => shape(lon, lat).level
 
   const waterAt = (lon: number, lat: number): number | null => {
     if (water.length === 0) return null
@@ -199,7 +206,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return sum / weight
   }
 
-  return { at, waterAt, surface, water, source, town }
+  return { at, level, waterAt, surface, water, source, town }
 }
 
 function smoothstep(t: number): number {

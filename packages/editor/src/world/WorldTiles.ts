@@ -34,6 +34,7 @@ import {
   type Frame,
   type GroundStyle,
   type MeshBuffers,
+  type StreetColours,
   type TileId,
   type Vec3,
 } from '@plinth/world'
@@ -82,6 +83,9 @@ const MAX_ZOOM = 17
 const BUILDING_ZOOM = 14
 const MAX_GROUND = COARSE ? 120 : 300
 const MAX_BUILDINGS = COARSE ? 24 : 64
+const MAX_STREETS = COARSE ? 4 : 12
+/** Streets are built in 3D where the view calls for ground tiles this fine (within a kilometre or two). */
+const STREET_ZOOM = 16
 const MAX_IN_FLIGHT = 14
 /** Time spent adding new tiles to the scene per frame (ms), so arrivals never stall a frame; at least one goes in. */
 const ADD_BUDGET = 4
@@ -111,7 +115,9 @@ interface GroundEntry {
   frame: Frame
 }
 
+/** A tile's buildings, or its streets (built for a zoom 14 tile). */
 interface BuildingEntry {
+  kind: 'buildings' | 'streets'
   tile: TileId
   key: string
   state: State
@@ -136,6 +142,8 @@ export class WorldTiles {
   private readonly options: WorldTilesOptions
   private readonly ground = new Map<string, GroundEntry>()
   private readonly buildings = new Map<string, BuildingEntry>()
+  private readonly streets = new Map<string, BuildingEntry>()
+  private readonly streetMaterial: MeshStandardMaterial
   private readonly workers: Worker[] = []
   private readonly pending = new Map<number, { worker: Worker; entry: GroundEntry | BuildingEntry }>()
   private readonly asked = new Map<number, (image: ImageBitmap | null) => void>()
@@ -146,6 +154,7 @@ export class WorldTiles {
   /** Lakes, rivers and the sea, and their reflection. */
   readonly water = new WorldWater()
   private outlines: boolean
+  private readonly streetColours: StreetColours
   private readonly caps: { mesh: Mesh; frame: Frame }[] = []
   private nextJob = 1
   private clock = 0
@@ -161,11 +170,23 @@ export class WorldTiles {
     this.group.name = 'world'
     this.buildingMaterial = new MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 })
     this.buildingMaterial.userData.shared = true
+    // Streets win against the ground they lie on where they're within a hair of it.
+    this.streetMaterial = new MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 })
+    this.streetMaterial.userData.shared = true
     const linear = (css: string): [number, number, number] => {
       const c = new Color(css)
       return [c.r, c.g, c.b]
     }
     this.colours = { wall: linear(options.wall ?? '#f3f2ef'), roof: linear(options.roof ?? '#e2e0db'), road: linear('#d0cec9') }
+    // As the editor's streets (see scene/materials.ts).
+    this.streetColours = {
+      road: linear('#d0cec9'),
+      bike: linear('#c5c3be'),
+      parking: linear('#d8d6d1'),
+      sidewalk: linear('#eeede8'),
+      curb: linear('#dfded9'),
+      marking: linear('#fdfdfc'),
+    }
     this.outlines = options.outlines ?? false
     // The map stops short of the poles (at 85°): caps close the globe there, sea in the north, ice in the south.
     const style = options.style ?? GROUND_STYLE
@@ -198,6 +219,7 @@ export class WorldTiles {
     this.frame = enuFrame(anchor.lon, anchor.lat, anchor.height)
     for (const entry of this.ground.values()) if (entry.mesh) this.place(entry.mesh, entry.frame)
     for (const entry of this.buildings.values()) if (entry.mesh) this.place(entry.mesh, entry.frame)
+    for (const entry of this.streets.values()) if (entry.mesh) this.place(entry.mesh, entry.frame)
     for (const cap of this.caps) this.place(cap.mesh, cap.frame)
   }
 
@@ -301,7 +323,7 @@ export class WorldTiles {
       if (!entry) {
         const [z, x, y] = key.split('/').map(Number) as [number, number, number]
         const tile = { z, x, y }
-        entry = { tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
+        entry = { kind: 'buildings', tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
         this.buildings.set(key, entry)
       }
       entry.used = this.clock
@@ -312,7 +334,26 @@ export class WorldTiles {
       }
     }
 
-    // What to load: the ground, the coarsest first, and the ground under the camera (to keep above it); then buildings.
+    // Streets in 3D close by (further out they're in the ground's picture).
+    const streetKeys = new Set<string>()
+    for (const tile of selection.ideal) if (tile.z >= STREET_ZOOM) streetKeys.add(tileKey(ancestorAt(tile, BUILDING_ZOOM)))
+    for (const key of streetKeys) {
+      let entry = this.streets.get(key)
+      if (!entry) {
+        const [z, x, y] = key.split('/').map(Number) as [number, number, number]
+        const tile = { z, x, y }
+        entry = { kind: 'streets', tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
+        this.streets.set(key, entry)
+      }
+      entry.used = this.clock
+      entry.wanted = now
+      if (entry.mesh) {
+        entry.mesh.visible = true
+        this.drawn.push(entry.mesh)
+      }
+    }
+
+    // What to load: the ground, the coarsest first, and the ground under the camera (to keep above it); then buildings and streets.
     const under = lonLatFromEcef(cameraEcef)
     const want = [...selection.want]
     if (under.height - this.anchor.height < 30000) {
@@ -338,6 +379,10 @@ export class WorldTiles {
     for (const key of buildingKeys) {
       const entry = this.buildings.get(key)!
       if (entry.state === 'failed' && this.clock >= entry.retryAt && this.pending.size < MAX_IN_FLIGHT) this.requestBuildings(entry)
+    }
+    for (const key of streetKeys) {
+      const entry = this.streets.get(key)!
+      if (entry.state === 'failed' && this.clock >= entry.retryAt && this.pending.size < MAX_IN_FLIGHT) this.requestStreets(entry)
     }
     // Loads the view has long moved away from give way (not at once: a turn back shouldn't start them again).
     for (const [job, { worker, entry }] of this.pending) {
@@ -409,6 +454,15 @@ export class WorldTiles {
     worker.postMessage({ id, type: 'buildings', tile: entry.tile, colours: this.colours, mask: this.options.mask ?? null } satisfies WorkerRequest)
   }
 
+  private requestStreets(entry: BuildingEntry): void {
+    const id = this.nextJob++
+    entry.state = 'loading'
+    entry.job = id
+    const worker = this.workerFor(entry.tile)
+    this.pending.set(id, { worker, entry })
+    worker.postMessage({ id, type: 'streets', tile: entry.tile, colours: this.streetColours, mask: this.options.mask ?? null } satisfies WorkerRequest)
+  }
+
   /** A picture of the water and green in the mask's area (north up, over its bounding box), or null if it can't be had. */
   areaImage(size = 1024): Promise<ImageBitmap | null> {
     const mask = this.options.mask
@@ -450,6 +504,7 @@ export class WorldTiles {
     this.arrived.push(() => {
       if (this.disposed) return
       if (response.type === 'ground') this.addGround(entry as GroundEntry, response.result)
+      else if (response.type === 'streets') this.addStreets(entry as BuildingEntry, response.result)
       else this.addBuildings(entry as BuildingEntry, response.result)
       this.onChange?.()
     })
@@ -534,6 +589,19 @@ export class WorldTiles {
     entry.state = 'ready'
   }
 
+  private addStreets(entry: BuildingEntry, result: MeshBuffers | null): void {
+    entry.state = 'ready'
+    if (!result) return
+    const mesh = new Mesh(geometryOf(result, 'color'), this.streetMaterial)
+    mesh.matrixAutoUpdate = false
+    mesh.receiveShadow = true
+    mesh.visible = false
+    mesh.raycast = () => {}
+    this.place(mesh, entry.frame)
+    this.group.add(mesh)
+    entry.mesh = mesh
+  }
+
   private addBuildings(entry: BuildingEntry, result: MeshBuffers | null): void {
     entry.state = 'ready'
     if (!result) return
@@ -577,6 +645,7 @@ export class WorldTiles {
     }
     drop(this.ground, MAX_GROUND)
     drop(this.buildings, MAX_BUILDINGS)
+    drop(this.streets, MAX_STREETS)
   }
 
   // Questions about what's shown
@@ -620,6 +689,8 @@ export class WorldTiles {
     this.asked.clear()
     for (const entry of this.ground.values()) if (entry.mesh) disposeMesh(entry.mesh)
     for (const entry of this.buildings.values()) if (entry.mesh) disposeMesh(entry.mesh)
+    for (const entry of this.streets.values()) if (entry.mesh) disposeMesh(entry.mesh)
+    this.streetMaterial.dispose()
     this.buildingMaterial.dispose()
     this.edgeMaterial.dispose()
     this.water.dispose()
@@ -627,6 +698,7 @@ export class WorldTiles {
     this.group.clear()
     this.ground.clear()
     this.buildings.clear()
+    this.streets.clear()
   }
 }
 

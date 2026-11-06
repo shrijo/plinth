@@ -51,6 +51,10 @@ export interface RoadFeature {
   /** Stacking order where roads cross: bridges higher, tunnels lower. */
   layer: number
   name: string
+  /** Traffic one way only. */
+  oneway: boolean
+  /** For service roads: what kind (driveway, parking aisle, alley...), or ''. */
+  service: string
 }
 
 export type AreaKind =
@@ -193,7 +197,7 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
       for (const shape of shapesOf(feature.loadGeometry(), extent)) features.areas.push({ shape, kind })
     } else if (feature.type === 2 && (cls === 'runway' || cls === 'taxiway')) {
       for (const line of linesOf(feature.loadGeometry(), extent)) {
-        features.roads.push({ line, kind: 'motorway', width: cls === 'runway' ? 45 : 18, tunnel: false, bridge: false, layer: -1, name: '' })
+        features.roads.push({ line, kind: 'motorway', width: cls === 'runway' ? 45 : 18, tunnel: false, bridge: false, layer: -1, name: '', oneway: false, service: 'runway' })
       }
     }
   })
@@ -224,6 +228,8 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
         bridge: brunnel === 'bridge',
         layer: brunnel === 'bridge' ? Math.max(layer, 1) : brunnel === 'tunnel' ? Math.min(layer, -1) : layer,
         name,
+        oneway: p.oneway === 1 || p.oneway === -1,
+        service: typeof p.service === 'string' ? p.service : '',
       })
     }
   })

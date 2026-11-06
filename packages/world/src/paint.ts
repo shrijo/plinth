@@ -142,6 +142,8 @@ export function paintGround(context: Context, size: number, target: TileId, feat
 
 /** Below this zoom bridges are painted; from it on they are built (see buildingMesh). */
 const BRIDGE_ZOOM = 14
+/** From this zoom streets are built in 3D (see streets.ts): the picture keeps only plain asphalt under them. */
+const STREETS_3D_ZOOM = 16
 
 /**
  * Streets as layered decals, the way games lay roads over terrain: every
@@ -177,15 +179,16 @@ function paintStreets(
 
   // Paths and tracks first: everything else goes over them.
   for (const road of roads) if (road.kind === 'path' || road.kind === 'track' || road.kind === 'pier') stroke(road, road.width, style.path, 0.35)
-  const sidewalks = town && metresPerPixel < 2
+  const plain = target.z >= STREETS_3D_ZOOM
+  const sidewalks = town && metresPerPixel < 2 && !plain
   if (sidewalks) {
     for (const road of streets) if (TOWN_STREETS.has(road.kind)) stroke(road, road.width + SIDEWALK * 2, style.sidewalk)
   }
-  if (metresPerPixel < 0.8) for (const road of streets) stroke(road, road.width + 0.5, style.curb)
+  if (metresPerPixel < 0.8 && !plain) for (const road of streets) stroke(road, road.width + 0.5, style.curb)
   for (const road of streets) stroke(road, road.width, MAJOR.has(road.kind) ? style.majorRoad : style.road, MAJOR.has(road.kind) ? 0.9 : 0.5)
   for (const road of roads) if (road.kind === 'rail') stroke(road, 1.6, style.rail, 0.6)
 
-  if (metresPerPixel > 0.5) return
+  if (metresPerPixel > 0.5 || plain) return
   // Lane lines: dashed down the middle of two-way streets, solid along the edges of the big ones.
   const line = Math.max(0.15 / metresPerPixel, 1)
   context.strokeStyle = style.marking
