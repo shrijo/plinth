@@ -89,7 +89,9 @@ Moving: drag and the ground stays under the pointer (from space, the globe turns
 
 A site made from the world keeps where it is (longitude and latitude, its ground height and its square), and the editor draws **the real world around it** (View › Real world around): the ground, water and buildings for 20 km, with the world's buildings and ground inside the square left out, as the site's own model stands there. The square's water and green are laid over the site's terrain. Any site with a longitude and latitude (from a GeoJSON import, say) gets the world around it too.
 
-Credits: © OpenStreetMap contributors (ODbL), OpenFreeMap, OpenMapTiles, terrain from Mapzen and AWS open data; shown in the corner of the world.
+**Clouds** (View › Clouds): volumetric clouds over the whole globe, marched through per pixel at half the screen's resolution (Schneider's "Nubis" approach from Horizon Zero Dawn): a shell of low cumulus (from about 1.1 km), a middle layer (3.4 to 5.8 km) and thin high cloud (about 8 km), shaped by tiling 3D Perlin-Worley noise made at start in a worker, lit by the sun through the cloud (darker bases, a silver lining against the light, light bounced inside), hidden behind hills and buildings by the scene's depth, drifting with the wind and fading into the haze. Zooming in from space flies down through them. *Live weather* takes each layer's cover and the wind from [Open-Meteo](https://open-meteo.com) (current conditions from the national weather services' models, on a 20° grid for the world and a 1° grid round the view, kept for 15 minutes; the free service allows 600 points a minute); the noise's own spread is measured so 68% cover leaves 32% of the sky clear. Or pick a sky: fair, changeable or overcast. Far off the noise gives way to the cover's average (as mipmaps do), so the globe from space shows the real weather systems without flicker.
+
+Credits: © OpenStreetMap contributors (ODbL), OpenFreeMap, OpenMapTiles, terrain from Mapzen and AWS open data, weather from Open-Meteo (CC BY 4.0); shown in the corner of the world.
 
 ## Cloud
 

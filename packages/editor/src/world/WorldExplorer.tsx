@@ -3,11 +3,24 @@ import { EffectComposer, N8AO, ToneMapping } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { BackSide, Color, Fog, NeutralToneMapping, PerspectiveCamera, ShaderMaterial, SphereGeometry, Vector3, type Mesh } from 'three'
-import { ATTRIBUTION, ecefFromLonLat, enuFrame, fromFrame, searchPlaces, type Place } from '@plinth/world'
+import {
+  ATTRIBUTION,
+  ecefFromLonLat,
+  enuFrame,
+  fetchLocalWeather,
+  fetchWorldWeather,
+  fromFrame,
+  searchPlaces,
+  weatherAt,
+  WEATHER_ATTRIBUTION,
+  type Place,
+  type WeatherGrid,
+} from '@plinth/world'
 import { daylight, FIRST_HOUR, formatHour, LAST_HOUR } from '../scene/daylight.ts'
 import { PALETTES } from '../scene/materials.ts'
 import { Sun } from '../scene/sun.ts'
-import { readViewPreferences, writeViewPreferences } from '../state.ts'
+import { CLOUD_SKIES, readViewPreferences, writeViewPreferences, type CloudSky } from '../state.ts'
+import { CloudsEffect, SKIES, windAt } from './clouds.ts'
 import { ChevronIcon, SlidersIcon } from '../ui/icons.tsx'
 import { DEFAULT_VIEW, GlobeControls, type GlobeView } from './globeControls.ts'
 import { WorldTiles } from './WorldTiles.ts'
@@ -44,11 +57,46 @@ interface Look {
   hour: number
   outlines: boolean
   occlusion: boolean
+  clouds: CloudSky
 }
 
 function readLook(): Look {
   const p = readViewPreferences()
-  return { hour: p.timeOfDay, outlines: p.showOutlines, occlusion: p.ambientOcclusion }
+  return { hour: p.timeOfDay, outlines: p.showOutlines, occlusion: p.ambientOcclusion, clouds: p.clouds }
+}
+
+const SKY_NAMES: Record<CloudSky, string> = { off: 'None', live: 'Live weather', fair: 'Fair', mixed: 'Changeable', overcast: 'Overcast' }
+
+/** The weather (for live clouds): the whole world's, and finer round the view as it moves. */
+function useWeather(controlsRef: RefObject<GlobeControls | null>, on: boolean): { world: WeatherGrid | null; local: WeatherGrid | null; failed: boolean } {
+  const [state, setState] = useState<{ world: WeatherGrid | null; local: WeatherGrid | null; failed: boolean }>({ world: null, local: null, failed: false })
+  useEffect(() => {
+    if (!on) return
+    const stop = new AbortController()
+    const live = () => !stop.signal.aborted
+    const last = { centre: '' }
+    fetchWorldWeather()
+      .then((world) => live() && setState((s) => ({ ...s, world })))
+      .catch(() => live() && setState((s) => ({ ...s, failed: true })))
+    // Now and then: the finer grid round where the view is, when it has moved on (and is close enough to tell).
+    const look = () => {
+      const view = controlsRef.current?.view
+      if (!view || view.range > 3e6) return
+      const key = `${Math.round(view.lon)},${Math.round(view.lat)}`
+      if (key === last.centre) return
+      last.centre = key
+      fetchLocalWeather(view.lon, view.lat)
+        .then((local) => live() && setState((s) => ({ ...s, local })))
+        .catch(() => undefined)
+    }
+    look()
+    const timer = setInterval(look, 2000)
+    return () => {
+      stop.abort()
+      clearInterval(timer)
+    }
+  }, [controlsRef, on])
+  return state
 }
 
 const MIN_SIZE = 100
@@ -68,8 +116,22 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
   const changeLook = (patch: Partial<Look>) => {
     const next = { ...look, ...patch }
     setLook(next)
-    writeViewPreferences({ timeOfDay: next.hour, showOutlines: next.outlines, ambientOcclusion: next.occlusion })
+    writeViewPreferences({ timeOfDay: next.hour, showOutlines: next.outlines, ambientOcclusion: next.occlusion, clouds: next.clouds })
   }
+  // The clouds, and the weather they're made from.
+  // One for the explorer; let go of when it closes (and made again if React mounts it twice while developing).
+  const [clouds] = useState(() => new CloudsEffect())
+  useEffect(() => {
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__plinthClouds = clouds
+    return () => clouds.release()
+  }, [clouds])
+  const weather = useWeather(controlsRef, look.clouds === 'live')
+  useEffect(() => {
+    clouds.setSky(look.clouds === 'live' || look.clouds === 'off' ? 'live' : SKIES[look.clouds])
+  }, [clouds, look.clouds])
+  useEffect(() => {
+    clouds.setWeather(weather.world, weather.local)
+  }, [clouds, weather.world, weather.local])
   const view = useMemo(() => ({ ...DEFAULT_VIEW, ...initialView }), [initialView])
   const keepControls = useCallback((controls: GlobeControls | null) => {
     controlsRef.current = controls
@@ -113,12 +175,16 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
           outline={outline}
           choosing={choosing}
           look={look}
+          clouds={look.clouds === 'off' ? null : clouds}
+          weather={look.clouds === 'live' ? weather.local ?? weather.world : null}
           onView={onViewChange}
           onClose={setClose}
         />
-        {look.occlusion && <Occlusion controlsRef={controlsRef} />}
+        {(look.occlusion || look.clouds !== 'off') && (
+          <Effects controlsRef={controlsRef} occlusion={look.occlusion} clouds={look.clouds === 'off' ? null : clouds} />
+        )}
       </Canvas>
-      <ViewPanel look={look} onChange={changeLook} />
+      <ViewPanel look={look} onChange={changeLook} weather={look.clouds === 'live' ? weather : null} controlsRef={controlsRef} />
       {choosing !== null && (
         <svg className="pw-overlay" aria-hidden="true">
           <polygon ref={outline} className="pw-square" />
@@ -180,13 +246,26 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
           </div>
         )}
       </div>
-      <div className="pw-credit">{ATTRIBUTION}</div>
+      <div className="pw-credit">
+        {ATTRIBUTION}
+        {look.clouds === 'live' && ` · ${WEATHER_ATTRIBUTION}`}
+      </div>
     </div>
   )
 }
 
 /** The view's settings, behind a button: the time of day, soft shading, outlines. */
-function ViewPanel({ look, onChange }: { look: Look; onChange: (patch: Partial<Look>) => void }) {
+function ViewPanel({
+  look,
+  onChange,
+  weather,
+  controlsRef,
+}: {
+  look: Look
+  onChange: (patch: Partial<Look>) => void
+  weather: { world: WeatherGrid | null; local: WeatherGrid | null; failed: boolean } | null
+  controlsRef: RefObject<GlobeControls | null>
+}) {
   const [open, setOpen] = useState(false)
   return (
     <section className="pe-levels pw-view" aria-label="View">
@@ -226,14 +305,70 @@ function ViewPanel({ look, onChange }: { look: Look; onChange: (patch: Partial<L
             <input type="checkbox" checked={look.outlines} onChange={(e) => onChange({ outlines: e.target.checked })} />
             Outlines
           </label>
+          <label className="pw-clouds">
+            <span>Clouds</span>
+            <select value={look.clouds} onChange={(e) => onChange({ clouds: e.target.value as CloudSky })}>
+              {CLOUD_SKIES.map((sky) => (
+                <option key={sky} value={sky}>
+                  {SKY_NAMES[sky]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {weather && <WeatherNote weather={weather} controlsRef={controlsRef} />}
         </div>
       )}
     </section>
   )
 }
 
-/** Ambient occlusion, as in the editor (see scene/Effects): its reach follows how much of the ground is in view. */
-function Occlusion({ controlsRef }: { controlsRef: RefObject<GlobeControls | null> }) {
+/** What the live weather says here, and where it's from. */
+function WeatherNote({
+  weather,
+  controlsRef,
+}: {
+  weather: { world: WeatherGrid | null; local: WeatherGrid | null; failed: boolean }
+  controlsRef: RefObject<GlobeControls | null>
+}) {
+  const grid = weather.local ?? weather.world
+  // Where the view is, looked up now and then (the panel needn't follow every frame).
+  const [place, setPlace] = useState<{ lon: number; lat: number } | null>(null)
+  useEffect(() => {
+    const look = () => {
+      const view = controlsRef.current?.view
+      if (view) setPlace((p) => (p && Math.abs(p.lon - view.lon) < 0.01 && Math.abs(p.lat - view.lat) < 0.01 ? p : { lon: view.lon, lat: view.lat }))
+    }
+    look()
+    const timer = setInterval(look, 1000)
+    return () => clearInterval(timer)
+  }, [controlsRef])
+  if (weather.failed && !grid) return <p className="pw-note">The weather service isn't answering; the clouds wait for it.</p>
+  if (!grid || !place) return <p className="pw-note">Fetching the weather…</p>
+  const here = weatherAt(grid, place.lon, place.lat)
+  const percent = (v: number) => `${Math.round(v * 100)}%`
+  const time = grid.time ? `${grid.time.slice(11, 16)} UTC` : ''
+  return (
+    <p className="pw-note">
+      Here: low {percent(here.low)}, middle {percent(here.mid)}, high {percent(here.high)} cloud. {WEATHER_ATTRIBUTION}
+      {time && `, ${time}`}.
+    </p>
+  )
+}
+
+/**
+ * What's laid over the drawn scene: ambient occlusion as in the editor (see
+ * scene/Effects; its reach follows how much of the ground is in view), the
+ * clouds, then the tone mapping.
+ */
+function Effects({
+  controlsRef,
+  occlusion,
+  clouds,
+}: {
+  controlsRef: RefObject<GlobeControls | null>
+  occlusion: boolean
+  clouds: CloudsEffect | null
+}) {
   const ao = useRef<{ configuration: { aoRadius: number } } | null>(null)
   useFrame(({ camera }) => {
     const pass = ao.current
@@ -245,7 +380,8 @@ function Occlusion({ controlsRef }: { controlsRef: RefObject<GlobeControls | nul
   })
   return (
     <EffectComposer multisampling={4} renderPriority={1}>
-      <N8AO ref={ao} halfRes aoSamples={16} denoiseSamples={8} denoiseRadius={12} aoRadius={4} distanceFalloff={1} intensity={3} color="black" />
+      <>{occlusion && <N8AO ref={ao} halfRes aoSamples={16} denoiseSamples={8} denoiseRadius={12} aoRadius={4} distanceFalloff={1} intensity={3} color="black" />}</>
+      <>{clouds && <primitive object={clouds} dispose={null} />}</>
       <ToneMapping mode={ToneMappingMode.NEUTRAL} />
     </EffectComposer>
   )
@@ -362,6 +498,8 @@ function ExplorerScene({
   outline,
   choosing,
   look,
+  clouds,
+  weather,
   onView,
   onClose,
 }: {
@@ -370,6 +508,8 @@ function ExplorerScene({
   outline: RefObject<SVGPolygonElement | null>
   choosing: number | null
   look: Look
+  clouds: CloudsEffect | null
+  weather: WeatherGrid | null
   onView?: (view: GlobeView) => void
   onClose: (close: boolean) => void
 }) {
@@ -379,7 +519,7 @@ function ExplorerScene({
   const lightRef = useRef(light)
   const sky = useRef<Mesh>(null)
   const parts = useRef<{ world: WorldTiles; controls: GlobeControls; sun: Sun | null; fog: Fog } | null>(null)
-  const reported = useRef({ at: 0, close: false })
+  const reported = useRef({ at: 0, close: false, frame: 0, wind: 0 })
 
   useEffect(() => {
     const { scene, camera, gl } = get()
@@ -465,6 +605,18 @@ function ExplorerScene({
 
     world.update(camera, size.height)
     world.reflect(get().gl, get().scene, camera)
+    if (clouds) {
+      const now = performance.now()
+      const seconds = reported.current.frame ? Math.min((now - reported.current.frame) / 1000, 0.1) : 0
+      reported.current.frame = now
+      // The wind here, from the weather (or a breeze from the west), a few times a second.
+      if (now - reported.current.wind > 500) {
+        reported.current.wind = now
+        const w = weather ? windAt(weather, view.lon, view.lat) : null
+        clouds.setWind(view.lon, view.lat, w?.east ?? 6, w?.north ?? 1)
+      }
+      clouds.setView(camera, world, lightRef.current, { color: fog.color, near: fog.near, far: fog.far }, seconds)
+    }
     sun?.update(Math.min(Math.max(view.range * 2.5, 150), 9000), get().scene, Math.max(0, (altitude - 400) * 0.7))
 
     // The square being marked out, on the screen.

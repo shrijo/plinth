@@ -241,3 +241,36 @@
 .pw-view {
   z-index: 3;
 }
+
+.pw-clouds {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pw-clouds > span {
+  min-width: 38px;
+  color: var(--pe-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pw-clouds select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--pe-border);
+  border-radius: 8px;
+  background: var(--pe-surface-solid);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--pe-text);
+}
+
+.pw-note {
+  margin: 0;
+  color: var(--pe-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}

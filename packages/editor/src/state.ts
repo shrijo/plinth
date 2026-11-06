@@ -137,6 +137,8 @@ export interface EditorState {
   ambientOcclusion: boolean
   /** The real world drawn round a site placed on the map (one with a longitude and latitude). */
   showWorld: boolean
+  /** Clouds in the world: none, the weather's (live), or a chosen sky. */
+  clouds: CloudSky
   /** The only buildings drawn while the others are hidden, to focus on them; null draws them all. */
   isolated: readonly Id[] | null
   /** Whether levels above the active one are drawn. */
@@ -155,6 +157,9 @@ export interface EditorState {
 
 export type EditorStore = StoreApi<EditorState>
 
+export type CloudSky = 'off' | 'live' | 'fair' | 'mixed' | 'overcast'
+export const CLOUD_SKIES: readonly CloudSky[] = ['off', 'live', 'fair', 'mixed', 'overcast']
+
 /** View settings each viewer keeps between sessions. */
 export const VIEW_PREFERENCES = [
   'showOutlines',
@@ -165,6 +170,7 @@ export const VIEW_PREFERENCES = [
   'timeOfDay',
   'ambientOcclusion',
   'showWorld',
+  'clouds',
 ] as const
 export type ViewPreferences = { [K in (typeof VIEW_PREFERENCES)[number]]: EditorState[K] }
 
@@ -184,6 +190,7 @@ const DEFAULT_VIEW: ViewPreferences = {
   // On by default, except on phones and tablets, where it costs too much battery.
   ambientOcclusion: !(typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches),
   showWorld: true,
+  clouds: 'live',
 }
 const PREFERENCES_KEY = 'plinth:view:2'
 
@@ -194,7 +201,8 @@ function loadPreferences(): Partial<ViewPreferences> {
       typeof saved[k] === typeof DEFAULT_VIEW[k] &&
       (k !== 'lens' || (LENSES as readonly unknown[]).includes(saved[k])) &&
       (k !== 'style' || (SCENE_STYLES as readonly unknown[]).includes(saved[k])) &&
-      (k !== 'timeOfDay' || (Number(saved[k]) >= FIRST_HOUR && Number(saved[k]) <= LAST_HOUR))
+      (k !== 'timeOfDay' || (Number(saved[k]) >= FIRST_HOUR && Number(saved[k]) <= LAST_HOUR)) &&
+      (k !== 'clouds' || (CLOUD_SKIES as readonly unknown[]).includes(saved[k]))
     return Object.fromEntries(VIEW_PREFERENCES.filter(valid).map((k) => [k, saved[k]]))
   } catch {
     return {}
