@@ -57,24 +57,45 @@ const fragmentShader = /* glsl */ `
   varying vec4 vMirror;
   varying vec3 vWorld;
 
-  // Slope of the water from a few trains of waves, long and short, at different angles. A wave
-  // shorter than a few pixels on the screen fades out, so far water doesn't shimmer into stripes.
-  float pixel;
-  vec2 wave(vec2 p, vec2 dir, float length, float height) {
-    float k = 6.2831853 / length;
-    float phase = dot(p, dir) * k + time * sqrt(9.81 * k);
-    float seen = smoothstep(pixel * 3.0, pixel * 8.0, length);
-    return dir * (height * k * cos(phase) * seen);
+  // Hash without sine (Dave Hoskins): steady on every GPU, for the coordinates of a few kilometres used here.
+  vec2 hash(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.xx + q.yz) * q.zy) * 2.0 - 1.0;
   }
-  vec3 waterNormal(vec2 p) {
-    vec2 slope = vec2(0.0);
-    slope += wave(p, normalize(vec2(1.0, 0.3)), 23.0, 0.12);
-    slope += wave(p, normalize(vec2(-0.6, 1.0)), 13.0, 0.07);
-    slope += wave(p, normalize(vec2(0.2, -1.0)), 7.1, 0.04);
-    slope += wave(p, normalize(vec2(-1.0, -0.4)), 3.7, 0.02);
-    slope += wave(p, normalize(vec2(0.8, 0.9)), 1.9, 0.012);
-    slope += wave(p, normalize(vec2(-0.3, 0.7)), 0.93, 0.006);
-    return normalize(vec3(-slope.x, 1.0, -slope.y));
+
+  // Gradient noise with its slope (value, d/dx, d/dy): smooth, without a pattern to repeat.
+  vec3 noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    vec2 ga = hash(i);
+    vec2 gb = hash(i + vec2(1.0, 0.0));
+    vec2 gc = hash(i + vec2(0.0, 1.0));
+    vec2 gd = hash(i + vec2(1.0, 1.0));
+    float va = dot(ga, f);
+    float vb = dot(gb, f - vec2(1.0, 0.0));
+    float vc = dot(gc, f - vec2(0.0, 1.0));
+    float vd = dot(gd, f - vec2(1.0, 1.0));
+    float k = va - vb - vc + vd;
+    return vec3(
+      va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k,
+      ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) + du * (u.yx * k + vec2(vb, vc) - va)
+    );
+  }
+
+  float pixel;
+
+  // One layer of the surface: noise at a scale (metres), turned and drifting with the wind; its slope, faded
+  // out where it would be finer than a few pixels on the screen.
+  vec2 layer(vec2 p, float size, float angle, float height, float speed) {
+    float c = cos(angle);
+    float s = sin(angle);
+    vec2 q = mat2(c, -s, s, c) * p / size + vec2(time * speed / size, time * speed * 0.37 / size);
+    vec2 slope = noise(q).yz;
+    slope = mat2(c, s, -s, c) * slope;
+    return slope * (height / size) * smoothstep(pixel * 2.0, pixel * 7.0, size);
   }
 
   void main() {
@@ -83,23 +104,41 @@ const fragmentShader = /* glsl */ `
     vec3 toEye = cameraPosition - vWorld;
     float distance = length(toEye);
     vec3 view = toEye / distance;
-    // Metres across a pixel here (more along the view at a glancing angle).
     pixel = max(length(dFdx(vWorld.xz)), length(dFdy(vWorld.xz)));
-    vec3 n = waterNormal(p);
+
+    // Wind comes and goes: broad patches of calm, nearly a mirror, and patches ruffled a little.
+    float wind = smoothstep(-0.35, 0.45, noise(p / 230.0 + vec2(time * 0.004, 0.0)).x + 0.5 * noise(p / 97.0).x);
+    float rough = mix(0.12, 1.0, wind);
+    vec2 slope = vec2(0.0);
+    slope += layer(p, 37.0, 0.3, 0.35, 0.55);
+    slope += layer(p, 13.7, 1.9, 0.16, 0.42);
+    slope += layer(p, 5.3, 4.1, 0.07, 0.30);
+    slope += layer(p, 2.1, 2.7, 0.03, 0.22);
+    slope += layer(p, 0.83, 5.3, 0.012, 0.15);
+    slope *= rough;
+    vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
+
     float facing = max(dot(n, view), 0.0);
     float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
 
     vec3 reflected = sky;
     if (mirrored > 0.5) {
       vec2 uv = vMirror.xy / vMirror.w;
-      uv += n.xz * 0.035 / (1.0 + distance * 0.004);
-      reflected = texture2D(reflection, clamp(uv, 0.001, 0.999)).rgb;
+      uv += n.xz * 0.012 / (1.0 + distance * 0.003);
+      // Reflections on water smear up and down, more where it's rough and far.
+      float smear = (0.0015 + 0.006 * rough) * (1.0 + min(distance / 1500.0, 2.0));
+      reflected = vec3(0.0);
+      reflected += texture2D(reflection, clamp(uv, 0.001, 0.999)).rgb * 0.36;
+      reflected += texture2D(reflection, clamp(uv + vec2(0.0, smear), 0.001, 0.999)).rgb * 0.22;
+      reflected += texture2D(reflection, clamp(uv - vec2(0.0, smear), 0.001, 0.999)).rgb * 0.22;
+      reflected += texture2D(reflection, clamp(uv + vec2(0.0, smear * 2.2), 0.001, 0.999)).rgb * 0.1;
+      reflected += texture2D(reflection, clamp(uv - vec2(0.0, smear * 2.2), 0.001, 0.999)).rgb * 0.1;
     }
-    vec3 colour = mix(deep, reflected, clamp(fresnel * 0.85 + 0.25, 0.0, 1.0));
-    // The sun's glint.
+    vec3 colour = mix(deep, reflected, clamp(fresnel * 0.8 + 0.18, 0.0, 1.0));
+    // The sun: a soft sheen, and a glint where the water's ruffled.
     vec3 halfway = normalize(sunDirection + view);
-    float glint = pow(max(dot(n, halfway), 0.0), 260.0) * 3.0;
-    colour += sunColor * glint;
+    float h = max(dot(n, halfway), 0.0);
+    colour += sunColor * (pow(h, 900.0) * 1.2 * rough + pow(h, 60.0) * 0.04);
     gl_FragColor = vec4(colour, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
