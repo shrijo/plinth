@@ -14,6 +14,7 @@ import {
   SRGBColorSpace,
   Sphere,
   Texture,
+  Vector2,
   Vector3,
   type Object3D,
   type Plane,
@@ -30,6 +31,7 @@ import {
   selectTiles,
   tileFrame,
   tileKey,
+  tileWidth,
   toFrame,
   type Frame,
   type GroundStyle,
@@ -75,7 +77,8 @@ export interface WorldTilesOptions {
 
 const COARSE = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
 const TEXTURE_SIZE = COARSE ? 256 : 512
-const SEGMENTS = 40
+/** Ground squares per tile side (even: a tile slides into its parent, see GroundMesh.morph). */
+const SEGMENTS = COARSE ? 48 : 64
 /** Screen pixels a texel may cover before the tile is split. */
 const MAX_ERROR = COARSE ? 1.6 : 1.15
 const MAX_ZOOM = 17
@@ -95,6 +98,14 @@ const CANCEL_AFTER = 1500
 const KEEP_ZOOM = 5
 /** The ground under the camera is loaded at this zoom (out of view, behind it), to keep the camera above it. */
 const UNDER_ZOOM = 13
+/**
+ * A tile is its parent's shape where its parent's texels would show at the coarsest acceptable size (when it
+ * takes over), and its own once they'd show this much bigger again (a share of that size): it slides from one
+ * to the other in between, so the ground never jumps as tiles come and go.
+ */
+const MORPH_RANGE = 0.5
+/** A tile that takes over late (it was still loading) slides into its own shape over this long (ms). */
+const MORPH_FADE = 450
 
 type State = 'loading' | 'ready' | 'failed'
 
@@ -113,6 +124,8 @@ interface GroundEntry {
   wanted: number
   retryAt: number
   frame: Frame
+  /** When it was last shown in its parent's place (ms); its slide into its own shape is timed from then. */
+  shownAt?: number
 }
 
 /** A tile's buildings, or its streets (built for a zoom 14 tile). */
@@ -159,6 +172,10 @@ export class WorldTiles {
   private nextJob = 1
   private clock = 0
   private drawn: Mesh[] = []
+  /** The ground tiles shown last frame. */
+  private shownGround = new Set<string>()
+  /** Shared by every ground tile's material (see MORPH_RANGE). */
+  private readonly morph = { pixelsPerMetre: { value: 1000 }, maxError: { value: MAX_ERROR } }
   private disposed = false
   /** Called when tiles arrive or change, for views that draw on demand. */
   onChange: (() => void) | null = null
@@ -306,13 +323,26 @@ export class WorldTiles {
     // What to show.
     for (const mesh of this.drawn) mesh.visible = false
     this.drawn = []
+    this.morph.pixelsPerMetre.value = pixelsPerMetre
+    const shown = new Set<string>()
     for (const tile of selection.draw) {
-      const entry = this.ground.get(tileKey(tile))
+      const key = tileKey(tile)
+      const entry = this.ground.get(key)
       if (!entry?.mesh) continue
       entry.used = this.clock
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
+      shown.add(key)
+      // Taking its parent's place: it starts in its parent's shape (where it's near enough to be its own
+      // already, it slides into that over a moment). Taking its children's place, it's its own at once.
+      if (!this.shownGround.has(key)) {
+        const parent = tile.z > 0 ? tileKey({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) : null
+        entry.shownAt = parent && this.shownGround.has(parent) ? now : -Infinity
+      }
+      const uniforms = entry.mesh.material instanceof MeshStandardMaterial ? (entry.mesh.material.userData.morph as { shown: { value: number } } | undefined) : undefined
+      if (uniforms) uniforms.shown.value = Math.min(1, (now - (entry.shownAt ?? -Infinity)) / MORPH_FADE)
     }
+    this.shownGround = shown
     // Buildings wherever the view calls for that detail, even while the ground there is still coarse.
     const buildingKeys = new Set<string>()
     for (const tile of [...selection.ideal, ...selection.draw]) {
@@ -351,6 +381,18 @@ export class WorldTiles {
         entry.mesh.visible = true
         this.drawn.push(entry.mesh)
       }
+    }
+    // Streets already built stay a little further out (where the ground is one level coarser), so a square of
+    // them doesn't blink in and out as the view moves about the edge of where it calls for them.
+    const keepKeys = new Set<string>()
+    for (const tile of [...selection.ideal, ...selection.draw]) if (tile.z >= STREET_ZOOM - 1) keepKeys.add(tileKey(ancestorAt(tile, BUILDING_ZOOM)))
+    for (const key of keepKeys) {
+      if (streetKeys.has(key)) continue
+      const entry = this.streets.get(key)
+      if (!entry?.mesh) continue
+      entry.used = this.clock
+      entry.mesh.visible = true
+      this.drawn.push(entry.mesh)
     }
 
     // What to load: the ground, the coarsest first, and the ground under the camera (to keep above it); then buildings and streets.
@@ -568,7 +610,15 @@ export class WorldTiles {
       clippingPlanes: this.options.clip ?? null,
       clipIntersection: true,
     })
-    const mesh = new Mesh(geometryOf(result.mesh, 'uv'), material)
+    // Its parent's picture (kept while it's drawn, see evict), to fade from as it slides from its parent's shape.
+    const tile = entry.tile
+    const parentKey = tile.z > 0 ? tileKey({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) : null
+    const parentMesh = parentKey ? this.ground.get(parentKey)?.mesh : null
+    const parentMap = parentMesh?.material instanceof MeshStandardMaterial ? parentMesh.material.map : null
+    this.morphing(material, tile, parentMap)
+    const geometry = geometryOf(result.mesh, 'uv')
+    geometry.setAttribute('morph', new BufferAttribute(result.mesh.morph ?? new Float32Array(result.mesh.positions.length), 3))
+    const mesh = new Mesh(geometry, material)
     mesh.matrixAutoUpdate = false
     mesh.receiveShadow = true
     mesh.visible = false
@@ -587,6 +637,66 @@ export class WorldTiles {
     entry.high = result.high
     entry.heights = result.heights
     entry.state = 'ready'
+  }
+
+  /**
+   * A ground tile's material slides each point between its parent's shape and its own, by how big its
+   * parent's texels would look from the camera there (see MORPH_RANGE): the same rule the tiles are chosen
+   * by, so a tile is its parent's shape when it takes over and when it gives way.
+   */
+  private morphing(material: MeshStandardMaterial, tile: TileId, parentMap: Texture | null): void {
+    const parentTexel = { value: tile.z > 0 ? tileWidth({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) / TEXTURE_SIZE : 0 }
+    const shown = { value: 1 }
+    // The tile's quarter of its parent's picture.
+    const quarter = new Vector2(tile.x % 2, tile.y % 2)
+    material.userData.morph = { parentTexel, shown }
+    material.customProgramCacheKey = () => 'world-ground-morph'
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.morphParentTexel = parentTexel
+      shader.uniforms.morphShown = shown
+      shader.uniforms.morphPixelsPerMetre = this.morph.pixelsPerMetre
+      shader.uniforms.morphMaxError = this.morph.maxError
+      shader.uniforms.morphParentMap = { value: parentMap ?? material.map }
+      shader.uniforms.morphQuarter = { value: quarter }
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+attribute vec3 morph;
+uniform float morphParentTexel;
+uniform float morphShown;
+uniform float morphPixelsPerMetre;
+uniform float morphMaxError;
+varying float vMorphFine;`,
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+{
+  vec4 seen = modelViewMatrix * vec4(transformed, 1.0);
+  float parentError = morphParentTexel * morphPixelsPerMetre / max(length(seen.xyz), 1.0);
+  float fine = min(clamp((parentError - morphMaxError) / (morphMaxError * ${MORPH_RANGE.toFixed(2)}), 0.0, 1.0), morphShown);
+  transformed += morph * (1.0 - fine);
+  vMorphFine = fine;
+}`,
+        )
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+uniform sampler2D morphParentMap;
+uniform vec2 morphQuarter;
+varying float vMorphFine;`,
+        )
+        .replace(
+          '#include <map_fragment>',
+          `#ifdef USE_MAP
+  // Its own picture near, its parent's (the same place, coarser) where it still has its parent's shape.
+  vec4 sampledDiffuseColor = mix(texture2D(morphParentMap, (vMapUv + morphQuarter) * 0.5), texture2D(map, vMapUv), vMorphFine);
+  diffuseColor *= sampledDiffuseColor;
+#endif`,
+        )
+    }
   }
 
   private addStreets(entry: BuildingEntry, result: MeshBuffers | null): void {

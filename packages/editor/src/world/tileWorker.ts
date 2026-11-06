@@ -20,6 +20,8 @@ import {
   tileKey,
   TERRAIN_MAX_ZOOM,
   VECTOR_MAX_ZOOM,
+  WATER_DEPTH,
+  type CoarseHeights,
   type Ground,
   type HeightTile,
   type TileFeatures,
@@ -77,8 +79,12 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
-/** Ground squares per tile side: more near the ground, where streets need a level bed and hills show. */
-const segmentsFor = (tile: TileId, wanted: number) => (tile.z < 4 ? 48 : tile.z < 10 ? 24 : tile.z < 14 ? wanted : tile.z < 16 ? 48 : 64)
+/**
+ * Ground squares per tile side. The same from one level to the next (from zoom 10 on, where the ground is
+ * near), so every other point of a tile is one of its parent's and it can slide into its parent's shape (see
+ * GroundMesh.morph).
+ */
+const segmentsFor = (tile: TileId, wanted: number) => (tile.z < 4 ? 48 : tile.z < 10 ? 24 : wanted)
 
 /** Water gets a surface of its own from this zoom; further out it's painted. */
 const WATER_ZOOM = 10
@@ -107,11 +113,39 @@ function groundFor(tile: TileId, heights: HeightTile[], data: TileFeatures | nul
   return makeGround(heights, tile.z >= WATER_ZOOM ? data : null, { roads: tile.z >= ROAD_ZOOM })
 }
 
+/**
+ * The parent tile's surface, for a tile to slide into from afar: from zoom 15 on the parent's ground is the
+ * same function as the tile's (the same heights and map data); nearer the top it's built from its own.
+ */
+async function parentSurface(tile: TileId, signal: AbortSignal): Promise<CoarseHeights | undefined> {
+  if (tile.z === 0 || tile.z === 10 || tile.z === 4) return undefined
+  const parent = { z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }
+  if (parent.z >= ROAD_ZOOM) return 'same'
+  const [data, heights] = await Promise.all([featuresOf(parent, signal), heightsFor(parent, signal)])
+  const shaped = groundFor(parent, heights, data)
+  const water = parent.z >= WATER_ZOOM
+  return (lon, lat) => {
+    const h = shaped.at(lon, lat)
+    const surface = water ? shaped.waterAt(lon, lat) : null
+    return surface === null ? h : Math.min(h, surface - WATER_DEPTH)
+  }
+}
+
 async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  const [data, heights, coarse] = await Promise.all([
+    featuresOf(request.tile, signal),
+    heightsFor(request.tile, signal),
+    parentSurface(request.tile, signal),
+  ])
   const shaped = groundFor(request.tile, heights, data)
   const water = request.tile.z >= WATER_ZOOM ? waterMesh(request.tile, shaped) : null
-  const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), water ? (lon, lat) => shaped.waterAt(lon, lat) : undefined)
+  const mesh = groundMesh(
+    request.tile,
+    (lon, lat) => shaped.at(lon, lat),
+    segmentsFor(request.tile, request.segments),
+    water ? (lon, lat) => shaped.waterAt(lon, lat) : undefined,
+    coarse,
+  )
   const canvas = new OffscreenCanvas(request.size, request.size)
   const context = canvas.getContext('2d')!
   paintGround(context, request.size, request.tile, data, request.style)
@@ -121,7 +155,7 @@ async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signa
     ok: true,
     type: 'ground',
     result: {
-      mesh: { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, uvs: mesh.uvs },
+      mesh: { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, uvs: mesh.uvs, ...(mesh.morph ? { morph: mesh.morph } : {}) },
       low: mesh.low,
       high: mesh.high,
       heights: mesh.heights,
@@ -216,7 +250,7 @@ function transfers(response: WorkerResponse): Transferable[] {
     mesh ? [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer, ...(mesh.colors ? [mesh.colors.buffer] : []), ...(mesh.edges ? [mesh.edges.buffer] : [])] : []
   if (response.type === 'ground') {
     const { mesh, image, water, heights } = response.result
-    return [...buffers(mesh), mesh.uvs.buffer, heights.buffer, image, ...buffers(water)] as Transferable[]
+    return [...buffers(mesh), mesh.uvs.buffer, ...(mesh.morph ? [mesh.morph.buffer] : []), heights.buffer, image, ...buffers(water)] as Transferable[]
   }
   return buffers(response.result) as Transferable[]
 }

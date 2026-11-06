@@ -53,7 +53,19 @@ export interface GroundMesh extends MeshBuffers {
   high: number
   /** The heights at the grid's points, row by row from the north-west corner ((segments + 1)² of them). */
   heights: Float32Array
+  /**
+   * Per point, the way to the parent tile's surface (x, y, z in the tile's frame): where the point would lie
+   * on the tile one level coarser. Drawn far off, a tile slides its points that way, so it looks exactly as
+   * its parent did when it takes over (see WorldTiles' ground material).
+   */
+  morph?: Float32Array
 }
+
+/**
+ * The parent tile's surface, for a tile's morph (see GroundMesh.morph): its height function, or 'same' when
+ * it's this tile's own (the parent samples the same heights at the points the two share).
+ */
+export type CoarseHeights = HeightAt | 'same'
 
 /**
  * The ground of a tile: a grid of `segments` × `segments` squares draped
@@ -61,7 +73,13 @@ export interface GroundMesh extends MeshBuffers {
  * down round its edge so no gap shows where it meets a neighbour drawn in
  * less detail. Texture coordinates run from the north-west corner.
  */
-export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, waterAt?: (lon: number, lat: number) => number | null): GroundMesh {
+export function groundMesh(
+  tile: TileId,
+  heightAt: HeightAt,
+  segments: number,
+  waterAt?: (lon: number, lat: number) => number | null,
+  coarse?: CoarseHeights,
+): GroundMesh {
   const frame = tileFrame(tile)
   const side = segments + 1
   const grid = side * side
@@ -134,7 +152,66 @@ export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, w
     // Both ways round, so a gap seen from either side shows the skirt (lit as the ground is: it shares its normals).
     indices.push(a, b, a2, b, b2, a2, a, a2, b, b, a2, b2)
   }
-  return { positions, normals, uvs, indices: Uint32Array.from(indices), low, high, heights }
+  const morph = coarse && tile.z > 0 && segments % 2 === 0 ? morphOf(frame, lons, lats, heights, positions, segments, coarse, edge) : undefined
+  return { positions, normals, uvs, indices: Uint32Array.from(indices), low, high, heights, morph }
+}
+
+/**
+ * Where each point of a tile would lie on its parent's surface. The parent
+ * has the same number of squares a side, each twice as big: every other
+ * point of the tile is one of the parent's, and those between lie on its
+ * squares' edges or on the diagonal it splits them along (the same as
+ * here: from a square's north-east corner to its south-west).
+ */
+function morphOf(
+  frame: Frame,
+  lons: Float64Array,
+  lats: Float64Array,
+  heights: Float32Array,
+  positions: Float32Array,
+  segments: number,
+  coarse: CoarseHeights,
+  edge: readonly number[],
+): Float32Array {
+  const side = segments + 1
+  const grid = side * side
+  const parent = new Float32Array(grid)
+  for (let j = 0; j < side; j += 2) {
+    for (let i = 0; i < side; i += 2) {
+      const k = j * side + i
+      parent[k] = coarse === 'same' ? heights[k]! : coarse(lons[i]!, lats[j]!)
+    }
+  }
+  for (let j = 0; j < side; j++) {
+    for (let i = 0; i < side; i++) {
+      const k = j * side + i
+      const oddI = i % 2 === 1
+      const oddJ = j % 2 === 1
+      if (oddI && !oddJ) parent[k] = (parent[k - 1]! + parent[k + 1]!) / 2
+      else if (!oddI && oddJ) parent[k] = (parent[k - side]! + parent[k + side]!) / 2
+      else if (oddI && oddJ) parent[k] = (parent[k - side + 1]! + parent[k + side - 1]!) / 2
+    }
+  }
+  const morph = new Float32Array(positions.length)
+  const at = new Float32Array(3)
+  for (let j = 0; j < side; j++) {
+    for (let i = 0; i < side; i++) {
+      const k = j * side + i
+      if (parent[k] === heights[k]) continue
+      place(frame, ecefFromLonLat(lons[i]!, lats[j]!, parent[k]!), at, 0)
+      morph[k * 3] = at[0]! - positions[k * 3]!
+      morph[k * 3 + 1] = at[1]! - positions[k * 3 + 1]!
+      morph[k * 3 + 2] = at[2]! - positions[k * 3 + 2]!
+    }
+  }
+  // The skirt hangs from the edge, and goes with it.
+  edge.forEach((k, s) => {
+    const to = (grid + s) * 3
+    morph[to] = morph[k * 3]!
+    morph[to + 1] = morph[k * 3 + 1]!
+    morph[to + 2] = morph[k * 3 + 2]!
+  })
+  return morph
 }
 
 function gridNormals(positions: Float32Array, indices: number[], count: number): Float32Array {
@@ -174,7 +251,7 @@ export function tileWidth(tile: TileId): number {
 }
 
 /** How far the ground lies under the water's surface (metres). */
-const WATER_DEPTH = 1.5
+export const WATER_DEPTH = 1.5
 
 // Water
 

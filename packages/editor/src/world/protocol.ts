@@ -17,7 +17,7 @@ export type WorkerRequest =
   | { id: number; type: 'cancel' }
 
 export interface GroundResult {
-  mesh: MeshBuffers & { uvs: Float32Array }
+  mesh: MeshBuffers & { uvs: Float32Array; morph?: Float32Array }
   low: number
   high: number
   /** The ground's heights on the tile's grid (see GroundMesh.heights), for answering questions without the GPU. */
