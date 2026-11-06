@@ -42,18 +42,46 @@ describe('streets as ways', () => {
     expect(junctions(s)).toBe(1)
   })
 
-  it('makes a junction where the cross-section changes', () => {
-    const s = draw([
-      [0, 0],
-      [40, 0],
-    ])
+  it('carries on through a change of cross-section, tapering from one to the other', () => {
     const doc = PlinthDocument.createEmpty()
     doc.transact((tx) => {
-      insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 })
-      insertStreet(tx, { x: 40, y: 0 }, { x: 80, y: 0 }, { lanes: 4 })
+      insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 }, { lanes: 2, laneWidth: 3, sidewalkLeft: 0, sidewalkRight: 2 })
+      insertStreet(tx, { x: 40, y: 0 }, { x: 80, y: 0 }, { lanes: 4, laneWidth: 3, sidewalkLeft: 2, sidewalkRight: 2 })
     })
+    const s = doc.getSnapshot()
     expect(junctions(s)).toBe(0)
-    expect(junctions(doc.getSnapshot())).toBe(1)
+    const pieces = streetGeometry(s).pieces
+    expect(pieces).toHaveLength(1)
+    const piece = pieces[0]!
+    // The road widens from two lanes to four, gradually, around the change.
+    const halfWidth = (x: number) => Math.max(...piece.road[0]![0]!.filter(([px]) => Math.abs(px - x) < 1e-6).map(([, y]) => Math.abs(y)))
+    expect(halfWidth(0)).toBeCloseTo(3)
+    expect(halfWidth(80)).toBeCloseTo(6)
+    const xs = piece.road[0]![0]!.map(([x]) => x)
+    // The taper starts before the change and ends after it.
+    expect(xs.some((x) => x > 15 && x < 39)).toBe(true)
+    expect(xs.some((x) => x > 41 && x < 65)).toBe(true)
+    // The sidewalk on the right runs unbroken; the one on the left starts at the change, tapering in.
+    expect(piece.sidewalks).toHaveLength(2)
+    const left = piece.sidewalks.find((polygon) => polygon[0]!.some(([, y]) => y > 3))!
+    const start = Math.min(...left[0]!.map(([x]) => x))
+    expect(start).toBeGreaterThan(15)
+    expect(start).toBeLessThan(40)
+  })
+
+  it('keeps lane lines off the taper', () => {
+    const doc = PlinthDocument.createEmpty()
+    doc.transact((tx) => {
+      insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 }, { lanes: 2, laneWidth: 3 })
+      insertStreet(tx, { x: 40, y: 0 }, { x: 80, y: 0 }, { lanes: 4, laneWidth: 3 })
+    })
+    const piece = streetGeometry(doc.getSnapshot()).pieces[0]!
+    for (const mark of piece.markings) {
+      const xs = mark.map((p) => p.x)
+      const [x0, x1] = [Math.min(...xs), Math.max(...xs)]
+      // No line runs through the middle of the change.
+      expect(x1 < 38 || x0 > 42).toBe(true)
+    }
   })
 
   it('joins streets drawn in opposite directions with mirrored sides as one', () => {

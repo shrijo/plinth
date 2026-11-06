@@ -309,7 +309,8 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   props.oneway = oneway && kind !== 'pedestrian'
   const lanes = tagNumber(tags.lanes)
   if (lanes !== null && lanes >= 1) props.lanes = Math.min(Math.round(lanes), 8)
-  else if (oneway && kind !== 'motorway' && kind !== 'trunk') props.lanes = 1
+  // One way, a street has its lanes in one direction: half of a two-way street's (a motorway is always one way).
+  else if (oneway && kind !== 'motorway') props.lanes = Math.max(1, Math.ceil(props.lanes / 2))
   const link = (tags.highway ?? '').endsWith('_link')
   if (link) {
     // Slip roads: one lane, no sidewalks.
@@ -320,19 +321,23 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   const width = tagNumber(tags.width)
   if (width !== null && width > 2 && width < 40) props.laneWidth = Math.round((width / props.lanes) * 100) / 100
   else if (props.lanes === 1 && props.laneWidth < 3.25 && kind !== 'service') props.laneWidth = 3.5
-  // Sidewalks as tagged, where they are; mapped separately, the street has none of its own.
+  // Sidewalks as tagged, where they are. One mapped as a footway of its own (`separate`) is still there:
+  // footways aren't modelled, so the street draws it.
   const sidewalk = tags.sidewalk ?? tags['sidewalk:both']
   const side = base.sidewalkLeft || 1.8
-  if (sidewalk === 'both' || sidewalk === 'yes') props.sidewalkLeft = props.sidewalkRight = side
+  const has = (value: string | undefined) => value === 'yes' || value === 'separate'
+  if (sidewalk === 'both' || has(sidewalk)) props.sidewalkLeft = props.sidewalkRight = side
   else if (sidewalk === 'left') {
     props.sidewalkLeft = side
     props.sidewalkRight = 0
   } else if (sidewalk === 'right') {
     props.sidewalkLeft = 0
     props.sidewalkRight = side
-  } else if (sidewalk === 'no' || sidewalk === 'none' || sidewalk === 'separate') props.sidewalkLeft = props.sidewalkRight = 0
-  if (tags['sidewalk:left'] === 'no' || tags['sidewalk:left'] === 'separate') props.sidewalkLeft = 0
-  if (tags['sidewalk:right'] === 'no' || tags['sidewalk:right'] === 'separate') props.sidewalkRight = 0
+  } else if (sidewalk === 'no' || sidewalk === 'none') props.sidewalkLeft = props.sidewalkRight = 0
+  if (tags['sidewalk:left'] === 'no') props.sidewalkLeft = 0
+  else if (has(tags['sidewalk:left'])) props.sidewalkLeft = side
+  if (tags['sidewalk:right'] === 'no') props.sidewalkRight = 0
+  else if (has(tags['sidewalk:right'])) props.sidewalkRight = side
   const cycle = (key: string) => /lane|track|exclusive/.test(tags[key] ?? '')
   if (cycle('cycleway') || cycle('cycleway:both')) props.bikeLeft = props.bikeRight = 1.6
   if (cycle('cycleway:left')) props.bikeLeft = 1.6

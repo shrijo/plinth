@@ -3,7 +3,6 @@ import {
   CURB_HEIGHT,
   streetGeometry,
   terrainOf,
-  terrainSampler,
   toRing,
   type Id,
   type MeshData,
@@ -20,10 +19,10 @@ import { Outline } from './Outline.tsx'
 import { apparentDistance } from './lens.ts'
 import { HIDE_IN_PICTURES } from './pictures.ts'
 import { concatMeshes } from './shellMesh.ts'
-import { drapeMesh } from './drape.ts'
+import { drapeOnTerrain } from './drape.ts'
 
-/** The ground's height under a plan point, from the site's zero; null off the terrain. */
-type Ground = ((x: number, y: number) => number | null) | null
+/** Lays a street mesh on the site's terrain (null without one). */
+type Ground = (<M extends PaintedMesh>(mesh: M) => M) | null
 
 /** Streets are drawn in square tiles of this size (metres): a base mesh and a paint mesh per tile. */
 const TILE = 400
@@ -56,14 +55,7 @@ export function Streets() {
   const terrain = terrainOf(snapshot)
   const zero = snapshot.meta.ground ?? 0
   // Streets follow the terrain, where there is one.
-  const ground = useMemo<Ground>(() => {
-    if (!terrain) return null
-    const sample = terrainSampler(terrain)
-    return (x, y) => {
-      const h = sample({ x, y })
-      return h === null ? null : h - zero
-    }
-  }, [terrain, zero])
+  const ground = useMemo<Ground>(() => (terrain ? (mesh) => drapeOnTerrain(mesh, terrain, zero) : null), [terrain, zero])
   const tiles = useMemo(() => tiler.update(geometry.pieces, palette, ground), [tiler, geometry.pieces, palette, ground])
 
   const lit: [Id, 'hover' | 'selected'][] = []
@@ -142,8 +134,8 @@ class StreetTiler {
       next.set(key, {
         key,
         pieces: list,
-        base: ground ? drapeMesh(base, ground) : base,
-        paint: ground ? drapeMesh(paint, ground) : paint,
+        base: ground ? ground(base) : base,
+        paint: ground ? ground(paint) : paint,
         centre: [(ix + 0.5) * TILE, -(iy + 0.5) * TILE],
       })
     }
@@ -201,7 +193,7 @@ const StreetTile = memo(function StreetTile({ tile, outlines }: { tile: StreetTi
 const StreetHighlight = memo(function StreetHighlight({ outline, look, ground }: { outline: Vec2[]; look: 'hover' | 'selected'; ground: Ground }) {
   const data = useMemo(() => {
     const slab = buildSlabMesh([[toRing(outline)]], 0, CURB_HEIGHT + 0.01)
-    return ground ? drapeMesh(slab, ground) : slab
+    return ground ? ground(slab) : slab
   }, [outline, ground])
   const geometry = useBufferGeometry(data)
   return <mesh geometry={geometry} material={streetHighlight[look]} renderOrder={3} raycast={noRaycast} userData={HIDE_IN_PICTURES} />

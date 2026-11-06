@@ -59,8 +59,11 @@ describe('planning a site from OpenStreetMap', () => {
     expect(garage.floors).toBe(1)
   })
 
-  it('cuts streets to the square and leaves out footpaths', () => {
-    expect(plan.streets).toHaveLength(2)
+  it('cuts streets to the square, leaves out footpaths and joins a street ending on another', () => {
+    // The secondary road is split where the residential one meets it: three streets at one point.
+    expect(plan.streets).toHaveLength(3)
+    const atJunction = plan.streets.filter((s) => s.points.some((p) => Math.hypot(p.x, p.y + 30) < 0.1))
+    expect(atJunction).toHaveLength(3)
     for (const s of plan.streets) for (const p of s.points) expect(Math.max(Math.abs(p.x), Math.abs(p.y))).toBeLessThanOrEqual(150.0001)
   })
 

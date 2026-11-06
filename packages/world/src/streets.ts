@@ -134,15 +134,14 @@ export function streetMesh(
   }
   const writer = new StreetWriter(tile, metres, ground)
   for (const piece of geometry.pieces) {
-    // A road between sidewalks needs no sides of its own: the sidewalks' solids flank it.
-    const flanked = piece.sidewalks.length > 0
+    // Every surface is a solid: a road may have a sidewalk on one side only, or a bike or parking lane at its
+    // edge, and nothing may show under it.
     const road = cut(piece.road)
     // A living street or pedestrian zone is paved like a sidewalk, wall to wall, at sidewalk height.
     if (piece.shared) writer.slab(road, ROAD + 0.04, colours.sidewalk, colours.curb)
-    else if (flanked) writer.top(road, ROAD, colours.road)
     else writer.slab(road, ROAD, colours.road, colours.curb)
-    writer.top(cut(piece.bike), LANES, colours.bike)
-    writer.top(cut(piece.parking), LANES, colours.parking)
+    writer.slab(cut(piece.bike), LANES, colours.bike, colours.curb)
+    writer.slab(cut(piece.parking), LANES, colours.parking, colours.curb)
     writer.slab(cut(piece.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
     for (const mark of [...piece.markings, ...piece.crosswalks]) {
       // A line can run the length of a long street: cut like the surfaces, not judged by its middle.

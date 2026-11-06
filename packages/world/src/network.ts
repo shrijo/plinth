@@ -2,11 +2,12 @@ import { DEFAULT_STREET, type Street, type StreetNode, type StreetProps, type Ve
 
 /**
  * Turning map data's street lines into a tidy street network, the way a
- * person would draw it: one junction where a crossing was mapped as a few
- * points a metre or two apart, loose ends that stop just short of a street
- * joined to it, stray stubs left out, and a road split into two one-way
- * carriageways (as OpenStreetMap maps a divided road) without sidewalks
- * down the middle between them.
+ * person would draw it: streets that cross meet at a junction (map data
+ * often leaves the shared point out where it simplifies a straight line),
+ * a street ending at another joins it, one junction where a crossing was
+ * mapped as a few points a metre or two apart, stray stubs left out, and a
+ * road split into two one-way carriageways (as OpenStreetMap maps a
+ * divided road) without sidewalks down the middle between them.
  */
 
 export interface StreetLine {
@@ -18,12 +19,12 @@ export interface StreetLine {
 export interface NetworkOptions {
   /** Junction points this close together become one (metres). */
   merge?: number
-  /** Loose ends this close to a point of another street join it (metres). */
+  /** Loose ends this close to another street join it (metres). */
   snap?: number
   /** Dead-end stubs shorter than this are left out (metres). */
   stub?: number
-  /** The two halves of a divided road lie at most this far apart (metres). */
-  divided?: number
+  /** The widest median between the two halves of a divided road (metres, kerb to kerb). */
+  median?: number
   /** Loose ends to keep whatever their length: where the data was cut off (its edge), not where a street ends. */
   keepEnd?: (p: Vec2) => boolean
 }
@@ -39,11 +40,24 @@ interface Segment {
   props: StreetProps
 }
 
+interface Split {
+  /** Where along the segment (0 at a, 1 at b). */
+  t: number
+  point: number
+}
+
+/** Closer than this (metres) to a segment's end, a meeting is at that end. */
+const NEAR = 0.6
+/** Grid cells for finding segments near each other (metres). */
+const CELL = 24
+/** The farthest a loose end reaches to join a street it heads for (metres). */
+const REACH = 12
+
 export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOptions = {}): Network {
   const merge = options.merge ?? 5
-  const snap = options.snap ?? 3
+  const snap = options.snap ?? 4
   const stub = options.stub ?? 7
-  const divided = options.divided ?? 28
+  const median = options.median ?? 15
 
   // Points: the same place is the same point.
   const points: Vec2[] = []
@@ -74,8 +88,98 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     }
     return degree
   }
+  /** Pairs of points that are one point. */
+  const joins: [number, number][] = []
 
-  // Junction points (and ends) close together become one, at their middle; loose ends snap to a point nearby.
+  // Crossings: streets that cross on the level meet there. (Bridges and tunnels never get here.)
+  {
+    const splits = new Map<number, Split[]>()
+    const grid = segmentGrid(points, segments, 0)
+    const tried = new Set<number>()
+    const count = segments.length
+    for (const list of grid.values()) {
+      for (let x = 0; x < list.length; x++) {
+        for (let y = x + 1; y < list.length; y++) {
+          const i = Math.min(list[x]!, list[y]!)
+          const j = Math.max(list[x]!, list[y]!)
+          const pair = i * count + j
+          if (tried.has(pair)) continue
+          tried.add(pair)
+          const si = segments[i]!
+          const sj = segments[j]!
+          if (si.a === sj.a || si.a === sj.b || si.b === sj.a || si.b === sj.b) continue
+          const hit = crossing(points[si.a]!, points[si.b]!, points[sj.a]!, points[sj.b]!)
+          if (!hit) continue
+          // Where they meet: an end of either if it's there, otherwise a new point on both.
+          const endI = hit.t * hit.li < NEAR ? si.a : (1 - hit.t) * hit.li < NEAR ? si.b : -1
+          const endJ = hit.u * hit.lj < NEAR ? sj.a : (1 - hit.u) * hit.lj < NEAR ? sj.b : -1
+          if (endI >= 0 && endJ >= 0) joins.push([endI, endJ])
+          else if (endI >= 0) addSplit(splits, j, hit.u, endI)
+          else if (endJ >= 0) addSplit(splits, i, hit.t, endJ)
+          else {
+            const point = pointAt(hit.point)
+            addSplit(splits, i, hit.t, point)
+            addSplit(splits, j, hit.u, point)
+          }
+        }
+      }
+    }
+    segments = applySplits(segments, splits)
+  }
+
+  // Loose ends just short of another street (or a little to one side of it) join it, on its line. A street
+  // heading straight at another may stop at its kerb (as map data often has it): it joins from across the
+  // other's width.
+  {
+    const degree = degrees()
+    const splits = new Map<number, Split[]>()
+    const grid = segmentGrid(points, segments, REACH)
+    const at = segmentsAt(segments)
+    points.forEach((p, i) => {
+      if (degree[i] !== 1) return
+      const own = segments[at.get(i)![0]!]!
+      const from = points[own.a === i ? own.b : own.a]!
+      const ownLength = Math.hypot(p.x - from.x, p.y - from.y) || 1
+      const heading = { x: (p.x - from.x) / ownLength, y: (p.y - from.y) / ownLength }
+      let best = -1
+      let bestDistance = Infinity
+      let bestT = 0
+      for (const k of grid.get(cellKey(p.x, p.y)) ?? []) {
+        const s = segments[k]!
+        if (s.a === i || s.b === i) continue
+        const a = points[s.a]!
+        const b = points[s.b]!
+        const { t, distance } = project(p, a, b)
+        const q = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
+        const towards = distance > 1e-6 && ((q.x - p.x) * heading.x + (q.y - p.y) * heading.y) / distance > 0.85
+        const props = s.props
+        const width = carriageway(props) + Math.max(props.bikeLeft + props.parkingLeft + props.sidewalkLeft, props.bikeRight + props.parkingRight + props.sidewalkRight)
+        const reach = towards ? Math.min(Math.max(snap, width + 1.5), REACH) : snap
+        if (distance < reach && distance < bestDistance) {
+          best = k
+          bestDistance = distance
+          bestT = t
+        }
+      }
+      if (best < 0) return
+      const s = segments[best]!
+      const a = points[s.a]!
+      const b = points[s.b]!
+      const length = Math.hypot(b.x - a.x, b.y - a.y)
+      // At (or next to) one of the street's points: join that point, where it is.
+      const end = bestT * length < 1 ? s.a : (1 - bestT) * length < 1 ? s.b : -1
+      if (end >= 0) {
+        points[i] = { ...points[end]! }
+        joins.push([end, i])
+      } else {
+        points[i] = { x: a.x + (b.x - a.x) * bestT, y: a.y + (b.y - a.y) * bestT }
+        addSplit(splits, best, bestT, i)
+      }
+    })
+    segments = applySplits(segments, splits)
+  }
+
+  // Junction points (and ends) close together become one, at their middle.
   const parent = Int32Array.from({ length: points.length }, (_, i) => i)
   const find = (i: number): number => {
     while (parent[i] !== i) {
@@ -89,30 +193,28 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     const b = find(j)
     if (a !== b) parent[b] = a
   }
-  let degree = degrees()
-  const cell = Math.max(merge, snap)
+  for (const [i, j] of joins) union(i, j)
+  const degree = degrees()
   const grid = new Map<string, number[]>()
   points.forEach((p, i) => {
     if (degree[i] === 0) return
-    const key = `${Math.floor(p.x / cell)}:${Math.floor(p.y / cell)}`
+    const key = `${Math.floor(p.x / merge)}:${Math.floor(p.y / merge)}`
     const list = grid.get(key)
     if (list) list.push(i)
     else grid.set(key, [i])
   })
-  const nearby = (p: Vec2, f: (j: number) => void) => {
-    const cx = Math.floor(p.x / cell)
-    const cy = Math.floor(p.y / cell)
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) f(j)
-  }
-  const ownSegment = (i: number, j: number) => segments.some((s) => (s.a === i && s.b === j) || (s.a === j && s.b === i))
   points.forEach((p, i) => {
     if (degree[i] === 2 || degree[i] === 0) return
-    nearby(p, (j) => {
-      if (j === i) return
-      const d = Math.hypot(points[j]!.x - p.x, points[j]!.y - p.y)
-      // Two junction points (or ends) close together; or a loose end next to any point of another street.
-      if ((degree[j] !== 2 && d < merge) || (degree[i] === 1 && d < snap && !ownSegment(i, j))) union(i, j)
-    })
+    const cx = Math.floor(p.x / merge)
+    const cy = Math.floor(p.y / merge)
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
+          if (j === i || degree[j] === 2) continue
+          if (Math.hypot(points[j]!.x - p.x, points[j]!.y - p.y) < merge) union(i, j)
+        }
+      }
+    }
   })
   const members = new Map<number, number[]>()
   points.forEach((_, i) => {
@@ -139,20 +241,51 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
       return true
     })
 
-  // Stubs: short dead ends (bits of street cut off by the data's edges, or a few metres of a driveway).
+  segments = withoutStubs(points, segments, stub, options.keepEnd)
+
+  // The same street mapped twice (or a lane of it mapped as a street of its own) is drawn once.
+  const before = segments.length
+  segments = withoutDuplicates(points, segments)
+  if (segments.length < before) {
+    // What's left of a street on either side of a dropped one may end loose.
+    segments = withoutStubs(points, segments, stub, options.keepEnd)
+  }
+  segments = sidewalksBeside(points, segments, median)
+
+  const nodes: Record<string, StreetNode> = {}
+  const streets: Record<string, Street> = {}
+  const nodeId = (i: number) => {
+    const id = `n${i}`
+    nodes[id] ??= { id, x: points[i]!.x, y: points[i]!.y }
+    return id
+  }
+  segments.forEach((s, k) => {
+    const id = `s${k}`
+    streets[id] = { ...DEFAULT_STREET, ...s.props, id, a: nodeId(s.a), b: nodeId(s.b), control: null }
+  })
+  return { nodes, streets }
+}
+
+/**
+ * Stubs: short dead ends (bits of street cut off by the data's edges, a
+ * street overshooting the one it meets, or a few metres of a driveway).
+ */
+function withoutStubs(points: readonly Vec2[], given: readonly Segment[], stub: number, keepEnd?: (p: Vec2) => boolean): Segment[] {
+  let segments = given.slice()
+  const degreesOf = () => {
+    const degree = new Int32Array(points.length)
+    for (const s of segments) {
+      degree[s.a]!++
+      degree[s.b]!++
+    }
+    return degree
+  }
   for (let pass = 0; pass < 3; pass++) {
-    degree = degrees()
-    const at = new Map<number, number[]>()
-    segments.forEach((s, k) => {
-      for (const end of [s.a, s.b]) {
-        const list = at.get(end)
-        if (list) list.push(k)
-        else at.set(end, [k])
-      }
-    })
+    const degree = degreesOf()
+    const at = segmentsAt(segments)
     const gone = new Set<number>()
     points.forEach((_, start) => {
-      if (degree[start] !== 1 || options.keepEnd?.(points[start]!)) return
+      if (degree[start] !== 1 || keepEnd?.(points[start]!)) return
       // Walk from the loose end through plain points (two streets) to wherever the stub joins on.
       let node = start
       let length = 0
@@ -175,68 +308,334 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     if (gone.size === 0) break
     segments = segments.filter((_, k) => !gone.has(k))
   }
+  return segments
+}
 
-  // Divided roads: a one-way carriageway with another running the other way close beside it has no sidewalk
-  // (nor parking) on that side.
-  const middles = segments.map((s) => {
+const cellKey = (x: number, y: number) => `${Math.floor(x / CELL)}:${Math.floor(y / CELL)}`
+
+/** Segments by the grid cells their bounds (grown by `pad`) cover. */
+function segmentGrid(points: readonly Vec2[], segments: readonly Segment[], pad: number): Map<string, number[]> {
+  const grid = new Map<string, number[]>()
+  segments.forEach((s, k) => {
+    const a = points[s.a]!
+    const b = points[s.b]!
+    const x0 = Math.floor((Math.min(a.x, b.x) - pad - NEAR) / CELL)
+    const x1 = Math.floor((Math.max(a.x, b.x) + pad + NEAR) / CELL)
+    const y0 = Math.floor((Math.min(a.y, b.y) - pad - NEAR) / CELL)
+    const y1 = Math.floor((Math.max(a.y, b.y) + pad + NEAR) / CELL)
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const key = `${x}:${y}`
+        const list = grid.get(key)
+        if (list) list.push(k)
+        else grid.set(key, [k])
+      }
+    }
+  })
+  return grid
+}
+
+function segmentsAt(segments: readonly Segment[]): Map<number, number[]> {
+  const at = new Map<number, number[]>()
+  segments.forEach((s, k) => {
+    for (const end of [s.a, s.b]) {
+      const list = at.get(end)
+      if (list) list.push(k)
+      else at.set(end, [k])
+    }
+  })
+  return at
+}
+
+/** Where two segments cross (or come within NEAR of it at an end), as fractions along each. */
+function crossing(p: Vec2, q: Vec2, r: Vec2, s: Vec2): { t: number; u: number; li: number; lj: number; point: Vec2 } | null {
+  const d1x = q.x - p.x
+  const d1y = q.y - p.y
+  const d2x = s.x - r.x
+  const d2y = s.y - r.y
+  const li = Math.hypot(d1x, d1y)
+  const lj = Math.hypot(d2x, d2y)
+  if (li === 0 || lj === 0) return null
+  const den = d1x * d2y - d1y * d2x
+  // (Nearly) parallel: no single crossing.
+  if (Math.abs(den) < 0.02 * li * lj) return null
+  const ex = r.x - p.x
+  const ey = r.y - p.y
+  const t = (ex * d2y - ey * d2x) / den
+  const u = (ex * d1y - ey * d1x) / den
+  if (t < -NEAR / li || t > 1 + NEAR / li || u < -NEAR / lj || u > 1 + NEAR / lj) return null
+  return { t, u, li, lj, point: { x: p.x + d1x * t, y: p.y + d1y * t } }
+}
+
+function project(p: Vec2, a: Vec2, b: Vec2): { t: number; distance: number } {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const l = dx * dx + dy * dy
+  const t = l === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l))
+  return { t, distance: Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t) }
+}
+
+function addSplit(splits: Map<number, Split[]>, k: number, t: number, point: number): void {
+  const list = splits.get(k)
+  const split = { t: Math.min(Math.max(t, 0), 1), point }
+  if (list) list.push(split)
+  else splits.set(k, [split])
+}
+
+function applySplits(segments: readonly Segment[], splits: Map<number, Split[]>): Segment[] {
+  const out: Segment[] = []
+  segments.forEach((s, k) => {
+    const list = splits.get(k)
+    if (!list) {
+      out.push(s)
+      return
+    }
+    list.sort((x, y) => x.t - y.t)
+    let from = s.a
+    for (const { point } of list) {
+      if (point === from || point === s.b) continue
+      out.push({ a: from, b: point, props: s.props })
+      from = point
+    }
+    if (from !== s.b) out.push({ a: from, b: s.b, props: s.props })
+  })
+  return out
+}
+
+/** A street between junctions (or ends): segments through plain points (two segments), walked one way. */
+interface Chain {
+  run: { k: number; forward: boolean }[]
+  length: number
+}
+
+function chainsOf(points: readonly Vec2[], segments: readonly Segment[]): Chain[] {
+  const at = segmentsAt(segments)
+  const plain = (point: number) => (at.get(point)?.length ?? 0) === 2
+  const done = new Uint8Array(segments.length)
+  const chains: Chain[] = []
+  segments.forEach((_, start) => {
+    if (done[start]) return
+    // Back to the start of the street, then along it.
+    let k = start
+    let from = segments[k]!.a
+    for (let guard = 0; guard < 100000; guard++) {
+      if (!plain(from)) break
+      const previous = at.get(from)!.find((x) => x !== k)!
+      if (previous === start) break
+      k = previous
+      const s = segments[k]!
+      from = s.a === from ? s.b : s.a
+    }
+    const run: Chain['run'] = []
+    let length = 0
+    let point = from
+    for (let guard = 0; guard < 100000 && !done[k]; guard++) {
+      done[k] = 1
+      const s = segments[k]!
+      const forward = s.a === point
+      run.push({ k, forward })
+      length += Math.hypot(points[s.b]!.x - points[s.a]!.x, points[s.b]!.y - points[s.a]!.y)
+      point = forward ? s.b : s.a
+      if (!plain(point)) break
+      k = at.get(point)!.find((x) => x !== k)!
+    }
+    chains.push({ run, length })
+  })
+  return chains
+}
+
+const RANK: Record<string, number> = {
+  motorway: 9,
+  trunk: 8,
+  primary: 7,
+  secondary: 6,
+  tertiary: 5,
+  unclassified: 4,
+  residential: 3,
+  living_street: 2,
+  service: 1,
+  pedestrian: 0,
+}
+const carriageway = (props: StreetProps) => (props.lanes * props.laneWidth) / 2
+
+/**
+ * Streets that lie on another all along (closer than their carriageways
+ * are wide, so their roads overlap): the same street mapped twice, or one
+ * of its lanes mapped as a street of its own. The lesser of the two goes;
+ * if the two were the halves of a divided road, the one left takes both
+ * directions.
+ */
+function withoutDuplicates(points: readonly Vec2[], segments: readonly Segment[]): Segment[] {
+  const chains = chainsOf(points, segments)
+  const chainOf = new Int32Array(segments.length)
+  chains.forEach((c, i) => c.run.forEach(({ k }) => (chainOf[k] = i)))
+  const grid = segmentGrid(points, segments, 8)
+  const dropped = new Uint8Array(chains.length)
+  const twoWay = new Set<number>()
+  const rank = (c: Chain) => RANK[segments[c.run[0]!.k]!.props.kind ?? 'residential'] ?? 3
+  const order = chains.map((_, i) => i).sort((x, y) => rank(chains[x]!) - rank(chains[y]!) || chains[x]!.length - chains[y]!.length)
+  for (const c of order) {
+    const chain = chains[c]!
+    // Points along it, about every 3 m.
+    const samples: Vec2[] = []
+    for (const { k } of chain.run) {
+      const s = segments[k]!
+      const a = points[s.a]!
+      const b = points[s.b]!
+      const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 3))
+      for (let i = 0; i <= n; i++) samples.push({ x: a.x + ((b.x - a.x) * i) / n, y: a.y + ((b.y - a.y) * i) / n })
+    }
+    const nearest = (p: Vec2, only: number) => {
+      let best = Infinity
+      let bestChain = -1
+      for (const k of grid.get(cellKey(p.x, p.y)) ?? []) {
+        const other = chainOf[k]!
+        if (other === c || dropped[other] || (only >= 0 && other !== only)) continue
+        const s = segments[k]!
+        const d = project(p, points[s.a]!, points[s.b]!).distance
+        if (d < best) {
+          best = d
+          bestChain = other
+        }
+      }
+      return { distance: best, chain: bestChain }
+    }
+    // The street it lies along: the one nearest its middle.
+    const beside = nearest(samples[Math.floor(samples.length / 2)]!, -1).chain
+    if (beside < 0) continue
+    const own = segments[chain.run[0]!.k]!.props
+    const other = segments[chains[beside]!.run[0]!.k]!.props
+    const reach = Math.max(1.5, carriageway(own) + carriageway(other))
+    if (!samples.every((p) => nearest(p, beside).distance <= reach)) continue
+    // The lesser of the two goes (this one, unless the other is of a lower kind).
+    const lesser = rank(chains[beside]!) < rank(chain) ? beside : c
+    const kept = lesser === c ? beside : c
+    dropped[lesser] = 1
+    twoWay.delete(lesser)
+    if (own.oneway && other.oneway && !twoWay.has(kept)) {
+      // Running the other way? Compare the directions at the middle.
+      const mid = chain.run[Math.floor(chain.run.length / 2)]!
+      const s = segments[mid.k]!
+      const p = points[s.a]!
+      const q = points[s.b]!
+      let best = Infinity
+      let along = 0
+      for (const { k } of chains[beside]!.run) {
+        const o = segments[k]!
+        const d = project({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }, points[o.a]!, points[o.b]!).distance
+        if (d < best) {
+          best = d
+          along = (q.x - p.x) * (points[o.b]!.x - points[o.a]!.x) + (q.y - p.y) * (points[o.b]!.y - points[o.a]!.y)
+        }
+      }
+      if (along < 0) twoWay.add(kept)
+    }
+  }
+  const out: Segment[] = []
+  segments.forEach((s, k) => {
+    const c = chainOf[k]!
+    if (dropped[c]) return
+    if (twoWay.has(c)) {
+      const props = s.props
+      out.push({ ...s, props: { ...props, oneway: false, lanes: Math.max(2, props.lanes * 2) } })
+    } else out.push(s)
+  })
+  return out
+}
+
+/**
+ * Sidewalks between streets side by side: none down the middle of a
+ * divided road (a one-way carriageway with another of the same kind
+ * running the other way close beside it), and none where two streets run
+ * so close that the sidewalk would lie on the other's road. Parking goes
+ * on that side too. Judged for a whole street at a time (between
+ * junctions), so a sidewalk doesn't come and go along it.
+ */
+function sidewalksBeside(points: readonly Vec2[], segments: readonly Segment[], median: number): Segment[] {
+  const lines = segments.map((s) => {
     const a = points[s.a]!
     const b = points[s.b]!
     const length = Math.hypot(b.x - a.x, b.y - a.y) || 1
     return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, dx: (b.x - a.x) / length, dy: (b.y - a.y) / length, length }
   })
-  const lanes = new Map<string, number[]>()
-  middles.forEach((m, k) => {
-    if (!segments[k]!.props.oneway) return
-    const key = `${Math.floor(m.x / divided)}:${Math.floor(m.y / divided)}`
-    const list = lanes.get(key)
+  const reach = Math.max(2 * median, 24)
+  const grid = new Map<string, number[]>()
+  lines.forEach((m, k) => {
+    const key = `${Math.floor(m.x / reach)}:${Math.floor(m.y / reach)}`
+    const list = grid.get(key)
     if (list) list.push(k)
-    else lanes.set(key, [k])
+    else grid.set(key, [k])
   })
-  segments = segments.map((s, k) => {
-    if (!s.props.oneway) return s
-    const m = middles[k]!
-    let left = false
-    let right = false
-    const cx = Math.floor(m.x / divided)
-    const cy = Math.floor(m.y / divided)
+  /** How far a street reaches to one side: its road, and its sidewalk there. */
+  const outer = (props: StreetProps, left: boolean) =>
+    carriageway(props) + (left ? props.bikeLeft + props.parkingLeft + props.sidewalkLeft : props.bikeRight + props.parkingRight + props.sidewalkRight)
+  // Per segment, which of its sides (as drawn) has another street close beside it, by length.
+  const beside = segments.map((s, k) => {
+    const flags = { left: 0, right: 0 }
+    const m = lines[k]!
+    const cx = Math.floor(m.x / reach)
+    const cy = Math.floor(m.y / reach)
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
-        for (const j of lanes.get(`${cx + dx}:${cy + dy}`) ?? []) {
+        for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
           if (j === k) continue
-          const o = middles[j]!
-          // Running the other way, alongside.
-          if (m.dx * o.dx + m.dy * o.dy > -0.8) continue
+          const other = segments[j]!
+          const o = lines[j]!
+          const facing = m.dx * o.dx + m.dy * o.dy
+          // Sharing a point, two segments are side by side only if they leave it the same way (a V), not where
+          // a street carries on or turns.
+          const shared = other.a === s.a || other.b === s.b ? 1 : other.a === s.b || other.b === s.a ? -1 : 0
+          if (shared !== 0 && facing * shared < 0.85) continue
+          // Alongside: parallel either way, side by side.
+          if (Math.abs(facing) < 0.85) continue
           const ox = o.x - m.x
           const oy = o.y - m.y
           const along = ox * m.dx + oy * m.dy
           const across = -ox * m.dy + oy * m.dx
-          if (Math.abs(along) > m.length / 2 + o.length / 2 || Math.abs(across) > divided || Math.abs(across) < 2) continue
-          if (across > 0) left = true
-          else right = true
+          if (Math.abs(along) > m.length / 2 + o.length / 2 || Math.abs(across) < 0.5) continue
+          const left = across > 0
+          // This street seen from the other: on its left if it's to the left of the other's direction.
+          const otherLeft = -(m.x - o.x) * o.dy + (m.y - o.y) * o.dx > 0
+          const divided =
+            facing < 0 &&
+            !!s.props.oneway &&
+            !!other.props.oneway &&
+            (other.props.kind ?? 'residential') === (s.props.kind ?? 'residential') &&
+            Math.abs(across) <= carriageway(s.props) + carriageway(other.props) + median
+          const crowded = Math.abs(across) < outer(s.props, left) + outer(other.props, otherLeft) - 0.25
+          if (!divided && !crowded) continue
+          if (left) flags.left = m.length
+          else flags.right = m.length
         }
       }
     }
-    if (!left && !right) return s
-    return {
-      ...s,
-      props: {
-        ...s.props,
-        ...(left ? { sidewalkLeft: 0, parkingLeft: 0 } : {}),
-        ...(right ? { sidewalkRight: 0, parkingRight: 0 } : {}),
-      },
-    }
+    return flags
   })
 
-  const nodes: Record<string, StreetNode> = {}
-  const streets: Record<string, Street> = {}
-  const nodeId = (i: number) => {
-    const id = `n${i}`
-    nodes[id] ??= { id, x: points[i]!.x, y: points[i]!.y }
-    return id
+  const out = segments.slice()
+  for (const { run, length } of chainsOf(points, segments)) {
+    let left = 0
+    let right = 0
+    for (const { k, forward } of run) {
+      left += forward ? beside[k]!.left : beside[k]!.right
+      right += forward ? beside[k]!.right : beside[k]!.left
+    }
+    const noLeft = left >= length / 2
+    const noRight = right >= length / 2
+    if (!noLeft && !noRight) continue
+    for (const { k, forward } of run) {
+      const s = segments[k]!
+      const l = forward ? noLeft : noRight
+      const r = forward ? noRight : noLeft
+      out[k] = {
+        ...s,
+        props: {
+          ...s.props,
+          ...(l ? { sidewalkLeft: 0, parkingLeft: 0 } : {}),
+          ...(r ? { sidewalkRight: 0, parkingRight: 0 } : {}),
+        },
+      }
+    }
   }
-  segments.forEach((s, k) => {
-    const id = `s${k}`
-    streets[id] = { ...DEFAULT_STREET, ...s.props, id, a: nodeId(s.a), b: nodeId(s.b), control: null }
-  })
-  return { nodes, streets }
+  return out
 }
