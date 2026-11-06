@@ -185,7 +185,8 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
 /** The streets of a tile in 3D, on its ground's street beds. */
 async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, signal: AbortSignal): Promise<WorkerResponse> {
   const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
-  if (!data || data.roads.length === 0) return { id: request.id, ok: true, type: 'streets', result: null }
+  const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
+  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: null }
   const shaped = groundFor(request.tile, heights, data)
   // A site's own streets stand in its area: the world's are left out there.
   const mask = request.mask
@@ -195,7 +196,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
         return { lon: p.lon, lat: p.lat }
       })
     : undefined
-  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners) }
+  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares) }
 }
 
 /** Keeps buildings outside the mask. */

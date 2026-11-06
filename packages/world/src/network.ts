@@ -27,6 +27,11 @@ export interface NetworkOptions {
   median?: number
   /** Loose ends to keep whatever their length: where the data was cut off (its edge), not where a street ends. */
   keepEnd?: (p: Vec2) => boolean
+  /**
+   * Points where streets go on as something drawn apart (a bridge, a tunnel): each street ends there on its
+   * own, flat, for the bridge to carry on from. Nothing joins, snaps or merges there.
+   */
+  apart?: (p: Vec2) => boolean
 }
 
 export interface Network {
@@ -52,6 +57,8 @@ const NEAR = 0.6
 const CELL = 24
 /** The farthest a loose end reaches to join a street it heads for (metres). */
 const REACH = 12
+/** A triangle of streets smaller round than this (metres) is one junction. */
+const TRIANGLE = 45
 
 export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOptions = {}): Network {
   const merge = options.merge ?? 5
@@ -62,7 +69,14 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
   // Points: the same place is the same point.
   const points: Vec2[] = []
   const byKey = new Map<string, number>()
+  /** Points held where they are, on their own (see NetworkOptions.apart). */
+  const fixed = new Set<number>()
   const pointAt = (p: Vec2) => {
+    if (options.apart?.(p)) {
+      const index = points.push({ x: p.x, y: p.y }) - 1
+      fixed.add(index)
+      return index
+    }
     const key = `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
     let index = byKey.get(key)
     if (index === undefined) {
@@ -113,6 +127,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
           // Where they meet: an end of either if it's there, otherwise a new point on both.
           const endI = hit.t * hit.li < NEAR ? si.a : (1 - hit.t) * hit.li < NEAR ? si.b : -1
           const endJ = hit.u * hit.lj < NEAR ? sj.a : (1 - hit.u) * hit.lj < NEAR ? sj.b : -1
+          if (fixed.has(endI) || fixed.has(endJ)) continue
           if (endI >= 0 && endJ >= 0) joins.push([endI, endJ])
           else if (endI >= 0) addSplit(splits, j, hit.u, endI)
           else if (endJ >= 0) addSplit(splits, i, hit.t, endJ)
@@ -136,7 +151,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     const grid = segmentGrid(points, segments, REACH)
     const at = segmentsAt(segments)
     points.forEach((p, i) => {
-      if (degree[i] !== 1) return
+      if (degree[i] !== 1 || fixed.has(i)) return
       const own = segments[at.get(i)![0]!]!
       const from = points[own.a === i ? own.b : own.a]!
       const ownLength = Math.hypot(p.x - from.x, p.y - from.y) || 1
@@ -194,6 +209,35 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     if (a !== b) parent[b] = a
   }
   for (const [i, j] of joins) union(i, j)
+  // A small triangle of streets is one junction mapped as three (turning lanes drawn as streets of their own):
+  // its corners become one.
+  {
+    const neighbours = new Map<number, Set<number>>()
+    for (const s of segments) {
+      for (const [p, q] of [
+        [s.a, s.b],
+        [s.b, s.a],
+      ] as const) {
+        const set = neighbours.get(p)
+        if (set) set.add(q)
+        else neighbours.set(p, new Set([q]))
+      }
+    }
+    const span = (i: number, j: number) => Math.hypot(points[i]!.x - points[j]!.x, points[i]!.y - points[j]!.y)
+    for (const s of segments) {
+      const [a, b] = [s.a, s.b]
+      if (fixed.has(a) || fixed.has(b)) continue
+      for (const c of neighbours.get(a) ?? []) {
+        if (c === b || fixed.has(c) || !neighbours.get(b)?.has(c)) continue
+        // Junctions all three (their streets go on beyond the triangle).
+        if ([a, b, c].some((k) => (neighbours.get(k)?.size ?? 0) < 3)) continue
+        if (span(a, b) + span(b, c) + span(c, a) < TRIANGLE) {
+          union(a, b)
+          union(a, c)
+        }
+      }
+    }
+  }
   const degree = degrees()
   const grid = new Map<string, number[]>()
   points.forEach((p, i) => {
@@ -204,13 +248,13 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     else grid.set(key, [i])
   })
   points.forEach((p, i) => {
-    if (degree[i] === 2 || degree[i] === 0) return
+    if (degree[i] === 2 || degree[i] === 0 || fixed.has(i)) return
     const cx = Math.floor(p.x / merge)
     const cy = Math.floor(p.y / merge)
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
-          if (j === i || degree[j] === 2) continue
+          if (j === i || degree[j] === 2 || fixed.has(j)) continue
           if (Math.hypot(points[j]!.x - p.x, points[j]!.y - p.y) < merge) union(i, j)
         }
       }
@@ -241,14 +285,15 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
       return true
     })
 
-  segments = withoutStubs(points, segments, stub, options.keepEnd)
+  const keep = (i: number) => fixed.has(i) || !!options.keepEnd?.(points[i]!)
+  segments = withoutStubs(points, segments, stub, keep)
 
   // The same street mapped twice (or a lane of it mapped as a street of its own) is drawn once.
   const before = segments.length
   segments = withoutDuplicates(points, segments)
   if (segments.length < before) {
     // What's left of a street on either side of a dropped one may end loose.
-    segments = withoutStubs(points, segments, stub, options.keepEnd)
+    segments = withoutStubs(points, segments, stub, keep)
   }
   segments = sidewalksBeside(points, segments, median)
 
@@ -270,7 +315,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
  * Stubs: short dead ends (bits of street cut off by the data's edges, a
  * street overshooting the one it meets, or a few metres of a driveway).
  */
-function withoutStubs(points: readonly Vec2[], given: readonly Segment[], stub: number, keepEnd?: (p: Vec2) => boolean): Segment[] {
+function withoutStubs(points: readonly Vec2[], given: readonly Segment[], stub: number, keep: (point: number) => boolean): Segment[] {
   let segments = given.slice()
   const degreesOf = () => {
     const degree = new Int32Array(points.length)
@@ -285,7 +330,7 @@ function withoutStubs(points: readonly Vec2[], given: readonly Segment[], stub: 
     const at = segmentsAt(segments)
     const gone = new Set<number>()
     points.forEach((_, start) => {
-      if (degree[start] !== 1 || keepEnd?.(points[start]!)) return
+      if (degree[start] !== 1 || keep(start)) return
       // Walk from the loose end through plain points (two streets) to wherever the stub joins on.
       let node = start
       let length = 0
@@ -544,12 +589,15 @@ function withoutDuplicates(points: readonly Vec2[], segments: readonly Segment[]
 }
 
 /**
- * Sidewalks between streets side by side: none down the middle of a
- * divided road (a one-way carriageway with another of the same kind
- * running the other way close beside it), and none where two streets run
- * so close that the sidewalk would lie on the other's road. Parking goes
- * on that side too. Judged for a whole street at a time (between
- * junctions), so a sidewalk doesn't come and go along it.
+ * No sidewalks down the middle of a divided road (a one-way carriageway
+ * with another of the same kind running the other way close beside it),
+ * where the median is wider than the two sidewalks would be: it's planted,
+ * or carries the tram. (A narrower one keeps them: they meet as one paved
+ * island, see layerStreetSurfaces.) Parking goes on that side too. Judged
+ * for a whole street at a time (between junctions), so a sidewalk doesn't
+ * come and go along it. Other streets close together keep their sidewalks:
+ * layered, what lies on a road is cut away, and the rest paves the space
+ * between them.
  */
 function sidewalksBeside(points: readonly Vec2[], segments: readonly Segment[], median: number): Segment[] {
   const lines = segments.map((s) => {
@@ -566,9 +614,10 @@ function sidewalksBeside(points: readonly Vec2[], segments: readonly Segment[], 
     if (list) list.push(k)
     else grid.set(key, [k])
   })
-  /** How far a street reaches to one side: its road, and its sidewalk there. */
-  const outer = (props: StreetProps, left: boolean) =>
-    carriageway(props) + (left ? props.bikeLeft + props.parkingLeft + props.sidewalkLeft : props.bikeRight + props.parkingRight + props.sidewalkRight)
+  /** How far a street's road reaches to one side, and its sidewalk there. */
+  const road = (props: StreetProps, left: boolean) =>
+    carriageway(props) + (left ? props.bikeLeft + props.parkingLeft : props.bikeRight + props.parkingRight)
+  const sidewalk = (props: StreetProps, left: boolean) => (left ? props.sidewalkLeft : props.sidewalkRight)
   // Per segment, which of its sides (as drawn) has another street close beside it, by length.
   const beside = segments.map((s, k) => {
     const flags = { left: 0, right: 0 }
@@ -596,14 +645,16 @@ function sidewalksBeside(points: readonly Vec2[], segments: readonly Segment[], 
           const left = across > 0
           // This street seen from the other: on its left if it's to the left of the other's direction.
           const otherLeft = -(m.x - o.x) * o.dy + (m.y - o.y) * o.dx > 0
+          // The median: from one road's edge to the other's.
+          const gap = Math.abs(across) - road(s.props, left) - road(other.props, otherLeft)
           const divided =
             facing < 0 &&
             !!s.props.oneway &&
             !!other.props.oneway &&
             (other.props.kind ?? 'residential') === (s.props.kind ?? 'residential') &&
-            Math.abs(across) <= carriageway(s.props) + carriageway(other.props) + median
-          const crowded = Math.abs(across) < outer(s.props, left) + outer(other.props, otherLeft) - 0.25
-          if (!divided && !crowded) continue
+            gap <= median &&
+            gap > sidewalk(s.props, left) + sidewalk(other.props, otherLeft)
+          if (!divided) continue
           if (left) flags.left = m.length
           else flags.right = m.length
         }

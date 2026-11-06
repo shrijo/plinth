@@ -139,7 +139,7 @@ describe('tidying map data into a street network', () => {
     }
   })
 
-  it('leaves out the sidewalk between two streets running so close it would lie on the other', () => {
+  it('keeps the sidewalks between two streets running close together (layered, they pave the space between)', () => {
     const network = tidyNetwork([
       line([
         [-100, 0],
@@ -150,12 +150,34 @@ describe('tidying map data into a street network', () => {
           [-100, 5],
           [100, 5],
         ],
-        { ...STREET_TYPES.service.props },
+        { ...STREET_TYPES.service.props, sidewalkLeft: 1.5, sidewalkRight: 1.5 },
       ),
     ])
-    const street = Object.values(network.streets).find((s) => s.kind === 'residential')!
-    // Drawn east, the service road is on its left.
-    expect(street.sidewalkLeft).toBe(0)
-    expect(street.sidewalkRight).toBeGreaterThan(0)
+    for (const street of Object.values(network.streets)) {
+      expect(street.sidewalkLeft).toBeGreaterThan(0)
+      expect(street.sidewalkRight).toBeGreaterThan(0)
+    }
+  })
+
+  it('keeps the sidewalks in a narrow median of a divided road', () => {
+    const props = oneway('primary')
+    // Carriageways 7 m apart: a median under 4 m, narrower than two 3 m sidewalks.
+    const network = tidyNetwork([
+      line(
+        [
+          [-100, 3.5],
+          [100, 3.5],
+        ],
+        props,
+      ),
+      line(
+        [
+          [100, -3.5],
+          [-100, -3.5],
+        ],
+        props,
+      ),
+    ])
+    for (const street of Object.values(network.streets)) expect(street.sidewalkRight).toBeGreaterThan(0)
   })
 })

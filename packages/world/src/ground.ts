@@ -92,6 +92,25 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return [x0, y0, x1, y1] as const
   })
 
+  // Squares and platforms: paved (see streetMesh), so the land dips under them as under streets.
+  const squares: Shape[] = features && options.roads !== false ? features.areas.filter((a) => a.kind === 'square').map((a) => a.shape) : []
+  const squareBoxes = squares.map((shape) => {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity]
+    for (let i = 0; i < shape.outer.length; i += 2) {
+      x0 = Math.min(x0, shape.outer[i]!)
+      x1 = Math.max(x1, shape.outer[i]!)
+      y0 = Math.min(y0, shape.outer[i + 1]!)
+      y1 = Math.max(y1, shape.outer[i + 1]!)
+    }
+    return [x0, y0, x1, y1] as const
+  })
+  /** Whether a point (source tile units) is on a square. */
+  const onSquare = (u: number, v: number) =>
+    squares.some((shape, k) => {
+      const [x0, y0, x1, y1] = squareBoxes[k]!
+      return u >= x0 && u <= x1 && v >= y0 && v <= y1 && insideRing(shape.outer, u, v) && !shape.holes.some((hole) => insideRing(hole, u, v))
+    })
+
   // Streets, in metres in the source tile (indexed in a grid of cells), with their half widths.
   const segments: Segment[] = []
   const cells = new Map<number, number[]>()
@@ -143,13 +162,14 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
   /** The bed (street level) and the land (dipped under streets) at a point. */
   const shape = (lon: number, lat: number): { level: number; land: number } => {
     const land = smooth(lon, lat, LAND_SMOOTHING)
-    if (segments.length === 0) return { level: land, land }
+    if (segments.length === 0 && squares.length === 0) return { level: land, land }
     const [u, v] = toSource(lon, lat)
+    const paved = squares.length > 0 && onSquare(u, v)
     const px = u * metres
     const py = v * metres
     const cell = metres / CELLS
     const list = cells.get((Math.floor(py / cell) + 4) * 64 + (Math.floor(px / cell) + 4))
-    if (!list) return { level: land, land }
+    if (!list) return { level: land, land: paved ? land - DIP : land }
     // Every street whose bed reaches here, weighted by how strongly: where two meet, their beds blend, so the
     // ground has no step at a junction (taking only the strongest would jump from one to the other).
     let weights = 0
@@ -173,9 +193,9 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       beds += w * smooth(qlon, qlat, BED_SMOOTHING)
       under = Math.max(under, d <= s.half ? 1 : smoothstep(1 - (d - s.half) / 2))
     }
-    if (weights === 0) return { level: land, land }
+    if (weights === 0) return { level: land, land: paved ? land - DIP : land }
     const level = land + (beds / weights - land) * Math.min(weights, 1)
-    return { level, land: level - DIP * under }
+    return { level, land: level - DIP * (paved ? 1 : under) }
   }
   const at = (lon: number, lat: number): number => shape(lon, lat).land
   const level = (lon: number, lat: number): number => shape(lon, lat).level

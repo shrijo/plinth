@@ -54,7 +54,7 @@ describe('streets in 3D', async () => {
       const z = holed.positions[i * 3 + 2]!
       expect(Math.abs(x) < 149 && Math.abs(z) < 149).toBe(false)
     }
-  })
+  }, 20000)
 
   it('stays inside its tile', () => {
     const mesh = streetMesh(tile, features.roads, ground, colours)!

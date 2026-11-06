@@ -1,6 +1,6 @@
 import earcut from 'earcut'
-import { CURB_HEIGHT, difference, streetGeometry, type MultiPolygon, type Snapshot, type Vec2 } from '@plinth/core'
-import type { RoadFeature, RoadKind } from './features.ts'
+import { CURB_HEIGHT, difference, layerStreetSurfaces, streetGeometry, type MultiPolygon, type Snapshot, type StreetPiece, type Vec2 } from '@plinth/core'
+import type { RoadFeature, RoadKind, Shape } from './features.ts'
 import type { Ground } from './ground.ts'
 import { ecefFromLonLat, type Frame } from './geo.ts'
 import { tileFrame, tileWidth, type MeshBuffers } from './mesh.ts'
@@ -74,11 +74,22 @@ export function streetMesh(
   colours: StreetColours,
   /** An area to leave out (a site's own streets are there): longitudes and latitudes of its corners. */
   mask?: readonly { lon: number; lat: number }[],
+  /** Squares, pedestrian areas and platforms (tile units): paved at sidewalk height, the streets' sidewalks running into them. */
+  squares: readonly Shape[] = [],
 ): MeshBuffers | null {
   const metres = tileWidth(tile)
   // Plan metres: x east, y north (tile units run south), as the editor's sites.
   const toPlan = (u: number, v: number): Vec2 => ({ x: u * metres, y: -v * metres })
   const lines: StreetLine[] = []
+  // Where streets go on as bridges or tunnels (drawn apart): their ends there stay apart, flat.
+  const apart = new Set<string>()
+  const placeKey = (p: Vec2) => `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
+  for (const road of roads) {
+    if (!road.tunnel && !road.bridge) continue
+    const line = road.line
+    const last = line.length - 2
+    for (const i of [0, last]) apart.add(placeKey(toPlan(line[i]!, line[i + 1]!)))
+  }
   for (const road of roads) {
     if (road.tunnel || road.bridge) continue
     const props = propsOf(road, ground.town)
@@ -88,11 +99,12 @@ export function streetMesh(
     for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
     lines.push({ points, props })
   }
-  if (lines.length === 0) return null
+  if (lines.length === 0 && squares.length === 0) return null
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
   // data's edge (beyond the tile) are where it was cut, not dead ends.
   const network = tidyNetwork(lines, {
     keepEnd: (p) => p.x < 1 || p.x > metres - 1 || p.y > -1 || p.y < -metres + 1,
+    apart: (p) => apart.has(placeKey(p)),
   })
   const geometry = streetGeometry({ streetNodes: network.nodes, streets: network.streets } as unknown as Snapshot)
 
@@ -115,34 +127,56 @@ export function streetMesh(
     minY: Math.min(...hole.map((p) => p[1])),
     maxY: Math.max(...hole.map((p) => p[1])),
   }
-  // Whether a region's bounds overlap the area's (a long street can cross it with no corner near it).
-  const near = (region: MultiPolygon) =>
-    !!holeBox &&
-    region.some((polygon) => {
-      let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity]
-      for (const [x, y] of polygon[0]!) {
-        x0 = Math.min(x0, x)
-        x1 = Math.max(x1, x)
-        y0 = Math.min(y0, y)
-        y1 = Math.max(y1, y)
-      }
-      return x1 > holeBox.minX && x0 < holeBox.maxX && y1 > holeBox.minY && y0 < holeBox.maxY
-    })
-  const cut = (region: MultiPolygon): MultiPolygon => {
-    const own = clip(region, rect)
-    return hole && near(own) ? difference(own, [[hole]]) : own
+  // Whether a polygon's bounds overlap the area's (a long street can cross it with no corner near it).
+  const near = (polygon: MultiPolygon[number]) => {
+    if (!holeBox) return false
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity]
+    for (const [x, y] of polygon[0]!) {
+      x0 = Math.min(x0, x)
+      x1 = Math.max(x1, x)
+      y0 = Math.min(y0, y)
+      y1 = Math.max(y1, y)
+    }
+    return x1 > holeBox.minX && x0 < holeBox.maxX && y1 > holeBox.minY && y0 < holeBox.maxY
   }
+  // Cut to the tile, and the area left out: a polygon at a time, so overlapping ones aren't merged into a few
+  // huge shapes (which triangulate into long slivers).
+  const cut = (region: MultiPolygon): MultiPolygon =>
+    clip(region, rect).flatMap((polygon) => (hole && near(polygon) ? difference([polygon], [[hole]]) : [polygon]))
   const writer = new StreetWriter(tile, metres, ground)
+  // The surfaces layered (see layerStreetSurfaces): a sidewalk never lies on a road, nor a parking lane on
+  // another street's road. Every surface is a solid: nothing may show under its edges.
+  const ring = (line: Float64Array): [number, number][] => {
+    const points: [number, number][] = []
+    for (let i = 0; i + 1 < line.length; i += 2) {
+      const p = toPlan(line[i]!, line[i + 1]!)
+      points.push([p.x, p.y])
+    }
+    return points
+  }
+  // Squares are paving like sidewalks: roads through them cut them, sidewalks along them merge into them.
+  const paving: StreetPiece[] = squares.map((shape, i) => {
+    const outer = ring(shape.outer)
+    return {
+      key: `square:${i}`,
+      road: [],
+      bike: [],
+      parking: [],
+      sidewalks: [[outer, ...shape.holes.map(ring)]],
+      markings: [],
+      crosswalks: [],
+      centre: { x: outer[0]?.[0] ?? 0, y: outer[0]?.[1] ?? 0 },
+      shared: false,
+    }
+  })
+  const surfaces = layerStreetSurfaces([...geometry.pieces, ...paving])
+  writer.slab(cut(surfaces.road), ROAD, colours.road, colours.curb)
+  writer.slab(cut(surfaces.bike), LANES, colours.bike, colours.curb)
+  writer.slab(cut(surfaces.parking), LANES, colours.parking, colours.curb)
+  // A living street or pedestrian zone is paved like a sidewalk, wall to wall, a little above the road.
+  writer.slab(cut(surfaces.paved), ROAD + 0.04, colours.sidewalk, colours.curb)
+  writer.slab(cut(surfaces.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
   for (const piece of geometry.pieces) {
-    // Every surface is a solid: a road may have a sidewalk on one side only, or a bike or parking lane at its
-    // edge, and nothing may show under it.
-    const road = cut(piece.road)
-    // A living street or pedestrian zone is paved like a sidewalk, wall to wall, at sidewalk height.
-    if (piece.shared) writer.slab(road, ROAD + 0.04, colours.sidewalk, colours.curb)
-    else writer.slab(road, ROAD, colours.road, colours.curb)
-    writer.slab(cut(piece.bike), LANES, colours.bike, colours.curb)
-    writer.slab(cut(piece.parking), LANES, colours.parking, colours.curb)
-    writer.slab(cut(piece.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
     for (const mark of [...piece.markings, ...piece.crosswalks]) {
       // A line can run the length of a long street: cut like the surfaces, not judged by its middle.
       const region = cut([[mark.map((p) => [p.x, p.y] as [number, number])]])

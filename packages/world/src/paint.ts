@@ -42,6 +42,7 @@ export const GROUND_STYLE: GroundStyle = {
     wetland: '#dbe0da',
     airport: '#e1e0dc',
     runway: '#d3d1cc',
+    square: '#eeede8',
   },
   // As the site editor's streets: grey asphalt, pale sidewalks with a curb, white paint.
   road: '#d0cec9',
@@ -73,6 +74,7 @@ const AREA_ORDER: AreaKind[] = [
   'rock',
   'ice',
   'runway',
+  'square',
   'water',
 ]
 

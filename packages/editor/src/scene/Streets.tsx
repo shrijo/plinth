@@ -1,6 +1,7 @@
 import {
   buildSlabMesh,
   CURB_HEIGHT,
+  layerStreetPieces,
   streetGeometry,
   terrainOf,
   toRing,
@@ -56,7 +57,9 @@ export function Streets() {
   const zero = snapshot.meta.ground ?? 0
   // Streets follow the terrain, where there is one.
   const ground = useMemo<Ground>(() => (terrain ? (mesh) => drapeOnTerrain(mesh, terrain, zero) : null), [terrain, zero])
-  const tiles = useMemo(() => tiler.update(geometry.pieces, palette, ground), [tiler, geometry.pieces, palette, ground])
+  // Layered: where streets overlap (map data often runs them close together), no sidewalk lies on a road.
+  const pieces = useMemo(() => layerStreetPieces(geometry.pieces), [geometry.pieces])
+  const tiles = useMemo(() => tiler.update(pieces, palette, ground), [tiler, pieces, palette, ground])
 
   const lit: [Id, 'hover' | 'selected'][] = []
   if (site) {

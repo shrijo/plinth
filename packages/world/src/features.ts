@@ -76,6 +76,8 @@ export type AreaKind =
   | 'wetland'
   | 'airport'
   | 'runway'
+  /** Paved for people on foot: squares and pedestrian areas, platforms. */
+  | 'square'
 
 export interface AreaFeature {
   shape: Shape
@@ -213,8 +215,9 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
     const kind = ROAD_CLASSES[String(p.class)]
     if (!kind) return
     if (feature.type === 3) {
-      // Squares and piers mapped as areas.
-      for (const shape of shapesOf(feature.loadGeometry(), extent)) features.areas.push({ shape, kind: 'commercial' })
+      // Squares, pedestrian areas and platforms mapped as areas are paved; piers are land.
+      const paved = p.subclass === 'pedestrian' || p.subclass === 'platform'
+      for (const shape of shapesOf(feature.loadGeometry(), extent)) features.areas.push({ shape, kind: paved ? 'square' : 'commercial' })
       return
     }
     if (feature.type !== 2) return
