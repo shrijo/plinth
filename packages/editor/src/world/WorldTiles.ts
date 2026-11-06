@@ -2,6 +2,8 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
+  LineBasicMaterial,
+  LineSegments,
   Frustum,
   Group,
   LinearMipmapLinearFilter,
@@ -15,7 +17,9 @@ import {
   Texture,
   Vector3,
   type Intersection,
+  type Object3D,
   type Plane,
+  type WebGLRenderer,
 } from 'three'
 import {
   ancestorAt,
@@ -36,6 +40,7 @@ import {
   type Vec3,
 } from '@plinth/world'
 import type { GroundResult, WorkerRequest, WorkerResponse, WorldMask } from './protocol.ts'
+import { WorldWater } from './water.ts'
 
 /**
  * The real world, streamed in as tiles: the ground draped over its hills
@@ -65,6 +70,8 @@ export interface WorldTilesOptions {
   wall?: string
   roof?: string
   style?: GroundStyle
+  /** Dark lines along the buildings' edges. */
+  outlines?: boolean
 }
 
 const COARSE = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
@@ -120,6 +127,7 @@ const frustum = new Frustum()
 const projection = new Matrix4()
 const sphere = new Sphere()
 const scratch = new Vector3()
+const plane = new Vector3()
 
 export class WorldTiles {
   readonly group = new Group()
@@ -133,7 +141,11 @@ export class WorldTiles {
   private readonly asked = new Map<number, (image: ImageBitmap | null) => void>()
   private readonly arrived: (() => void)[] = []
   private readonly buildingMaterial: MeshStandardMaterial
-  private readonly colours: { wall: [number, number, number]; roof: [number, number, number] }
+  private readonly edgeMaterial = new LineBasicMaterial({ color: '#3a3d41' })
+  private readonly colours: { wall: [number, number, number]; roof: [number, number, number]; road: [number, number, number] }
+  /** Lakes, rivers and the sea, and their reflection. */
+  readonly water = new WorldWater()
+  private outlines: boolean
   private readonly caps: { mesh: Mesh; frame: Frame }[] = []
   private nextJob = 1
   private clock = 0
@@ -153,7 +165,8 @@ export class WorldTiles {
       const c = new Color(css)
       return [c.r, c.g, c.b]
     }
-    this.colours = { wall: linear(options.wall ?? '#f3f2ef'), roof: linear(options.roof ?? '#e2e0db') }
+    this.colours = { wall: linear(options.wall ?? '#f3f2ef'), roof: linear(options.roof ?? '#e2e0db'), road: linear('#d0cec9') }
+    this.outlines = options.outlines ?? false
     // The map stops short of the poles (at 85°): caps close the globe there, sea in the north, ice in the south.
     const style = options.style ?? GROUND_STYLE
     for (const north of [true, false]) {
@@ -261,6 +274,7 @@ export class WorldTiles {
     )
 
     const now = performance.now()
+    this.lastSelection = { want: selection.want.length, draw: selection.draw.length, ideal: selection.ideal.length }
 
     // Arrivals first, as many as fit in a few milliseconds.
     const until = now + ADD_BUDGET
@@ -344,10 +358,11 @@ export class WorldTiles {
       for (const e of map.values()) out[e.state] = (out[e.state] ?? 0) + 1
       return out
     }
-    return { ground: count(this.ground), buildings: count(this.buildings), pending: this.pending.size, drawn: this.drawn.length, arrived: this.arrived.length, anchor: this.anchor, lastError: this.lastError }
+    return { ground: count(this.ground), buildings: count(this.buildings), pending: this.pending.size, drawn: this.drawn.length, arrived: this.arrived.length, anchor: this.anchor, lastError: this.lastError, selection: this.lastSelection }
   }
 
   private lastError: string | null = null
+  private lastSelection: Record<string, number> = {}
 
   /** Whether tiles are still on their way. */
   get loading(): boolean {
@@ -441,6 +456,48 @@ export class WorldTiles {
     this.onChange?.()
   }
 
+  /** Shows or hides the buildings' outlines. */
+  setOutlines(on: boolean): void {
+    this.outlines = on
+    for (const entry of this.buildings.values()) {
+      const lines = entry.mesh?.children[0]
+      if (lines) lines.visible = on
+    }
+  }
+
+  /**
+   * Draws the reflection in the water near the camera (call each frame,
+   * before the scene is drawn): the water closest to the camera sets the
+   * mirror's level.
+   */
+  reflect(renderer: WebGLRenderer, scene: Object3D, camera: PerspectiveCamera): void {
+    camera.getWorldPosition(scratch)
+    let nearest: Mesh | null = null
+    let best = Infinity
+    for (const mesh of this.drawn) {
+      const water = mesh.children.find((c) => c.userData.water) as Mesh | undefined
+      if (!water) continue
+      const geometry = water.geometry
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+      sphere.copy(geometry.boundingSphere!).applyMatrix4(water.matrixWorld)
+      const d = Math.max(0, sphere.center.distanceTo(scratch) - sphere.radius)
+      if (d < best) {
+        best = d
+        nearest = water
+      }
+    }
+    // Too far off to see a reflection in: none.
+    let level: number | null = null
+    if (nearest && best < 6000) {
+      const ecef = this.toEcef(scratch)
+      const under = lonLatFromEcef(ecef)
+      level = this.toScene(ecefFromLonLat(under.lon, under.lat, nearest.userData.level as number), plane).y
+    }
+    // Waves stay put on the water when the anchor moves: the anchor's place in metres, folded to a few kilometres.
+    const offset: [number, number] = [(this.anchor.lon * 111320 * Math.cos((this.anchor.lat * Math.PI) / 180)) % 4096, (-this.anchor.lat * 110540) % 4096]
+    this.water.reflect(renderer, scene, camera, level, offset)
+  }
+
   private addGround(entry: GroundEntry, result: GroundResult): void {
     const texture = new Texture(result.image)
     texture.flipY = false
@@ -461,6 +518,13 @@ export class WorldTiles {
     mesh.receiveShadow = true
     mesh.visible = false
     mesh.userData.worldGround = true
+    if (result.water) {
+      const water = new Mesh(geometryOf(result.water, 'none'), this.water.material)
+      water.userData.water = true
+      water.userData.level = result.water.level
+      water.raycast = () => {}
+      mesh.add(water)
+    }
     this.place(mesh, entry.frame)
     this.group.add(mesh)
     entry.mesh = mesh
@@ -473,6 +537,14 @@ export class WorldTiles {
     entry.state = 'ready'
     if (!result) return
     const mesh = new Mesh(geometryOf(result, 'color'), this.buildingMaterial)
+    if (result.edges && result.edges.length > 0) {
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(result.edges, 3))
+      const lines = new LineSegments(geometry, this.edgeMaterial)
+      lines.visible = this.outlines
+      lines.raycast = () => {}
+      mesh.add(lines)
+    }
     mesh.matrixAutoUpdate = false
     mesh.castShadow = true
     mesh.receiveShadow = true
@@ -548,8 +620,10 @@ export class WorldTiles {
     for (const resolve of this.asked.values()) resolve(null)
     this.asked.clear()
     for (const entry of this.ground.values()) if (entry.mesh) disposeMesh(entry.mesh)
-    for (const entry of this.buildings.values()) if (entry.mesh) entry.mesh.geometry.dispose()
+    for (const entry of this.buildings.values()) if (entry.mesh) disposeMesh(entry.mesh)
     this.buildingMaterial.dispose()
+    this.edgeMaterial.dispose()
+    this.water.dispose()
     for (const cap of this.caps) disposeMesh(cap.mesh)
     this.group.clear()
     this.ground.clear()
@@ -600,7 +674,7 @@ function polarCap(north: boolean): { mesh: MeshBuffers; frame: Frame } {
   }
 }
 
-function geometryOf(mesh: MeshBuffers, extra: 'uv' | 'color'): BufferGeometry {
+function geometryOf(mesh: MeshBuffers, extra: 'uv' | 'color' | 'none'): BufferGeometry {
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(mesh.positions, 3))
   geometry.setAttribute('normal', new BufferAttribute(mesh.normals, 3))
@@ -613,6 +687,7 @@ function geometryOf(mesh: MeshBuffers, extra: 'uv' | 'color'): BufferGeometry {
 
 function disposeMesh(mesh: Mesh): void {
   mesh.geometry.dispose()
+  for (const child of mesh.children) (child as Mesh).geometry?.dispose()
   const material = mesh.material as MeshStandardMaterial
   if (material.userData.shared) return
   material.map?.dispose()

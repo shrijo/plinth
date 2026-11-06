@@ -1,7 +1,9 @@
 import { fetchOsm } from './osm.ts'
 import { planFromOsm, planFromTiles, squareAround, type SitePlan } from './site.ts'
-import { fetchFeatures, fetchHeights, fetchWithRetry, HeightField } from './sources.ts'
-import { tilesCovering } from './tiles.ts'
+import type { TileFeatures } from './features.ts'
+import { makeGround } from './ground.ts'
+import { fetchFeatures, fetchHeights, fetchWithRetry } from './sources.ts'
+import { lonLatToTileXY, tilesCovering } from './tiles.ts'
 
 /**
  * Plans a site from a square of the world, fetching what it needs: ground
@@ -21,8 +23,22 @@ export async function planSite(
   // Kept from failing loudly while it waits its turn.
   tiles.catch(() => undefined)
   const name = area.name ? Promise.resolve(area.name) : placeName(area.lon, area.lat, signal)
-  const field = new HeightField((await heights).filter((h) => h !== null))
-  const input = { name: await name, lon: area.lon, lat: area.lat, size: area.size, heightAt: (lon: number, lat: number) => field.at(lon, lat) }
+  // The ground as the world shows it: smoothed, with level beds under the streets and basins under the water.
+  const heightTiles = (await heights).filter((h) => h !== null)
+  const mapTiles = (await tiles.catch(() => [] as (TileFeatures | null)[])).filter((t) => t !== null)
+  const grounds = mapTiles.length > 0 ? mapTiles.map((t) => makeGround(heightTiles, t)) : [makeGround(heightTiles, null)]
+  const groundAt = (lon: number, lat: number) => {
+    const { x, y } = lonLatToTileXY(lon, lat, 14)
+    return grounds.find((g) => g.source && g.source.x === Math.floor(x) && g.source.y === Math.floor(y)) ?? grounds[0]!
+  }
+  const input = {
+    name: await name,
+    lon: area.lon,
+    lat: area.lat,
+    size: area.size,
+    heightAt: (lon: number, lat: number) => groundAt(lon, lat).at(lon, lat),
+    waterAt: (lon: number, lat: number) => groundAt(lon, lat).waterAt(lon, lat),
+  }
   onProgress?.('Fetching buildings and streets from OpenStreetMap…')
   try {
     const osm = await fetchOsm(bounds, signal)
@@ -31,8 +47,7 @@ export async function planSite(
     if (signal?.aborted) throw error
   }
   onProgress?.('OpenStreetMap is busy: using map tiles instead…')
-  const data = (await tiles).filter((t) => t !== null)
-  return planFromTiles(input, data)
+  return planFromTiles(input, mapTiles)
 }
 
 /** What a place is called (its street and town), or its coordinates. */

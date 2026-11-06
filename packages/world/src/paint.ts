@@ -1,4 +1,5 @@
-import type { AreaKind, Line, RoadKind, Shape, TileFeatures } from './features.ts'
+import type { AreaKind, Line, RoadFeature, RoadKind, Shape, TileFeatures } from './features.ts'
+import { SIDEWALK, TOWN_STREETS } from './ground.ts'
 import { tileWidth } from './mesh.ts'
 import type { TileId } from './tiles.ts'
 
@@ -14,6 +15,9 @@ export interface GroundStyle {
   areas: Record<AreaKind, string>
   road: string
   majorRoad: string
+  sidewalk: string
+  curb: string
+  marking: string
   path: string
   rail: string
   building: string
@@ -39,9 +43,13 @@ export const GROUND_STYLE: GroundStyle = {
     airport: '#e1e0dc',
     runway: '#d3d1cc',
   },
-  road: '#d3d1cc',
-  majorRoad: '#cfcdc8',
-  path: '#dcdad5',
+  // As the site editor's streets: grey asphalt, pale sidewalks with a curb, white paint.
+  road: '#d0cec9',
+  majorRoad: '#cbc9c4',
+  sidewalk: '#eeede8',
+  curb: '#d9d7d1',
+  marking: '#fbfbf9',
+  path: '#eceae5',
   rail: '#c4c2bd',
   building: '#dedcd7',
 }
@@ -123,26 +131,92 @@ export function paintGround(context: Context, size: number, target: TileId, feat
     context.stroke()
   }
 
+  paintStreets(context, features, target, metresPerPixel, style, trace)
+
+  // Footprints last: the buildings stand on them, and sidewalks run up to their walls.
   fillShapes(
     features.buildings.filter((b) => b.minHeight === 0).map((b) => b.shape),
     style.building,
   )
+}
 
-  // Roads by layer, then the bigger over the smaller; tunnels are left out.
-  const roads = features.roads
-    .filter((r) => !r.tunnel)
-    .sort((a, b) => a.layer - b.layer || ROAD_ORDER.indexOf(a.kind) - ROAD_ORDER.indexOf(b.kind))
-  for (const road of roads) {
-    const rail = road.kind === 'rail'
-    const width = (rail ? 1.4 : road.width) / metresPerPixel
-    const smallest = MAJOR.has(road.kind) ? 0.9 : road.kind === 'path' || road.kind === 'track' ? 0.35 : 0.5
-    if (width < smallest * 0.35) continue
-    context.lineWidth = Math.max(width, smallest)
-    context.strokeStyle = rail ? style.rail : MAJOR.has(road.kind) ? style.majorRoad : road.kind === 'path' || road.kind === 'track' ? style.path : style.road
+/** Below this zoom bridges are painted; from it on they are built (see buildingMesh). */
+const BRIDGE_ZOOM = 14
+
+/**
+ * Streets as layered decals, the way games lay roads over terrain: every
+ * street's sidewalks first, then the curbs, then the asphalt, then the
+ * paint, so junctions merge into one surface. Detail comes in as it
+ * becomes visible: sidewalks and curbs once a pixel is under a couple of
+ * metres, lane lines once it's under half a metre.
+ */
+function paintStreets(
+  context: Context,
+  features: TileFeatures,
+  target: TileId,
+  metresPerPixel: number,
+  style: GroundStyle,
+  trace: (line: Line, close: boolean) => void,
+): void {
+  const town = features.buildings.length > 150
+  const order = (a: RoadFeature, b: RoadFeature) => a.layer - b.layer || ROAD_ORDER.indexOf(a.kind) - ROAD_ORDER.indexOf(b.kind)
+  const roads = features.roads.filter((r) => !r.tunnel && !(r.bridge && target.z >= BRIDGE_ZOOM)).sort(order)
+  const streets = roads.filter((r) => r.kind !== 'path' && r.kind !== 'track' && r.kind !== 'rail' && r.kind !== 'pier')
+  const stroke = (road: RoadFeature, width: number, colour: string, least = 0) => {
+    const pixels = width / metresPerPixel
+    if (pixels < least * 0.35) return
+    context.lineWidth = Math.max(pixels, least)
+    context.strokeStyle = colour
     context.beginPath()
     trace(road.line, false)
     context.stroke()
   }
+  context.lineJoin = 'round'
+  context.lineCap = 'round'
+  context.setLineDash([])
+
+  // Paths and tracks first: everything else goes over them.
+  for (const road of roads) if (road.kind === 'path' || road.kind === 'track' || road.kind === 'pier') stroke(road, road.width, style.path, 0.35)
+  const sidewalks = town && metresPerPixel < 2
+  if (sidewalks) {
+    for (const road of streets) if (TOWN_STREETS.has(road.kind)) stroke(road, road.width + SIDEWALK * 2, style.sidewalk)
+  }
+  if (metresPerPixel < 0.8) for (const road of streets) stroke(road, road.width + 0.5, style.curb)
+  for (const road of streets) stroke(road, road.width, MAJOR.has(road.kind) ? style.majorRoad : style.road, MAJOR.has(road.kind) ? 0.9 : 0.5)
+  for (const road of roads) if (road.kind === 'rail') stroke(road, 1.6, style.rail, 0.6)
+
+  if (metresPerPixel > 0.5) return
+  // Lane lines: dashed down the middle of two-way streets, solid along the edges of the big ones.
+  const line = Math.max(0.15 / metresPerPixel, 1)
+  context.strokeStyle = style.marking
+  for (const road of streets) {
+    if (road.width < 7 || road.kind === 'service') continue
+    if (MAJOR.has(road.kind)) {
+      // Edge lines: a stroke as wide as the road less a margin, its middle painted over again.
+      context.setLineDash([])
+      context.lineCap = 'round'
+      context.strokeStyle = style.marking
+      context.lineWidth = (road.width - 0.6) / metresPerPixel
+      context.beginPath()
+      trace(road.line, false)
+      context.stroke()
+      context.lineWidth = (road.width - 0.6) / metresPerPixel - 2 * line
+      context.strokeStyle = style.majorRoad
+      context.beginPath()
+      trace(road.line, false)
+      context.stroke()
+    }
+    context.strokeStyle = style.marking
+    context.lineWidth = line
+    context.lineCap = 'butt'
+    context.setLineDash([3 / metresPerPixel, 6 / metresPerPixel])
+    context.beginPath()
+    trace(road.line, false)
+    context.stroke()
+    context.setLineDash([])
+  }
+  context.setLineDash([])
+  context.lineCap = 'round'
 }
 
 /**

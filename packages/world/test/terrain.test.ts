@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { decodePng } from '../src/png.ts'
 import { heightsFromTerrarium, sampleHeight } from '../src/terrarium.ts'
-import { groundMesh, buildingMesh } from '../src/mesh.ts'
+import { groundMesh, buildingMesh, tileWidth, waterMesh } from '../src/mesh.ts'
 import { readTile } from '../src/features.ts'
 import { tileBounds } from '../src/tiles.ts'
 import { ecefFromLonLat, enuFrame, frameToLonLat, lonLatFromEcef, lonLatToFrame } from '../src/geo.ts'
@@ -118,5 +118,56 @@ describe('the Earth', () => {
     const [e, n] = lonLatToFrame(frame, there.lon, there.lat)
     expect(e).toBeCloseTo(1000, 3)
     expect(n).toBeCloseTo(500, 3)
+  })
+})
+
+describe('the ground', async () => {
+  const { makeGround, mosaic } = await import('../src/ground.ts')
+  const image = await decodePng(new Uint8Array(readFileSync(new URL('./terrarium-14-8580-5737.png', import.meta.url))))
+  const left = heightsFromTerrarium(tile, image.data, image.width)
+  // The same tile again as its eastern neighbour, so the seam between them can be checked.
+  const right = { ...left, tile: { ...tile, x: tile.x + 1 } }
+
+  it('has one height at a seam, whichever tile asks', () => {
+    const b = tileBounds(tile)
+    const a = mosaic([left, right])
+    const c = mosaic([right, left])
+    for (let k = 0; k <= 10; k++) {
+      const lat = b.south + ((b.north - b.south) * k) / 10
+      expect(a(b.east, lat)).toBeCloseTo(c(b.east, lat), 9)
+    }
+  })
+
+  it('lays a level bed along streets: flat across them', () => {
+    const features = readTile(tile, readFileSync(new URL('./zurich-14-8580-5737.pbf', import.meta.url)))
+    const ground = makeGround([left], features)
+    const n = 2 ** tile.z
+    const lonOf = (u: number) => ((tile.x + u) / n) * 360 - 180
+    const latOf = (v: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * (tile.y + v)) / n))) * 180) / Math.PI
+    const metres = tileWidth(tile)
+    let checked = 0
+    for (const road of features.roads) {
+      if (road.bridge || road.tunnel || !['minor', 'tertiary', 'secondary', 'primary'].includes(road.kind)) continue
+      const [ax, ay, bx, by] = [road.line[0]!, road.line[1]!, road.line[2]!, road.line[3]!]
+      const length = Math.hypot(bx - ax, by - ay)
+      if (length * metres < 20 || ax < 0.05 || ax > 0.95 || ay < 0.05 || ay > 0.95) continue
+      const [mx, my] = [(ax + bx) / 2, (ay + by) / 2]
+      const across = (road.width / 2 - 0.5) / metres
+      const [px, py] = [(-(by - ay) / length) * across, ((bx - ax) / length) * across]
+      const one = ground.at(lonOf(mx + px), latOf(my + py))
+      const other = ground.at(lonOf(mx - px), latOf(my - py))
+      expect(Math.abs(one - other)).toBeLessThan(0.6)
+      if (++checked >= 40) break
+    }
+    expect(checked).toBeGreaterThan(10)
+  })
+
+  it('puts water above the ground under it', () => {
+    const features = readTile(tile, readFileSync(new URL('./zurich-14-8580-5737.pbf', import.meta.url)))
+    const ground = makeGround([left], features)
+    const mesh = waterMesh(tile, ground)!
+    expect(mesh).not.toBeNull()
+    expect(mesh.level).toBeGreaterThan(390)
+    expect(mesh.level).toBeLessThan(420)
   })
 })

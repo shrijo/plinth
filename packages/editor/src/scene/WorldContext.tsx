@@ -6,6 +6,8 @@ import { terrainMesh, terrainOf, type Vec2 } from '@plinth/core'
 import { useEditor, useSnapshot } from '../context.ts'
 import { WorldTiles } from '../world/WorldTiles.ts'
 import { useBufferGeometry } from './geometry.ts'
+import { daylight } from './daylight.ts'
+import { PALETTES } from './materials.ts'
 
 /** How far round the site the world is drawn (metres): beyond, the haze has it. */
 const REACH = 20000
@@ -85,8 +87,21 @@ function World({ lon, lat, height, area }: { lon: number; lat: number; height: n
     }
   }, [world, get])
 
-  useFrame(({ camera, size }) => {
-    if (camera instanceof PerspectiveCamera) world.update(camera, size.height)
+  // The editor's look: outlines, and the sun on the water.
+  const outlines = useEditor((s) => s.showOutlines)
+  const hour = useEditor((s) => s.timeOfDay)
+  const style = useEditor((s) => s.style)
+  useEffect(() => world.setOutlines(outlines), [world, outlines])
+  useEffect(() => {
+    const light = daylight(hour, PALETTES[style])
+    world.water.setSun(light.direction, light.sun)
+    world.water.setSky(light.skyHorizon)
+  }, [world, hour, style])
+
+  useFrame(({ camera, size, gl, scene }) => {
+    if (!(camera instanceof PerspectiveCamera)) return
+    world.update(camera, size.height)
+    world.reflect(gl, scene, camera)
   })
   return area ? <AreaWater world={world} area={area} /> : null
 }

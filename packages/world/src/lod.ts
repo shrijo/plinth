@@ -50,6 +50,13 @@ export function tileSphere(tile: TileId, low: number, high: number): Bounds {
   return { centre, radius: radius * (tile.z < 3 ? 1.15 : 1.02) }
 }
 
+/**
+ * Levels the search may go past tiles not loaded yet. Until a tile is in,
+ * its heights (and so its bounds) are guesses; going deeper on guesses would
+ * ask for far more tiles than the view needs.
+ */
+const MAX_UNREADY = 3
+
 export interface Selection {
   /** Tiles to draw: ready, covering the view once each. */
   draw: TileId[]
@@ -90,7 +97,8 @@ export function selectTiles(view: View, selector: Selector): Selection {
   const draw: TileId[] = []
   const ideal: TileId[] = []
   const want: { tile: TileId; priority: number }[] = []
-  const cover = (tile: TileId): TileId[] | null => {
+  /** `unready`: how many tiles above this one aren't loaded yet; the search goes no more than a few levels past them. */
+  const cover = (tile: TileId, unready = 0): TileId[] | null => {
     const key = tileKey(tile)
     const [low, high] = selector.heightRange(tile)
     const bounds = boundsOf(tile, key, low, high)
@@ -103,19 +111,20 @@ export function selectTiles(view: View, selector: Selector): Selection {
     if (view.maxDistance !== undefined && distance > view.maxDistance && tile.z > 2) return []
     const texel = tileWidth(tile) / view.textureSize
     const error = (texel / distance) * view.pixelsPerMetre
-    const refine = tile.z < view.maxZoom && (tile.z < 2 || error > view.maxError)
+    const ready = selector.isReady(key)
+    const unknown = ready ? 0 : unready + 1
+    const refine = tile.z < view.maxZoom && (tile.z < 2 || error > view.maxError) && unknown <= MAX_UNREADY
     if (!refine) ideal.push(tile)
     if (refine) {
       const parts: TileId[] = []
       let covered = true
       for (const child of tileChildren(tile)) {
-        const part = cover(child)
+        const part = cover(child, unknown)
         if (part === null) covered = false
         else parts.push(...part)
       }
       if (covered) return parts
     }
-    const ready = selector.isReady(key)
     if (!ready) want.push({ tile, priority: tile.z * 1e9 + distance })
     return ready ? [tile] : null
   }

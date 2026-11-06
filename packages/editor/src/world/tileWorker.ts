@@ -6,17 +6,20 @@ import {
   fetchFeatures,
   fetchHeights,
   groundMesh,
-  heightSampler,
+  makeGround,
+  waterMesh,
   insideRing,
   lonLatToFrame,
   Lru,
   paintAreas,
   paintGround,
   tilesCovering,
+  tileBounds,
   frameToLonLat,
   tileKey,
   TERRAIN_MAX_ZOOM,
   VECTOR_MAX_ZOOM,
+  type Ground,
   type HeightTile,
   type TileFeatures,
   type TileId,
@@ -73,15 +76,41 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
-/** Ground squares per tile side: more on tiles near the ground, where hills show. */
-const segmentsFor = (tile: TileId, wanted: number) => (tile.z < 4 ? 48 : tile.z < 10 ? 24 : wanted)
+/** Ground squares per tile side: more near the ground, where streets need a level bed and hills show. */
+const segmentsFor = (tile: TileId, wanted: number) => (tile.z < 4 ? 48 : tile.z < 10 ? 24 : tile.z < 14 ? wanted : tile.z < 16 ? 48 : 64)
+
+/** Water gets a surface of its own from this zoom; further out it's painted. */
+const WATER_ZOOM = 10
+/** Streets get a level bed from this zoom (the finest map data's). */
+const ROAD_ZOOM = 14
+
+/**
+ * The heights for a tile: its own, or from zoom 14 on the finest there are,
+ * reaching a little past its edges (the smoothing does), so the ground is
+ * the same function on both sides of every seam.
+ */
+async function heightsFor(tile: TileId, signal: AbortSignal): Promise<HeightTile[]> {
+  if (tile.z < ROAD_ZOOM) return [await heightsOf(tile, signal)].filter((h): h is HeightTile => h !== null)
+  const b = tileBounds(tile)
+  const margin = 70 / 111320
+  const wide = margin / Math.max(Math.cos((((b.north + b.south) / 2) * Math.PI) / 180), 0.05)
+  // The tile itself first: most points are on it.
+  const own = ancestorAt(tile, TERRAIN_MAX_ZOOM)
+  const around = tilesCovering({ west: b.west - wide, east: b.east + wide, south: b.south - margin, north: b.north + margin }, TERRAIN_MAX_ZOOM)
+  const tiles = tile.z >= TERRAIN_MAX_ZOOM ? [own, ...around.filter((t) => tileKey(t) !== tileKey(own))] : around
+  return (await Promise.all(tiles.map((t) => heightsOf(t, signal)))).filter((h): h is HeightTile => h !== null)
+}
+
+/** The ground a tile is built on: shaped for streets and water close up. */
+function groundFor(tile: TileId, heights: HeightTile[], data: TileFeatures | null): Ground {
+  return makeGround(heights, tile.z >= WATER_ZOOM ? data : null, { roads: tile.z >= ROAD_ZOOM })
+}
 
 async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, height] = await Promise.all([
-    featuresOf(request.tile, signal),
-    heightsOf(request.tile, signal),
-  ])
-  const mesh = groundMesh(request.tile, heightSampler(height), segmentsFor(request.tile, request.segments))
+  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  const shaped = groundFor(request.tile, heights, data)
+  const water = request.tile.z >= WATER_ZOOM ? waterMesh(request.tile, shaped) : null
+  const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), water ? (lon, lat) => shaped.waterAt(lon, lat) : undefined)
   const canvas = new OffscreenCanvas(request.size, request.size)
   const context = canvas.getContext('2d')!
   paintGround(context, request.size, request.tile, data, request.style)
@@ -90,15 +119,22 @@ async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signa
     id: request.id,
     ok: true,
     type: 'ground',
-    result: { mesh: { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, uvs: mesh.uvs }, low: mesh.low, high: mesh.high, image },
+    result: {
+      mesh: { positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, uvs: mesh.uvs },
+      low: mesh.low,
+      high: mesh.high,
+      image,
+      water,
+    },
   }
 }
 
 async function buildings(request: Extract<WorkerRequest, { type: 'buildings' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, height] = await Promise.all([featuresOf(request.tile, signal), heightsOf(ancestorAt(request.tile, 14), signal)])
-  if (!data || data.buildings.length === 0) return { id: request.id, ok: true, type: 'buildings', result: null }
+  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  if (!data || (data.buildings.length === 0 && !data.roads.some((r) => r.bridge))) return { id: request.id, ok: true, type: 'buildings', result: null }
+  const shaped = groundFor(request.tile, heights, data)
   const keep = request.mask ? masking(request.mask) : undefined
-  const result = buildingMesh(request.tile, data.buildings, heightSampler(height), request.colours, { keep })
+  const result = buildingMesh(request.tile, data.buildings, (lon, lat) => shaped.at(lon, lat), request.colours, { keep, roads: data.roads })
   return { id: request.id, ok: true, type: 'buildings', result }
 }
 
@@ -157,13 +193,13 @@ function masking(mask: WorldMask): (lon: number, lat: number) => boolean {
 function transfers(response: WorkerResponse): Transferable[] {
   if (!response.ok) return []
   if (response.type === 'area') return [response.result]
+  const buffers = (mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; colors?: Float32Array; edges?: Float32Array } | null) =>
+    mesh ? [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer, ...(mesh.colors ? [mesh.colors.buffer] : []), ...(mesh.edges ? [mesh.edges.buffer] : [])] : []
   if (response.type === 'ground') {
-    const { mesh, image } = response.result
-    return [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer, mesh.uvs.buffer, image] as Transferable[]
+    const { mesh, image, water } = response.result
+    return [...buffers(mesh), mesh.uvs.buffer, image, ...buffers(water)] as Transferable[]
   }
-  const mesh = response.result
-  if (!mesh) return []
-  return [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer, ...(mesh.colors ? [mesh.colors.buffer] : [])] as Transferable[]
+  return buffers(response.result) as Transferable[]
 }
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {

@@ -20,6 +20,8 @@ export interface GroundResult {
   low: number
   high: number
   image: ImageBitmap
+  /** Lakes, rivers and sea in the tile, at their surface; `level` is their average height. */
+  water: (MeshBuffers & { level: number }) | null
 }
 
 export type WorkerResponse =

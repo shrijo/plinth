@@ -209,6 +209,20 @@ export function savePreferences(state: EditorState): void {
   }
 }
 
+/** The saved view settings with defaults filled in, for views outside the editor (the world). */
+export function readViewPreferences(): ViewPreferences {
+  return { ...DEFAULT_VIEW, ...loadPreferences() }
+}
+
+/** Saves some view settings, keeping the rest as they were. */
+export function writeViewPreferences(patch: Partial<ViewPreferences>): void {
+  try {
+    localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ ...readViewPreferences(), ...patch }))
+  } catch {
+    // As savePreferences.
+  }
+}
+
 export function createEditorStore(activeLevelId: Id): EditorStore {
   return createStore<EditorState>(() => ({
     mode: 'site',

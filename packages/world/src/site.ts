@@ -96,6 +96,8 @@ export interface PlanInput {
   size: number
   /** Ground heights above sea level. */
   heightAt: (lon: number, lat: number) => number
+  /** The water's surface where there's water (the ground there lies a little under it). */
+  waterAt?: (lon: number, lat: number) => number | null
 }
 
 /** Spot heights on a grid over the square, closer on small sites. */
@@ -108,7 +110,10 @@ function spotsFor(input: PlanInput, frame: Frame): SitePlan['spots'] {
       const x = -input.size / 2 + (i * input.size) / n
       const y = -input.size / 2 + (j * input.size) / n
       const place = frameToLonLat(frame, x, y)
-      spots.push({ x: round(x), y: round(y), z: round(input.heightAt(place.lon, place.lat)) })
+      const ground = input.heightAt(place.lon, place.lat)
+      const water = input.waterAt?.(place.lon, place.lat) ?? null
+      // Under water the ground lies below the surface, as the world's does.
+      spots.push({ x: round(x), y: round(y), z: round(water === null ? ground : Math.min(ground, water - 1.5)) })
     }
   }
   return spots

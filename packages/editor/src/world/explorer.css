@@ -237,3 +237,7 @@
   -webkit-appearance: none;
   appearance: none;
 }
+
+.pw-view {
+  z-index: 3;
+}

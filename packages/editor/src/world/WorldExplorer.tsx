@@ -1,10 +1,14 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { EffectComposer, N8AO, ToneMapping } from '@react-three/postprocessing'
+import { ToneMappingMode } from 'postprocessing'
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import { BackSide, Color, Fog, PerspectiveCamera, ShaderMaterial, SphereGeometry, Vector3, type Mesh } from 'three'
+import { BackSide, Color, Fog, NeutralToneMapping, PerspectiveCamera, ShaderMaterial, SphereGeometry, Vector3, type Mesh } from 'three'
 import { ATTRIBUTION, ecefFromLonLat, enuFrame, fromFrame, searchPlaces, type Place } from '@plinth/world'
-import { daylight, DEFAULT_HOUR } from '../scene/daylight.ts'
+import { daylight, FIRST_HOUR, formatHour, LAST_HOUR } from '../scene/daylight.ts'
 import { PALETTES } from '../scene/materials.ts'
 import { Sun } from '../scene/sun.ts'
+import { readViewPreferences, writeViewPreferences } from '../state.ts'
+import { ChevronIcon, SlidersIcon } from '../ui/icons.tsx'
 import { DEFAULT_VIEW, GlobeControls, type GlobeView } from './globeControls.ts'
 import { WorldTiles } from './WorldTiles.ts'
 import '../editor.css'
@@ -35,6 +39,18 @@ export interface WorldExplorerProps {
   onMakeSite: (area: WorldArea, report: (text: string) => void) => Promise<void>
 }
 
+/** How the world is shown: kept with the editor's view settings, so they carry over. */
+interface Look {
+  hour: number
+  outlines: boolean
+  occlusion: boolean
+}
+
+function readLook(): Look {
+  const p = readViewPreferences()
+  return { hour: p.timeOfDay, outlines: p.showOutlines, occlusion: p.ambientOcclusion }
+}
+
 const MIN_SIZE = 100
 const MAX_SIZE = 1000
 const DEFAULT_SIZE = 300
@@ -48,6 +64,12 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
   const [progress, setProgress] = useState<string | null>(null)
   const [name, setName] = useState<string | null>(null)
   const [close, setClose] = useState(false)
+  const [look, setLook] = useState(readLook)
+  const changeLook = (patch: Partial<Look>) => {
+    const next = { ...look, ...patch }
+    setLook(next)
+    writeViewPreferences({ timeOfDay: next.hour, showOutlines: next.outlines, ambientOcclusion: next.occlusion })
+  }
   const view = useMemo(() => ({ ...DEFAULT_VIEW, ...initialView }), [initialView])
   const keepControls = useCallback((controls: GlobeControls | null) => {
     controlsRef.current = controls
@@ -80,13 +102,23 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
     <div className="plinth-editor pw-explorer">
       <Canvas
         className="pe-canvas"
-        gl={{ logarithmicDepthBuffer: true, antialias: true }}
+        gl={{ logarithmicDepthBuffer: true, antialias: true, toneMapping: NeutralToneMapping }}
         camera={{ fov: 40, near: 1, far: 1e8, position: [0, 1e7, 0] }}
         shadows
         dpr={[1, 2]}
       >
-        <ExplorerScene onControls={keepControls} initial={view} outline={outline} choosing={choosing} onView={onViewChange} onClose={setClose} />
+        <ExplorerScene
+          onControls={keepControls}
+          initial={view}
+          outline={outline}
+          choosing={choosing}
+          look={look}
+          onView={onViewChange}
+          onClose={setClose}
+        />
+        {look.occlusion && <Occlusion controlsRef={controlsRef} />}
       </Canvas>
+      <ViewPanel look={look} onChange={changeLook} />
       {choosing !== null && (
         <svg className="pw-overlay" aria-hidden="true">
           <polygon ref={outline} className="pw-square" />
@@ -150,6 +182,72 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
       </div>
       <div className="pw-credit">{ATTRIBUTION}</div>
     </div>
+  )
+}
+
+/** The view's settings, behind a button: the time of day, soft shading, outlines. */
+function ViewPanel({ look, onChange }: { look: Look; onChange: (patch: Partial<Look>) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <section className="pe-levels pw-view" aria-label="View">
+      <div className="pe-levels-header">
+        <button
+          type="button"
+          className="pe-levels-toggle"
+          aria-expanded={open}
+          title={open ? 'Hide view options' : 'View options'}
+          onClick={() => setOpen(!open)}
+        >
+          <SlidersIcon />
+          <span className="pe-levels-title">View</span>
+          <ChevronIcon open={open} />
+        </button>
+      </div>
+      {open && (
+        <div className="pe-view-options">
+          <label className="pe-daylight">
+            <span>Sun</span>
+            <input
+              type="range"
+              min={FIRST_HOUR}
+              max={LAST_HOUR}
+              step={0.25}
+              value={look.hour}
+              aria-valuetext={formatHour(look.hour)}
+              onChange={(e) => onChange({ hour: Number(e.target.value) })}
+            />
+            <output>{formatHour(look.hour)}</output>
+          </label>
+          <label className="pe-check" title="Soft shading in corners, at the foot of walls and down streets">
+            <input type="checkbox" checked={look.occlusion} onChange={(e) => onChange({ occlusion: e.target.checked })} />
+            Soft shading
+          </label>
+          <label className="pe-check">
+            <input type="checkbox" checked={look.outlines} onChange={(e) => onChange({ outlines: e.target.checked })} />
+            Outlines
+          </label>
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** Ambient occlusion, as in the editor (see scene/Effects): its reach follows how much of the ground is in view. */
+function Occlusion({ controlsRef }: { controlsRef: RefObject<GlobeControls | null> }) {
+  const ao = useRef<{ configuration: { aoRadius: number } } | null>(null)
+  useFrame(({ camera }) => {
+    const pass = ao.current
+    const controls = controlsRef.current
+    if (!pass || !controls || !(camera instanceof PerspectiveCamera)) return
+    const seen = 2 * Math.min(controls.view.range, controls.altitude() * 3) * Math.tan((camera.fov * Math.PI) / 360)
+    const radius = Math.min(Math.max(seen * 0.03, 0.8), 60)
+    if (Math.abs(radius - pass.configuration.aoRadius) > pass.configuration.aoRadius * 0.08) pass.configuration.aoRadius = radius
+  })
+  return (
+    <EffectComposer multisampling={4} renderPriority={1}>
+      <N8AO ref={ao} halfRes aoSamples={16} denoiseSamples={8} denoiseRadius={12} aoRadius={4} distanceFalloff={1} intensity={3} color="black" />
+      <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+    </EffectComposer>
   )
 }
 
@@ -263,6 +361,7 @@ function ExplorerScene({
   initial,
   outline,
   choosing,
+  look,
   onView,
   onClose,
 }: {
@@ -270,12 +369,14 @@ function ExplorerScene({
   initial: GlobeView
   outline: RefObject<SVGPolygonElement | null>
   choosing: number | null
+  look: Look
   onView?: (view: GlobeView) => void
   onClose: (close: boolean) => void
 }) {
   const get = useThree((s) => s.get)
   const palette = PALETTES.mono
-  const light = useMemo(() => daylight(DEFAULT_HOUR, palette), [palette])
+  const light = useMemo(() => daylight(look.hour, palette), [look.hour, palette])
+  const lightRef = useRef(light)
   const sky = useRef<Mesh>(null)
   const parts = useRef<{ world: WorldTiles; controls: GlobeControls; sun: Sun | null; fog: Fog } | null>(null)
   const reported = useRef({ at: 0, close: false })
@@ -283,7 +384,8 @@ function ExplorerScene({
   useEffect(() => {
     const { scene, camera, gl } = get()
     if (!(camera instanceof PerspectiveCamera)) return
-    const world = new WorldTiles({ anchor: { lon: initial.lon, lat: initial.lat, height: initial.height } })
+    const light = lightRef.current
+    const world = new WorldTiles({ anchor: { lon: initial.lon, lat: initial.lat, height: initial.height }, outlines: readLook().outlines })
     scene.add(world.group)
     const controls = new GlobeControls(gl.domElement, world, () => camera, initial)
     const detach = controls.attach()
@@ -292,12 +394,14 @@ function ExplorerScene({
     scene.background = light.skyHorizon.clone()
     const sun = new Sun(camera, scene)
     sun.setLight(light.direction, light.sun, light.sunIntensity)
+    world.water.setSun(light.direction, light.sun)
+    world.water.setSky(light.skyHorizon)
     skyMaterial.uniforms.top!.value.copy(light.skyTop)
     skyMaterial.uniforms.horizon!.value.copy(light.skyHorizon)
     parts.current = { world, controls, sun, fog }
     onControls(controls)
     // For looking into it from the console while developing.
-    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__plinthWorld = { world, controls, camera, scene }
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__plinthWorld = { world, controls, camera, scene, gl }
     return () => {
       detach()
       onControls(null)
@@ -308,7 +412,25 @@ function ExplorerScene({
       scene.background = null
       parts.current = null
     }
-  }, [get, initial, light, onControls])
+  }, [get, initial, onControls])
+
+  // The time of day: the sun, the sky, the haze and the water's glint.
+  useEffect(() => {
+    lightRef.current = light
+    const p = parts.current
+    const { scene } = get()
+    p?.sun?.setLight(light.direction, light.sun, light.sunIntensity)
+    p?.fog.color.copy(light.skyHorizon)
+    if (scene.background instanceof Color) scene.background.copy(light.skyHorizon)
+    skyMaterial.uniforms.top!.value.copy(light.skyTop)
+    skyMaterial.uniforms.horizon!.value.copy(light.skyHorizon)
+    p?.world.water.setSun(light.direction, light.sun)
+    p?.world.water.setSky(light.skyHorizon)
+  }, [light, get])
+
+  useEffect(() => {
+    parts.current?.world.setOutlines(look.outlines)
+  }, [look.outlines])
 
   useFrame(({ camera, size }) => {
     const p = parts.current
@@ -342,6 +464,7 @@ function ExplorerScene({
     }
 
     world.update(camera, size.height)
+    world.reflect(get().gl, get().scene, camera)
     sun?.update(Math.min(Math.max(view.range * 2.5, 150), 9000), get().scene, Math.max(0, (altitude - 400) * 0.7))
 
     // The square being marked out, on the screen.
