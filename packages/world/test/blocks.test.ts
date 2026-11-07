@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Ground } from '../src/ground.ts'
 import { tileWidth } from '../src/mesh.ts'
+import { pointInRegion } from '@plinth/core'
 import { streetMesh } from '../src/streets.ts'
 import type { RoadFeature } from '../src/features.ts'
 
@@ -37,7 +38,7 @@ describe('block fills', () => {
   ]
 
   it('fills the square between the streets, on the ground', () => {
-    const mesh = streetMesh(tile, loop, flat, colours)!
+    const mesh = streetMesh(tile, loop, flat, colours).mesh!
     let inside = 0
     for (let i = 0; i < mesh.positions.length / 3; i++) {
       const r = mesh.colors![i * 3]!
@@ -52,10 +53,13 @@ describe('block fills', () => {
       expect(mesh.positions[i * 3 + 1]!).toBeLessThan(400.4)
     }
     expect(inside).toBeGreaterThan(20)
+    // The cover says where the ground needn't draw itself: it includes the filled square.
+    const { cover } = streetMesh(tile, loop, flat, colours)
+    expect(pointInRegion({ x: 0.5 * m, y: -0.5 * m }, cover)).toBe(true)
   })
 
   it('leaves the open country unfilled', () => {
-    const open = streetMesh(tile, [loop[0]!], { ...flat, town: false }, colours)!
+    const open = streetMesh(tile, [loop[0]!], { ...flat, town: false }, colours).mesh!
     for (let i = 0; i < open.positions.length / 3; i++) {
       expect(Math.abs(open.colors![i * 3]! - land[0])).toBeGreaterThan(1e-3)
     }

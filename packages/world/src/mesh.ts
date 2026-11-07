@@ -365,8 +365,10 @@ function upIn(frame: Frame, lon: number, lat: number): Vec3 {
 export interface BuildingColours {
   wall: [number, number, number]
   roof: [number, number, number]
-  /** Bridge decks. */
+  /** Bridge decks: their carriageway, their raised sidewalks and the curb faces, as the streets'. */
   road?: [number, number, number]
+  sidewalk?: [number, number, number]
+  curb?: [number, number, number]
 }
 
 export interface BuildingOptions {
@@ -502,6 +504,8 @@ function bridge(
   const width = (road.kind === 'rail' ? 6 : road.width) + DECK_MARGIN
   // Footways and tracks often run on a road's bridge, mapped as their own: a little lower, so the road's deck shows.
   const lower = road.kind === 'path' || road.kind === 'track' || road.kind === 'rail' ? 0.12 : 0
+  // A street's bridge looks like the street: its carriageway between raised sidewalks with curb faces.
+  const street = road.kind !== 'rail' && road.kind !== 'path' && road.kind !== 'track' && road.kind !== 'pier'
   for (const piece of clipLine(line, rect)) {
     // Points every few metres, as longitude and latitude, with the deck's height.
     const points: { lon: number; lat: number; top: number }[] = []
@@ -516,9 +520,19 @@ function bridge(
         points.push({ lon, lat, top: Math.max(levelAt(u, v), heightAt(lon, lat) + 0.4) + 0.25 - lower })
       }
     }
-    writer.deck(frame, points, width, DECK, colours)
+    if (street && colours.sidewalk) {
+      const walkway = { ...colours, road: colours.sidewalk, wall: colours.curb ?? colours.wall }
+      const raised = points.map((p) => ({ ...p, top: p.top + 0.12 }))
+      writer.deck(frame, points, width, DECK, colours)
+      for (const side of [-1, 1] as const) {
+        writer.deck(frame, raised, BRIDGE_WALK, DECK + 0.12, walkway, side * (width / 2 + BRIDGE_WALK / 2 - 0.05))
+      }
+    } else writer.deck(frame, points, width, DECK, colours)
   }
 }
+
+/** A street bridge's sidewalks, either side of its deck (metres). */
+const BRIDGE_WALK = 1.8
 
 /** A ring turned so it runs anticlockwise on the map (outer) or clockwise (hole). */
 function orient(ring: Line, outer: boolean): Line {
@@ -630,7 +644,7 @@ class MeshWriter {
   }
 
   /** A slab along points (deck heights given), `width` wide and `thickness` deep: top, sides and underside. */
-  deck(frame: Frame, points: { lon: number; lat: number; top: number }[], width: number, thickness: number, colours: BuildingColours): void {
+  deck(frame: Frame, points: { lon: number; lat: number; top: number }[], width: number, thickness: number, colours: BuildingColours, offset = 0): void {
     if (points.length < 2) return
     const at = (lon: number, lat: number, h: number): Vec3 => {
       place(frame, ecefFromLonLat(lon, lat, h), this.scratch, 0)
@@ -667,7 +681,7 @@ class MeshWriter {
     for (let i = 0; i + 1 < centre.length; i++) {
       const [a, b] = [centre[i]!, centre[i + 1]!]
       const [sa, sb] = [side[i]!, side[i + 1]!]
-      const corner = (c: Vec3, s: readonly [number, number], w: number, dy: number): Vec3 => [c[0] + s[0] * w, c[1] + dy, c[2] + s[1] * w]
+      const corner = (c: Vec3, s: readonly [number, number], w: number, dy: number): Vec3 => [c[0] + s[0] * (offset + w), c[1] + dy, c[2] + s[1] * (offset + w)]
       const la = corner(a, sa, -half, 0)
       const ra = corner(a, sa, half, 0)
       const lb = corner(b, sb, -half, 0)

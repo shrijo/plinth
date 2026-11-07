@@ -81,10 +81,17 @@ export function propsOf(road: RoadFeature, town: boolean) {
   return props
 }
 
-/**
- * The streets of a tile (zoom 14 map data), as one mesh in the tile's frame
- * with a colour per vertex. Null when there are none.
- */
+export interface StreetsBuilt {
+  /** One mesh in the tile's frame with a colour per vertex, or null when there are no streets. */
+  mesh: MeshBuffers | null
+  /**
+   * Everything the mesh covers (streets, paving, block fills), in plan
+   * metres: where the ground needn't be drawn, since ours stands over it.
+   */
+  cover: MultiPolygon
+}
+
+/** The streets of a tile (zoom 14 map data): see StreetsBuilt. */
 export function streetMesh(
   tile: TileId,
   roads: readonly RoadFeature[],
@@ -96,7 +103,7 @@ export function streetMesh(
   squares: readonly Shape[] = [],
   /** Green spaces (parks, grass, woods; tile units): block fills there are green. */
   greens: readonly Shape[] = [],
-): MeshBuffers | null {
+): StreetsBuilt {
   const metres = tileWidth(tile)
   // Plan metres: x east, y north (tile units run south), as the editor's sites.
   const toPlan = (u: number, v: number): Vec2 => ({ x: u * metres, y: -v * metres })
@@ -129,7 +136,7 @@ export function streetMesh(
     if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
     else lines.push({ points, props })
   }
-  if (lines.length === 0 && squares.length === 0) return null
+  if (lines.length === 0 && squares.length === 0) return { mesh: null, cover: [] }
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
   // data's edge (beyond the tile) are where it was cut, not dead ends.
   const network = tidyNetwork(lines, {
@@ -201,19 +208,25 @@ export function streetMesh(
     }
   })
   const surfaces = layerStreetSurfaces([...geometry.pieces, ...paving])
-  writer.slab(cut(surfaces.road), ROAD, colours.road, colours.curb)
-  writer.slab(cut(surfaces.bike), LANES, colours.bike, colours.curb)
-  writer.slab(cut(surfaces.parking), LANES, colours.parking, colours.curb)
+  const cover: MultiPolygon = []
+  const laid = (region: MultiPolygon): MultiPolygon => {
+    const own = cut(region)
+    cover.push(...own)
+    return own
+  }
+  writer.slab(laid(surfaces.road), ROAD, colours.road, colours.curb)
+  writer.slab(laid(surfaces.bike), LANES, colours.bike, colours.curb)
+  writer.slab(laid(surfaces.parking), LANES, colours.parking, colours.curb)
   // A living street or pedestrian zone is paved like a sidewalk, wall to wall, a little above the road.
-  writer.slab(cut(surfaces.paved), ROAD + 0.04, colours.sidewalk, colours.curb)
-  writer.slab(cut(surfaces.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
+  writer.slab(laid(surfaces.paved), ROAD + 0.04, colours.sidewalk, colours.curb)
+  writer.slab(laid(surfaces.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
   // In town, the blocks between the streets are filled: a skin on the ground that meets the streets' edges
   // exactly (the fill is the plan's complement, and both stand on the same bed-blended ground), so the terrain
   // fits the streets instead of poking through beside them.
   if (ground.town && colours.land) {
-    const cover: { polygon: MultiPolygon[number]; box: PlanRect }[] = []
+    const bounded: { polygon: MultiPolygon[number]; box: PlanRect }[] = []
     for (const region of [surfaces.road, surfaces.bike, surfaces.parking, surfaces.paved, surfaces.sidewalks]) {
-      for (const polygon of region) cover.push({ polygon, box: boundsOfRing(polygon[0]!) })
+      for (const polygon of region) bounded.push({ polygon, box: boundsOfRing(polygon[0]!) })
     }
     const waterPlan: MultiPolygon = ground.water.map((shape) => {
       const rings = [shape.outer, ...shape.holes].map((line) => {
@@ -239,7 +252,7 @@ export function streetMesh(
       for (let i = 0; i < cellsAcross; i++) {
         const box: PlanRect = { minX: i * size, maxX: (i + 1) * size, minY: -(j + 1) * size, maxY: -j * size }
         const overlaps = (b: PlanRect) => b.maxX > box.minX && b.minX < box.maxX && b.maxY > box.minY && b.minY < box.maxY
-        const near = cover.filter((c) => overlaps(c.box)).map((c) => [c.polygon] as MultiPolygon)
+        const near = bounded.filter((c) => overlaps(c.box)).map((c) => [c.polygon] as MultiPolygon)
         if (near.length === 0) continue
         const water = waterPlan.filter((_, k) => overlaps(waterBoxes[k]!)).map((polygon) => [polygon] as MultiPolygon)
         const cell: MultiPolygon = [[[[box.minX, box.minY], [box.maxX, box.minY], [box.maxX, box.maxY], [box.minX, box.maxY]]]]
@@ -251,6 +264,7 @@ export function streetMesh(
           if (!at) continue
           const fill = cut([face])
           if (fill.length === 0) continue
+          cover.push(...fill)
           writer.top(fill, FILL, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, FILL_STEP)
         }
       }
@@ -263,7 +277,7 @@ export function streetMesh(
       if (region.length > 0) writer.top(region, PAINT, colours.marking)
     }
   }
-  return writer.finish()
+  return { mesh: writer.finish(), cover }
 }
 
 const UP = [0, 1, 0] as const

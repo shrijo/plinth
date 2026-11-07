@@ -24,6 +24,7 @@ import {
   type Ground,
   type HeightTile,
   type TileFeatures,
+  tileWidth,
   type TileId,
 } from '@plinth/world'
 import type { WorkerRequest, WorkerResponse, WorldMask } from './protocol.ts'
@@ -222,7 +223,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
   const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
   const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
   const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
-  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: null }
+  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, cover: null } }
   const shaped = groundFor(request.tile, heights, data)
   // A site's own streets stand in its area: the world's are left out there.
   const mask = request.mask
@@ -232,7 +233,43 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
         return { lon: p.lon, lat: p.lat }
       })
     : undefined
-  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens) }
+  const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens)
+  return { id: request.id, ok: true, type: 'streets', result: { mesh: built.mesh, cover: coverMask(request.tile, built.cover) } }
+}
+
+/**
+ * The covered region as a picture over the tile (white where streets,
+ * paving or fills stand), for the ground not to draw itself there. Its
+ * border is pulled in a few metres (the picture is coarse: the ground
+ * keeps a strip under the edges, hidden beneath them).
+ */
+function coverMask(tile: TileId, cover: readonly (readonly [number, number][][])[]): ImageBitmap | null {
+  if (cover.length === 0) return null
+  const SIZE = 1024
+  const metres = tileWidth(tile)
+  const scale = SIZE / metres
+  const canvas = new OffscreenCanvas(SIZE, SIZE)
+  const context = canvas.getContext('2d')!
+  context.fillStyle = '#fff'
+  context.strokeStyle = '#fff'
+  const path = new Path2D()
+  for (const polygon of cover) {
+    for (const ring of polygon) {
+      ring.forEach(([x, y], i) => {
+        if (i === 0) path.moveTo(x * scale, -y * scale)
+        else path.lineTo(x * scale, -y * scale)
+      })
+      path.closePath()
+    }
+  }
+  // Nonzero: cover polygons may overlap (streets overlap their junctions a little), and holes wind the
+  // other way round, so they still come out.
+  context.fill(path)
+  // Pull the border in: strokes take the edge away on both sides of every outline.
+  context.globalCompositeOperation = 'destination-out'
+  context.lineWidth = 2 * 4 * scale
+  context.stroke(path)
+  return canvas.transferToImageBitmap()
 }
 
 /** Keeps buildings outside the mask. */
@@ -254,6 +291,7 @@ function transfers(response: WorkerResponse): Transferable[] {
     const { mesh, image, water, heights } = response.result
     return [...buffers(mesh), mesh.uvs.buffer, ...(mesh.morph ? [mesh.morph.buffer] : []), heights.buffer, image, ...buffers(water)] as Transferable[]
   }
+  if (response.type === 'streets') return [...buffers(response.result.mesh), ...(response.result.cover ? [response.result.cover] : [])] as Transferable[]
   return buffers(response.result) as Transferable[]
 }
 

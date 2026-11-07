@@ -20,7 +20,7 @@ describe('streets in 3D', async () => {
 
   it('builds a tile of streets, on the street bed, above the land, quickly enough', () => {
     const started = performance.now()
-    const mesh = streetMesh(tile, features.roads, ground, colours)!
+    const mesh = streetMesh(tile, features.roads, ground, colours).mesh!
     const ms = performance.now() - started
     console.log('streets:', mesh.indices.length / 3, 'triangles in', Math.round(ms), 'ms')
     expect(mesh.indices.length / 3).toBeGreaterThan(10000)
@@ -46,8 +46,8 @@ describe('streets in 3D', async () => {
       return { lon: p.lon, lat: p.lat }
     }
     const mask = [corner(-150, -150), corner(150, -150), corner(150, 150), corner(-150, 150)]
-    const whole = streetMesh(tile, features.roads, ground, colours)!
-    const holed = streetMesh(tile, features.roads, ground, colours, mask)!
+    const whole = streetMesh(tile, features.roads, ground, colours).mesh!
+    const holed = streetMesh(tile, features.roads, ground, colours, mask).mesh!
     expect(holed.indices.length).toBeLessThan(whole.indices.length)
     for (let i = 0; i < holed.positions.length / 3; i++) {
       const x = holed.positions[i * 3]!
@@ -57,7 +57,7 @@ describe('streets in 3D', async () => {
   }, 20000)
 
   it('stays inside its tile', () => {
-    const mesh = streetMesh(tile, features.roads, ground, colours)!
+    const mesh = streetMesh(tile, features.roads, ground, colours).mesh!
     const frame = tileFrame(tile)
     const n = 2 ** tile.z
     for (let i = 0; i < mesh.positions.length / 3; i += 13) {

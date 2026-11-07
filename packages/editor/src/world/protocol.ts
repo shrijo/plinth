@@ -30,6 +30,6 @@ export interface GroundResult {
 export type WorkerResponse =
   | { id: number; ok: true; type: 'ground'; result: GroundResult }
   | { id: number; ok: true; type: 'buildings'; result: MeshBuffers | null }
-  | { id: number; ok: true; type: 'streets'; result: MeshBuffers | null }
+  | { id: number; ok: true; type: 'streets'; result: { mesh: MeshBuffers | null; cover: ImageBitmap | null } }
   | { id: number; ok: true; type: 'area'; result: ImageBitmap }
   | { id: number; ok: false; error: string; aborted: boolean }

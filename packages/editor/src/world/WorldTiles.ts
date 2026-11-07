@@ -6,6 +6,8 @@ import {
   LineSegments,
   Frustum,
   Group,
+  DataTexture,
+  LinearFilter,
   LinearMipmapLinearFilter,
   Matrix4,
   Mesh,
@@ -33,6 +35,7 @@ import {
   tileWidth,
   toFrame,
   type Frame,
+  type BuildingColours,
   type GroundStyle,
   type MeshBuffers,
   type StreetColours,
@@ -139,7 +142,13 @@ interface BuildingEntry {
   wanted: number
   retryAt: number
   frame: Frame
+  /** Streets: where they cover the ground (see coverMask), for ground tiles not to draw themselves there. */
+  cover?: Texture | null
 }
+
+/** No cover: the ground draws itself everywhere. */
+const NO_COVER = new DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1)
+NO_COVER.needsUpdate = true
 
 const frustum = new Frustum()
 const projection = new Matrix4()
@@ -162,7 +171,7 @@ export class WorldTiles {
   private readonly arrived: (() => void)[] = []
   private readonly buildingMaterial: MeshStandardMaterial
   private readonly edgeMaterial = new LineBasicMaterial({ color: '#3a3d41' })
-  private readonly colours: { wall: [number, number, number]; roof: [number, number, number]; road: [number, number, number] }
+  private readonly colours: BuildingColours
   /** Lakes, rivers and the sea, and their reflection. */
   readonly water = new WorldWater()
   private outlines: boolean
@@ -193,7 +202,13 @@ export class WorldTiles {
       const c = new Color(css)
       return [c.r, c.g, c.b]
     }
-    this.colours = { wall: linear(options.wall ?? '#f3f2ef'), roof: linear(options.roof ?? '#e2e0db'), road: linear('#d0cec9') }
+    this.colours = {
+      wall: linear(options.wall ?? '#f3f2ef'),
+      roof: linear(options.roof ?? '#e2e0db'),
+      road: linear('#d0cec9'),
+      sidewalk: linear('#eeede8'),
+      curb: linear('#dfded9'),
+    }
     // As the editor's streets (see scene/materials.ts).
     this.streetColours = {
       road: linear('#d0cec9'),
@@ -202,9 +217,10 @@ export class WorldTiles {
       sidewalk: linear('#eeede8'),
       curb: linear('#dfded9'),
       marking: linear('#fdfdfc'),
-      // Block fills between the streets (see streetMesh): the ground's land and green colours.
-      land: linear('#e6e5e1'),
-      green: linear('#dfe2d8'),
+      // Block fills between the streets (see streetMesh): a touch of warmth against the paving, and a
+      // quiet green where the map has parks and greenery.
+      land: linear('#e3dfd3'),
+      green: linear('#d4dcc5'),
     }
     this.outlines = options.outlines ?? false
     // The map stops short of the poles (at 85°): caps close the globe there, sea in the north, ice in the south.
@@ -396,6 +412,15 @@ export class WorldTiles {
       entry.used = this.clock
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
+    }
+
+    // Ground under drawn streets leaves the covered parts out (its streets, paving and fills stand there).
+    for (const key of this.shownGround) {
+      const entry = this.ground.get(key)
+      const holders = entry?.mesh?.material instanceof MeshStandardMaterial ? (entry.mesh.material.userData.cover as { on: { value: number } } | undefined) : undefined
+      if (!entry || !holders) continue
+      const streets = entry.tile.z >= BUILDING_ZOOM ? this.streets.get(tileKey(ancestorAt(entry.tile, BUILDING_ZOOM))) : undefined
+      holders.on.value = streets?.cover && streets.mesh?.visible ? 1 : 0
     }
 
     // What to load: the ground, the coarsest first, and the ground under the camera (to keep above it); then buildings and streets.
@@ -635,6 +660,7 @@ export class WorldTiles {
     entry.high = result.high
     entry.heights = result.heights
     entry.state = 'ready'
+    this.coverGround(entry)
   }
 
   /**
@@ -646,12 +672,25 @@ export class WorldTiles {
     const parentTexel = { value: tile.z > 0 ? tileWidth({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) / TEXTURE_SIZE : 0 }
     const shown = { value: 1 }
     material.userData.morph = { parentTexel, shown }
+    // Where the streets' cover lies over this tile, the ground doesn't draw itself: our own surfaces stand there.
+    const dz = tile.z - BUILDING_ZOOM
+    const anc = ancestorAt(tile, BUILDING_ZOOM)
+    const scale = dz > 0 ? 1 / 2 ** dz : 1
+    const cover = {
+      on: { value: 0 },
+      map: { value: NO_COVER as Texture },
+      xf: { value: new Vector3(scale, dz > 0 ? tile.x * scale - anc.x : 0, dz > 0 ? tile.y * scale - anc.y : 0) },
+    }
+    material.userData.cover = cover
     material.customProgramCacheKey = () => 'world-ground-morph'
     material.onBeforeCompile = (shader) => {
       shader.uniforms.morphParentTexel = parentTexel
       shader.uniforms.morphShown = shown
       shader.uniforms.morphPixelsPerMetre = this.morph.pixelsPerMetre
       shader.uniforms.morphMaxError = this.morph.maxError
+      shader.uniforms.coverOn = cover.on
+      shader.uniforms.coverMap = cover.map
+      shader.uniforms.coverXf = cover.xf
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
@@ -678,11 +717,16 @@ varying float vMorphFine;`,
         .replace(
           '#include <common>',
           `#include <common>
+uniform float coverOn;
+uniform sampler2D coverMap;
+uniform vec3 coverXf;
 varying float vMorphFine;`,
         )
         .replace(
           '#include <map_fragment>',
           `#ifdef USE_MAP
+  // Under the streets, their paving and the block fills, the ground doesn't draw itself: ours stands there.
+  if (coverOn > 0.5 && texture2D(coverMap, vMapUv * coverXf.x + coverXf.yz).r > 0.5) discard;
   // Where the tile still has its parent's shape, its picture reads a coarser mip of its own map: what the
   // parent showed there, without holding the parent's texture (which may since be gone).
   vec4 sampledDiffuseColor = texture2D(map, vMapUv, (1.0 - vMorphFine) * 2.0);
@@ -692,10 +736,20 @@ varying float vMorphFine;`,
     }
   }
 
-  private addStreets(entry: BuildingEntry, result: MeshBuffers | null): void {
+  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: ImageBitmap | null }): void {
     entry.state = 'ready'
-    if (!result) return
-    const mesh = new Mesh(geometryOf(result, 'color'), this.streetMaterial)
+    if (result.cover) {
+      const texture = new Texture(result.cover)
+      texture.flipY = false
+      texture.generateMipmaps = false
+      texture.minFilter = LinearFilter
+      texture.needsUpdate = true
+      entry.cover = texture
+      // The ground tiles under this cover stop drawing themselves there.
+      for (const ground of this.ground.values()) this.coverGround(ground)
+    }
+    if (!result.mesh) return
+    const mesh = new Mesh(geometryOf(result.mesh, 'color'), this.streetMaterial)
     mesh.matrixAutoUpdate = false
     mesh.receiveShadow = true
     mesh.visible = false
@@ -703,6 +757,15 @@ varying float vMorphFine;`,
     this.place(mesh, entry.frame)
     this.group.add(mesh)
     entry.mesh = mesh
+  }
+
+  /** Points a ground tile's material at the cover of the street tile over it (see coverMask), if any. */
+  private coverGround(entry: GroundEntry): void {
+    if (!entry.mesh || entry.tile.z < BUILDING_ZOOM) return
+    const holders = (entry.mesh.material as MeshStandardMaterial).userData.cover as { map: { value: Texture } } | undefined
+    if (!holders) return
+    const streets = this.streets.get(tileKey(ancestorAt(entry.tile, BUILDING_ZOOM)))
+    holders.map.value = streets?.cover ?? NO_COVER
   }
 
   private addBuildings(entry: BuildingEntry, result: MeshBuffers | null): void {
@@ -742,6 +805,18 @@ varying float vMorphFine;`,
         disposeMesh(entry.mesh!)
         this.group.remove(entry.mesh!)
         map.delete(entry.key)
+        const cover = (entry as BuildingEntry).cover
+        if (cover) {
+          // Ground tiles pointing at this cover draw themselves again.
+          for (const ground of this.ground.values()) {
+            const holders = ground.mesh?.material instanceof MeshStandardMaterial ? (ground.mesh.material.userData.cover as { on: { value: number }; map: { value: Texture } } | undefined) : undefined
+            if (holders && holders.map.value === cover) {
+              holders.map.value = NO_COVER
+              holders.on.value = 0
+            }
+          }
+          cover.dispose()
+        }
       }
       // Entries never loaded and long out of view.
       for (const [key, entry] of map) if (!entry.mesh && entry.state !== 'loading' && entry.used < this.clock - 60) map.delete(key)
@@ -792,7 +867,10 @@ varying float vMorphFine;`,
     this.asked.clear()
     for (const entry of this.ground.values()) if (entry.mesh) disposeMesh(entry.mesh)
     for (const entry of this.buildings.values()) if (entry.mesh) disposeMesh(entry.mesh)
-    for (const entry of this.streets.values()) if (entry.mesh) disposeMesh(entry.mesh)
+    for (const entry of this.streets.values()) {
+      if (entry.mesh) disposeMesh(entry.mesh)
+      entry.cover?.dispose()
+    }
     this.streetMaterial.dispose()
     this.buildingMaterial.dispose()
     this.edgeMaterial.dispose()
