@@ -117,11 +117,20 @@
 .pw-dock {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--pe-gap) + 22px + env(safe-area-inset-bottom, 0px));
+  bottom: 0;
   transform: translateX(-50%);
   display: flex;
   justify-content: center;
-  width: min(440px, calc(100% - 2 * var(--pe-gap)));
+  width: auto;
+  max-width: calc(100% - 2 * var(--pe-gap));
+  padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  background: var(--pe-surface);
+  box-shadow: 0 -12px 32px rgba(20, 30, 45, 0.14);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
   z-index: 2;
 }
 
@@ -240,6 +249,29 @@
 
 .pw-view {
   z-index: 3;
+  left: auto;
+  right: var(--pe-gap);
+  width: auto;
+  min-width: 0;
+  overflow: visible;
+  border-radius: 999px;
+}
+
+.pw-view .pe-levels-header {
+  padding: 4px;
+}
+
+.pw-view .pe-view-options {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 264px;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: var(--pe-surface);
+  box-shadow: var(--pe-shadow);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
 }
 
 .pw-clouds {

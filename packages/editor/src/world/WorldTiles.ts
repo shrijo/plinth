@@ -208,6 +208,8 @@ export class WorldTiles {
       road: linear('#d0cec9'),
       sidewalk: linear('#eeede8'),
       curb: linear('#dfded9'),
+      // Pitched roofs take a quiet shade of their own, so the roofscape reads from above.
+      pitched: linear('#ddd6c9'),
     }
     // As the editor's streets (see scene/materials.ts).
     this.streetColours = {

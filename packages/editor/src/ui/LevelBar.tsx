@@ -13,13 +13,13 @@ import { FIRST_HOUR, formatHour, LAST_HOUR } from '../scene/daylight.ts'
 import { LENSES } from '../state.ts'
 import { BackIcon, ChevronIcon, LevelsIcon, LinkIcon, PlusIcon, SlidersIcon } from './icons.tsx'
 
-/** The panel at the top left: the view options on the site, or the levels of the open building. */
+/** The panel at the top left: the levels of the open building (on the site, the view options live in the toolbar's notch). */
 export function LevelBar() {
   const site = useEditor((s) => s.mode === 'site')
-  return site ? <SiteBar /> : <BuildingLevels />
+  return site ? null : <BuildingLevels />
 }
 
-function ViewOptions({ site }: { site: boolean }) {
+export function ViewOptions({ site }: { site: boolean }) {
   const ctx = useEditorContext()
   const showAbove = useEditor((s) => s.showLevelsAbove)
   const outlines = useEditor((s) => s.showOutlines)
@@ -111,28 +111,6 @@ function ViewOptions({ site }: { site: boolean }) {
 }
 
 /** On the site: the view options, behind a button. */
-function SiteBar() {
-  const [open, setOpen] = useState(false)
-  return (
-    <section className="pe-levels" aria-label="View">
-      <div className="pe-levels-header">
-        <button
-          type="button"
-          className="pe-levels-toggle"
-          aria-expanded={open}
-          title={open ? 'Hide view options' : 'View options'}
-          onClick={() => setOpen(!open)}
-        >
-          <SlidersIcon />
-          <span className="pe-levels-title">View</span>
-          <ChevronIcon open={open} />
-        </button>
-      </div>
-      {open && <ViewOptions site />}
-    </section>
-  )
-}
-
 /**
  * The open building's stack of levels, top floor first, under a way back
  * to the site. Click a level to work on it; click it again (or "Whole

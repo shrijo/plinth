@@ -1,4 +1,5 @@
 import earcut from 'earcut'
+import { FLAT_ROOF, ringArea, roofGeometry, roofHeight, type MeshData, type MultiPolygon } from '@plinth/core'
 import type { BuildingFeature, Line, RoadFeature } from './features.ts'
 import { clipLine, clipShape, ringCentroid, UNIT, type Rect } from './clip.ts'
 import type { Ground } from './ground.ts'
@@ -365,6 +366,8 @@ function upIn(frame: Frame, lon: number, lat: number): Vec3 {
 export interface BuildingColours {
   wall: [number, number, number]
   roof: [number, number, number]
+  /** Pitched roofs (see pitchedRoof): a shade of their own, so the roofscape reads. */
+  pitched?: [number, number, number]
   /** Bridge decks: their carriageway, their raised sidewalks and the curb faces, as the streets'. */
   road?: [number, number, number]
   sidewalk?: [number, number, number]
@@ -439,7 +442,12 @@ export function buildingMesh(
         return on(ax, bx, rect.minX) || on(ax, bx, rect.maxX) || on(ay, by, rect.minY) || on(ay, by, rect.maxY)
       })
     })
-    writer.prism(frame, ground, bottom, top, building.minHeight > 0, colours, seams)
+    // A pitched roof where the building's shape says a house (the tiles carry no roof tags, so this is an
+    // assumption: small, compact, low). The walls stop under it and the roof rises to the mapped height. A
+    // building cut by the tile's edge stays flat, so the two tiles' halves can't disagree about the ridge.
+    const cut = seams.some((ring) => ring.some(Boolean))
+    const rise = !cut && building.minHeight === 0 ? pitchedRoof(frame, ground, building.height, top, colours, writer) : null
+    writer.prism(frame, ground, bottom, top - (rise ?? 0), building.minHeight > 0, colours, seams)
   }
   for (const road of options.roads ?? []) {
     if (!road.bridge || road.tunnel) continue
@@ -533,6 +541,80 @@ function bridge(
 
 /** A street bridge's sidewalks, either side of its deck (metres). */
 const BRIDGE_WALK = 1.8
+
+/** A house roof's usual pitch (degrees), and what counts as a house (metres, square metres). */
+const ROOF_PITCH = 34
+const HOUSE_AREA = [25, 650] as const
+const HOUSE_HEIGHT = 20
+
+/**
+ * A pitched roof for a building that reads as a house: gabled when its
+ * outline is simple, hipped otherwise (the straight skeleton takes any
+ * shape). Built flat in metres round the building's middle (a building is
+ * small against the Earth), with the mapped height as the ridge: returns
+ * how far the roof rises above the walls, or null for a flat roof.
+ */
+function pitchedRoof(
+  frame: Frame,
+  ground: readonly number[][],
+  height: number,
+  top: number,
+  colours: BuildingColours,
+  writer: MeshWriter,
+): number | null {
+  if (!colours.pitched || height > HOUSE_HEIGHT || ground.length === 0) return null
+  const outer = ground[0]!
+  if (outer.length < 6 || outer.length > 32) return null
+  // The outline in metres round its middle.
+  let lon0 = 0
+  let lat0 = 0
+  const corners = outer.length / 2
+  for (let i = 0; i < corners; i++) {
+    lon0 += outer[i * 2]! / corners
+    lat0 += outer[i * 2 + 1]! / corners
+  }
+  const east = 111320 * Math.max(Math.cos((lat0 * Math.PI) / 180), 0.05)
+  const north = 111320
+  const rings = ground.map((ring) => {
+    const points: [number, number][] = []
+    for (let i = 0; i + 1 < ring.length; i += 2) points.push([(ring[i]! - lon0) * east, (ring[i + 1]! - lat0) * north])
+    return points
+  })
+  const shaped: MultiPolygon = [rings]
+  const area = Math.abs(ringArea(shaped[0]![0]!))
+  if (area < HOUSE_AREA[0] || area > HOUSE_AREA[1]) return null
+  // Compact, like a house, not a long shed or a sprawling hall.
+  let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const [x, y] of shaped[0]![0]!) {
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+  }
+  if (area / Math.max((maxX - minX) * (maxY - minY), 1) < 0.35) return null
+
+  try {
+    // A simple outline gets a gable; anything else (an L, a courtyard) a hip, which any shape can carry.
+    const kind = shaped[0]!.length === 1 && corners <= 6 ? 'gable' : 'hip'
+    const roof = { ...FLAT_ROOF, kind, pitch: ROOF_PITCH, overhang: 0.4, thickness: 0.2 } as const
+    let rise = roofHeight(shaped, roof)
+    if (!Number.isFinite(rise) || rise < 0.8) return null
+    // The mapped height is the ridge: the roof may take at most a share of it.
+    const most = Math.min(6, Math.max(2, height * 0.45))
+    let pitch: number = ROOF_PITCH
+    if (rise > most) {
+      pitch = (Math.atan((Math.tan((ROOF_PITCH * Math.PI) / 180) * most) / rise) * 180) / Math.PI
+      rise = most
+    }
+    const built = roofGeometry(shaped, 0, { ...roof, pitch }, 0.3)
+    if (built.roof.indices.length === 0) return null
+    writer.meshAt(frame, lon0, lat0, top - rise, built.roof, colours.pitched)
+    if (built.walls.indices.length > 0) writer.meshAt(frame, lon0, lat0, top - rise, built.walls, colours.wall)
+    return rise
+  } catch {
+    return null
+  }
+}
 
 /** A ring turned so it runs anticlockwise on the map (outer) or clockwise (hole). */
 function orient(ring: Line, outer: boolean): Line {
@@ -644,6 +726,24 @@ class MeshWriter {
   }
 
   /** A slab along points (deck heights given), `width` wide and `thickness` deep: top, sides and underside. */
+  /** An editor-space mesh (x east, y up, z south; metres) placed at a spot on the globe, lifted to a height. */
+  meshAt(frame: Frame, lon: number, lat: number, lift: number, data: MeshData, colour: readonly number[]): void {
+    const east = 111320 * Math.max(Math.cos((lat * Math.PI) / 180), 0.05)
+    const north = 111320
+    const base = this.positions.length / 3
+    const count = data.positions.length / 3
+    for (let i = 0; i < count; i++) {
+      const x = data.positions[i * 3]!
+      const y = data.positions[i * 3 + 1]!
+      const z = data.positions[i * 3 + 2]!
+      place(frame, ecefFromLonLat(lon + x / east, lat - z / north, lift + y), this.scratch, 0)
+      this.positions.push(this.scratch[0]!, this.scratch[1]!, this.scratch[2]!)
+      this.normals.push(data.normals[i * 3]!, data.normals[i * 3 + 1]!, data.normals[i * 3 + 2]!)
+      this.colors.push(colour[0]!, colour[1]!, colour[2]!)
+    }
+    for (let i = 0; i < data.indices.length; i++) this.indices.push(base + data.indices[i]!)
+  }
+
   deck(frame: Frame, points: { lon: number; lat: number; top: number }[], width: number, thickness: number, colours: BuildingColours, offset = 0): void {
     if (points.length < 2) return
     const at = (lon: number, lat: number, h: number): Vec3 => {

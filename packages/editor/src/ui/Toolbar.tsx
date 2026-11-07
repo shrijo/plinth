@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { redo, setTool, toggleSnapping, toggleView, undo } from '../actions.ts'
 import { useEditor, useEditorContext, useHistory } from '../context.ts'
 import type { Tool } from '../state.ts'
+import { ViewOptions } from './LevelBar.tsx'
 import {
   DoorIcon,
   MagnetIcon,
@@ -11,6 +12,7 @@ import {
   PerspectiveIcon,
   RedoIcon,
   SelectIcon,
+  SlidersIcon,
   StreetIcon,
   TopViewIcon,
   UndoIcon,
@@ -47,9 +49,15 @@ export function Toolbar() {
   const snapping = useEditor((s) => s.snap.enabled)
   const site = useEditor((s) => s.mode === 'site')
   const { canUndo, canRedo } = useHistory()
+  const [viewOpen, setViewOpen] = useState(false)
 
   return (
     <div className="pe-toolbar" role="toolbar" aria-label="Tools">
+      {site && viewOpen && (
+        <div className="pe-toolbar-pop" role="group" aria-label="View options">
+          <ViewOptions site />
+        </div>
+      )}
       {(site ? SITE_TOOLS : BUILDING_TOOLS).map((t) => (
         <ToolButton
           key={t.tool}
@@ -86,6 +94,11 @@ export function Toolbar() {
       >
         <MagnetIcon />
       </ToolButton>
+      {site && (
+        <ToolButton label="View options" short="View" on={viewOpen} onClick={() => setViewOpen(!viewOpen)}>
+          <SlidersIcon />
+        </ToolButton>
+      )}
     </div>
   )
 }
@@ -103,7 +116,7 @@ function ToolButton({
   label: string
   /** Shown under the icon, if shorter than the label. */
   short?: string
-  shortcut: string
+  shortcut?: string
   /** The tool in use. */
   active?: boolean
   /** For a switch: whether it's on. */
@@ -120,7 +133,7 @@ function ToolButton({
       data-on={on || undefined}
       aria-pressed={on ?? active}
       aria-label={label}
-      title={`${label} (${shortcut})`}
+      title={shortcut ? `${label} (${shortcut})` : label}
       disabled={disabled}
       onClick={onClick}
     >
