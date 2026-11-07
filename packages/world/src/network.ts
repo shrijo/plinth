@@ -63,6 +63,29 @@ interface Split {
   point: number
 }
 
+/**
+ * Whether a line is a roundabout's ring: closed, small, and round. Map
+ * tiles drop junction=roundabout (and the one-way running it implies), so
+ * the ring's shape is what gives it away.
+ */
+export function looksLikeRoundabout(points: readonly Vec2[]): boolean {
+  if (points.length < 5) return false
+  const first = points[0]!
+  const last = points[points.length - 1]!
+  if (Math.hypot(first.x - last.x, first.y - last.y) > 0.5) return false
+  let length = 0
+  for (let i = 1; i < points.length; i++) length += Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y)
+  if (length < 15 || length > 110) return false
+  const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length
+  const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length
+  const radii = points.map((p) => Math.hypot(p.x - cx, p.y - cy))
+  const most = Math.max(...radii)
+  return most <= 20 && Math.min(...radii) >= most * 0.45
+}
+
+/** A roundabout's ring shorter round than this (metres) collapses into one junction: too small to draw as a circle. */
+const TINY_ROUNDABOUT = 52
+
 /** Closer than this (metres) to a segment's end, a meeting is at that end. */
 const NEAR = 0.6
 /** Grid cells for finding segments near each other (metres). */
@@ -249,6 +272,72 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
         }
       }
     }
+  }
+  // A tiny roundabout collapses into one junction (as osm2streets does): its ring is shorter round than a
+  // junction is wide, so drawing the circle would leave no room for the arms. Its nodes become one point at
+  // its centre; the ring's segments turn into loops there and drop out.
+  {
+    const leaving = new Map<number, number[]>()
+    segments.forEach((s, k) => {
+      if (!s.props.oneway) return
+      const list = leaving.get(s.a)
+      if (list) list.push(k)
+      else leaving.set(s.a, [k])
+    })
+    const seglen = (k: number) => {
+      const s = segments[k]!
+      return Math.hypot(points[s.b]!.x - points[s.a]!.x, points[s.b]!.y - points[s.a]!.y)
+    }
+    const done = new Uint8Array(segments.length)
+    segments.forEach((s, start) => {
+      if (!s.props.oneway || done[start]) return
+      const path = [start]
+      let node = s.b
+      let length = seglen(start)
+      for (let guard = 0; guard < 24 && length <= TINY_ROUNDABOUT; guard++) {
+        if (node === s.a) {
+          // A cycle: one junction if it's small AND round. A short one-way pair out and back (the halves of
+          // a divided road) is a cycle too, but encloses almost nothing; a ring encloses like a circle.
+          const nodes = path.map((k) => segments[k]!.a)
+          const cx = nodes.reduce((sum, i) => sum + points[i]!.x, 0) / nodes.length
+          const cy = nodes.reduce((sum, i) => sum + points[i]!.y, 0) / nodes.length
+          let area = 0
+          for (let i = 0; i < nodes.length; i++) {
+            const p = points[nodes[i]!]!
+            const q = points[nodes[(i + 1) % nodes.length]!]!
+            area += p.x * q.y - q.x * p.y
+          }
+          const round = Math.abs(area / 2) >= ((length * length) / (4 * Math.PI)) * 0.55
+          if (round && nodes.length >= 4 && nodes.every((i) => Math.hypot(points[i]!.x - cx, points[i]!.y - cy) <= 10)) {
+            for (const i of nodes) union(nodes[0]!, i)
+            points[find(nodes[0]!)] = { x: cx, y: cy }
+            for (const k of path) done[k] = 1
+          }
+          break
+        }
+        const nexts = (leaving.get(node) ?? []).filter((k) => !path.includes(k) && !done[k])
+        if (nexts.length === 0) break
+        // Carrying on round the ring: the straightest of the ways out.
+        const before = segments[path[path.length - 1]!]!
+        const dx = points[before.b]!.x - points[before.a]!.x
+        const dy = points[before.b]!.y - points[before.a]!.y
+        let next = nexts[0]!
+        let best = -Infinity
+        for (const k of nexts) {
+          const o = segments[k]!
+          const ox = points[o.b]!.x - points[o.a]!.x
+          const oy = points[o.b]!.y - points[o.a]!.y
+          const along = (dx * ox + dy * oy) / (Math.hypot(dx, dy) * Math.hypot(ox, oy) || 1)
+          if (along > best) {
+            best = along
+            next = k
+          }
+        }
+        path.push(next)
+        length += seglen(next)
+        node = segments[next]!.b
+      }
+    })
   }
   const degree = degrees()
   const grid = new Map<string, number[]>()

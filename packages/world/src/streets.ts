@@ -4,7 +4,7 @@ import type { RoadFeature, RoadKind, Shape } from './features.ts'
 import type { Ground } from './ground.ts'
 import { ecefFromLonLat, type Frame } from './geo.ts'
 import { tileFrame, tileWidth, type MeshBuffers } from './mesh.ts'
-import { tidyNetwork, type StreetLine } from './network.ts'
+import { looksLikeRoundabout, tidyNetwork, type StreetLine } from './network.ts'
 import { streetFromTags } from './site.ts'
 import { tileLat, type TileId } from './tiles.ts'
 
@@ -105,7 +105,9 @@ export function streetMesh(
     const line = simplify(road.line, 0.4 / metres)
     const points: Vec2[] = []
     for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
-    lines.push({ points, props })
+    // A roundabout's ring: the tiles drop junction=roundabout and the one-way, single-lane running it implies.
+    if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
+    else lines.push({ points, props })
   }
   if (lines.length === 0 && squares.length === 0) return null
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the

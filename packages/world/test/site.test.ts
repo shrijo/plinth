@@ -170,6 +170,12 @@ describe('streets from tags', () => {
     expect(streetFromTags({ highway: 'trunk' })!.lanes).toBe(2)
   })
 
+  it('reads a roundabout: one way, one lane, by definition', () => {
+    const props = streetFromTags({ highway: 'tertiary', junction: 'roundabout' })!
+    expect(props.oneway).toBe(true)
+    expect(props.lanes).toBe(1)
+  })
+
   it('reads widths: est_width, sidewalk and cycle lane widths', () => {
     expect(streetFromTags({ highway: 'residential', est_width: '7' })!.laneWidth).toBeCloseTo(3.5)
     const walks = streetFromTags({ highway: 'residential', 'sidewalk:left:width': '3.2' })!

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { PlinthDocument } from '../document.ts'
-import { CURB_RADIUS } from '../geometry/junctions.ts'
 import { pointInRegion, regionArea } from '../geometry/regions.ts'
 import { mergeStreetRegions, streetGeometry, type StreetGeometry } from '../geometry/streets.ts'
 import type { Snapshot as SnapshotOf } from '../model.ts'
@@ -89,9 +88,10 @@ describe('streets', () => {
     doc.transact((tx) => insertStreet(tx, { x: -50, y: 0 }, { x: 50, y: 0 }))
     doc.transact((tx) => insertStreet(tx, { x: 0, y: -50 }, { x: 0, y: 50 }))
     const g = merged(doc.getSnapshot())
-    // Two 100 m roads 6.5 m wide crossing (the middle square counts once),
-    // plus four kerb corners of radius r: r² (1 - π/4) each.
-    const corners = 4 * CURB_RADIUS ** 2 * (1 - Math.PI / 4)
+    // Two 100 m roads 6.5 m wide crossing (the middle square counts once), plus four kerb corners of
+    // radius r: r² (1 - π/4) each. The radius is sized to the narrowest road: 0.9 of its half width.
+    const r = 3.25 * 0.9
+    const corners = 4 * r ** 2 * (1 - Math.PI / 4)
     const area = regionArea(g.road)
     expect(area).toBeGreaterThan(2 * 6.5 * 100 - 6.5 * 6.5 + corners * 0.95)
     expect(area).toBeLessThan(2 * 6.5 * 100 - 6.5 * 6.5 + corners * 1.02)
@@ -112,13 +112,14 @@ describe('streets', () => {
     expect(g.sidewalks).toHaveLength(2)
     // The outside of the bend is round, not a square corner.
     expect(pointInRegion({ x: -3, y: -3 }, g.road)).toBe(false)
-    // Halfway round, the road is still 6.5 m wide: the inside kerb has radius r
-    // round a centre at (3.25 + r, 3.25 + r), the outside r + 6.5.
-    const c = 3.25 + CURB_RADIUS
+    // Halfway round, the road is still 6.5 m wide: the inside kerb has radius r (0.9 of the road's half
+    // width) round a centre at (3.25 + r, 3.25 + r), the outside r + 6.5.
+    const r = 3.25 * 0.9
+    const c = 3.25 + r
     const diagonal = (d: number) => ({ x: c - d / Math.SQRT2, y: c - d / Math.SQRT2 })
-    expect(pointInRegion(diagonal(CURB_RADIUS + 0.2), g.road)).toBe(true)
-    expect(pointInRegion(diagonal(CURB_RADIUS + 6.3), g.road)).toBe(true)
-    expect(pointInRegion(diagonal(CURB_RADIUS + 6.7), g.road)).toBe(false)
+    expect(pointInRegion(diagonal(r + 0.2), g.road)).toBe(true)
+    expect(pointInRegion(diagonal(r + 6.3), g.road)).toBe(true)
+    expect(pointInRegion(diagonal(r + 6.7), g.road)).toBe(false)
   })
 
   it('merges a junction with its streets at awkward coordinates', () => {

@@ -354,7 +354,10 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   if (highway === 'service' && tags.service && tags.service !== 'alley') return null
   const base = STREET_TYPES[kind].props
   const props: StreetProps = { ...DEFAULT_STREET, ...base, crosswalkA: false, crosswalkB: false }
-  const oneway = tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.oneway === '-1' || highway === 'motorway'
+  // A roundabout's ring is one way by definition (junction=roundabout implies it), one lane unless tagged.
+  const roundabout = tags.junction === 'roundabout' || tags.junction === 'circular'
+  const oneway =
+    tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.oneway === '-1' || highway === 'motorway' || roundabout
   props.oneway = oneway && kind !== 'pedestrian'
 
   // Lanes: the tag, or the directional tags summed (lanes:both_ways is a middle turning lane).
@@ -364,6 +367,7 @@ export function streetFromTags(tags: Record<string, string>): StreetProps | null
   const lanes =
     tagNumber(tags.lanes) ?? (forward !== null || backward !== null ? (forward ?? 0) + (oneway ? 0 : backward ?? 0) + (bothWays ?? 0) : null)
   if (lanes !== null && lanes >= 1) props.lanes = Math.min(Math.round(lanes), 8)
+  else if (roundabout) props.lanes = 1
   // Untagged: one lane one way, but 2 on a motorway or a divided trunk road's carriageway.
   else if (oneway) props.lanes = kind === 'motorway' || kind === 'trunk' ? Math.max(props.lanes, 2) : 1
   const link = (tags.highway ?? '').endsWith('_link')

@@ -244,4 +244,47 @@ describe('tidying map data into a street network', () => {
       expect(street.sidewalkRight).toBeLessThan(2.4)
     }
   })
+
+  it('collapses a tiny roundabout into one junction', () => {
+    // An octagon ring, radius 7 m (44 m round), one way, with three arms.
+    const ring: [number, number][] = []
+    for (let k = 0; k <= 8; k++) ring.push([7 * Math.cos((k * Math.PI) / 4), 7 * Math.sin((k * Math.PI) / 4)])
+    const arm = (angle: number): [number, number][] => [
+      [40 * Math.cos(angle), 40 * Math.sin(angle)],
+      [7 * Math.cos(angle), 7 * Math.sin(angle)],
+    ]
+    const network = tidyNetwork([
+      line(ring, { ...STREET_TYPES.residential.props, oneway: true, lanes: 1 }),
+      line(arm(0)),
+      line(arm(Math.PI / 2)),
+      line(arm(Math.PI)),
+    ])
+    const streets = Object.values(network.streets)
+    // The ring is gone; the three arms meet at one point, the roundabout's centre.
+    expect(streets).toHaveLength(3)
+    for (const street of streets) {
+      const ends = [network.nodes[street.a]!, network.nodes[street.b]!]
+      expect(ends.some((p) => Math.hypot(p.x, p.y) < 1.5)).toBe(true)
+    }
+  })
+
+  it('keeps a real roundabout as a ring', () => {
+    // Radius 12 m (75 m round): big enough to draw as a circle.
+    const ring: [number, number][] = []
+    for (let k = 0; k <= 12; k++) ring.push([12 * Math.cos((k * Math.PI) / 6), 12 * Math.sin((k * Math.PI) / 6)])
+    const arm = (angle: number): [number, number][] => [
+      [40 * Math.cos(angle), 40 * Math.sin(angle)],
+      [12 * Math.cos(angle), 12 * Math.sin(angle)],
+    ]
+    const network = tidyNetwork([
+      line(ring, { ...STREET_TYPES.residential.props, oneway: true, lanes: 1 }),
+      line(arm(0)),
+      line(arm(Math.PI)),
+      line(arm((3 * Math.PI) / 2)),
+    ])
+    const streets = Object.values(network.streets)
+    // The ring's segments are still there, one way.
+    expect(streets.length).toBeGreaterThan(10)
+    expect(streets.filter((s) => s.oneway).length).toBeGreaterThan(8)
+  })
 })

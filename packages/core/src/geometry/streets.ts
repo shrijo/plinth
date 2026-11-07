@@ -433,9 +433,10 @@ function build(snapshot: Snapshot): StreetGeometry {
         limit: polylineLength(way.line) * (isJunction(otherEnd) ? 0.5 : 0.95),
       }
     })
-    // Corners sized to the streets: a lane's turn is tighter than a boulevard's.
-    const narrowest = Math.min(...ends.map((e) => Math.min(e.outer.left, e.outer.right)))
-    const junction = buildJunction(node, ends, Math.min(Math.max(narrowest * 1.2, 2.5), CURB_RADIUS))
+    // Corners sized like real kerbs: from the narrowest road that meets here (its sidewalks don't make the
+    // turn wider), tighter for a lane than for an avenue, so the network stays crisp.
+    const narrowest = Math.min(...ends.map((e) => Math.min(e.road.left, e.road.right)))
+    const junction = buildJunction(node, ends, Math.min(Math.max(narrowest * 0.9, 1.5), CURB_RADIUS))
     const shared = meeting.every(({ way }) => ways[way]!.shared)
     pieces.push({
       key: `junction:${nodeId}`,

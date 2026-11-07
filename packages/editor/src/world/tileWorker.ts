@@ -88,7 +88,16 @@ const segmentsFor = (tile: TileId, wanted: number) => (tile.z < 4 ? 48 : tile.z 
 
 /** Water gets a surface of its own from this zoom; further out it's painted. */
 const WATER_ZOOM = 10
-/** Streets get a level bed from this zoom (the finest map data's). */
+/**
+ * The ground is shaped (street beds, fine elevation) from this zoom on.
+ * Low enough that the shaped levels cover every view where streets and
+ * buildings are visible: a tile and its parent then describe the same
+ * surface, and the slide between them (GroundMesh.morph) moves nothing
+ * that shows. Below it, tiles are far enough away that beds (under a
+ * metre) are smaller than a pixel.
+ */
+const SHAPE_ZOOM = 12
+/** From this zoom the ground's features come from the finest map data, so parent and child share them exactly. */
 const ROAD_ZOOM = 14
 
 /**
@@ -97,20 +106,23 @@ const ROAD_ZOOM = 14
  * the same function on both sides of every seam.
  */
 async function heightsFor(tile: TileId, signal: AbortSignal): Promise<HeightTile[]> {
-  if (tile.z < ROAD_ZOOM) return [await heightsOf(tile, signal)].filter((h): h is HeightTile => h !== null)
+  if (tile.z < SHAPE_ZOOM) return [await heightsOf(tile, signal)].filter((h): h is HeightTile => h !== null)
+  // Fine elevation: two zooms deeper than the tile (up to the data's finest), so a tile and its parent read
+  // almost the same heights and the slide between them moves nothing that shows.
+  const zoom = Math.min(TERRAIN_MAX_ZOOM, tile.z + 2)
   const b = tileBounds(tile)
   const margin = 70 / 111320
   const wide = margin / Math.max(Math.cos((((b.north + b.south) / 2) * Math.PI) / 180), 0.05)
   // The tile itself first: most points are on it.
-  const own = ancestorAt(tile, TERRAIN_MAX_ZOOM)
-  const around = tilesCovering({ west: b.west - wide, east: b.east + wide, south: b.south - margin, north: b.north + margin }, TERRAIN_MAX_ZOOM)
-  const tiles = tile.z >= TERRAIN_MAX_ZOOM ? [own, ...around.filter((t) => tileKey(t) !== tileKey(own))] : around
+  const own = ancestorAt(tile, zoom)
+  const around = tilesCovering({ west: b.west - wide, east: b.east + wide, south: b.south - margin, north: b.north + margin }, zoom)
+  const tiles = tile.z >= zoom ? [own, ...around.filter((t) => tileKey(t) !== tileKey(own))] : around
   return (await Promise.all(tiles.map((t) => heightsOf(t, signal)))).filter((h): h is HeightTile => h !== null)
 }
 
 /** The ground a tile is built on: shaped for streets and water close up. */
 function groundFor(tile: TileId, heights: HeightTile[], data: TileFeatures | null): Ground {
-  return makeGround(heights, tile.z >= WATER_ZOOM ? data : null, { roads: tile.z >= ROAD_ZOOM })
+  return makeGround(heights, tile.z >= WATER_ZOOM ? data : null, { roads: tile.z >= SHAPE_ZOOM })
 }
 
 /**
