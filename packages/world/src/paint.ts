@@ -48,7 +48,8 @@ export const GROUND_STYLE: GroundStyle = {
   // As the site editor's streets: grey asphalt, pale sidewalks with a curb, white paint.
   road: '#d0cec9',
   majorRoad: '#cbc9c4',
-  sidewalk: '#eeede8',
+  // As the raised block fills near by: in town the pavement is the blocks' plane.
+  sidewalk: '#e3dfd3',
   curb: '#d9d7d1',
   marking: '#fbfbf9',
   path: '#eceae5',

@@ -2,6 +2,7 @@ import earcut from 'earcut'
 import {
   CURB_HEIGHT,
   difference,
+  intersection,
   labelPoint,
   layerStreetSurfaces,
   regionArea,
@@ -45,13 +46,13 @@ export interface StreetColours {
 
 /** How far each street's solid reaches below its surface (metres). */
 const DEPTH = 4
-/** Block fills lie this far over the ground, and follow it this finely (metres). */
-const FILL = 0.14
-const FILL_STEP = 11
 /** Road surfaces lie this far above the street bed; lanes and paint a little higher. */
 const ROAD = 0.06
 const LANES = 0.068
 const PAINT = 0.075
+/** The walking plane: block fills and paved squares stand at kerb height over the bed, and follow it this finely (metres). */
+const KERB = ROAD + CURB_HEIGHT
+const FILL_STEP = 11
 /** Surfaces are split to this length (metres) and sides to this, so they follow the bed (smooth over 18 m). */
 const STEP = 14
 const SIDE_STEP = 24
@@ -192,19 +193,19 @@ export function streetMesh(
     }
     return points
   }
-  // Squares are paving like sidewalks: roads through them cut them, sidewalks along them merge into them.
+  // Squares are paved surfaces of their own (the shared layer): roads through them cut them.
   const paving: StreetPiece[] = squares.map((shape, i) => {
     const outer = ring(shape.outer)
     return {
       key: `square:${i}`,
-      road: [],
+      road: [[outer, ...shape.holes.map(ring)]],
       bike: [],
       parking: [],
-      sidewalks: [[outer, ...shape.holes.map(ring)]],
+      sidewalks: [],
       markings: [],
       crosswalks: [],
       centre: { x: outer[0]?.[0] ?? 0, y: outer[0]?.[1] ?? 0 },
-      shared: false,
+      shared: true,
     }
   })
   const surfaces = layerStreetSurfaces([...geometry.pieces, ...paving])
@@ -217,15 +218,16 @@ export function streetMesh(
   writer.slab(laid(surfaces.road), ROAD, colours.road, colours.curb)
   writer.slab(laid(surfaces.bike), LANES, colours.bike, colours.curb)
   writer.slab(laid(surfaces.parking), LANES, colours.parking, colours.curb)
-  // A living street or pedestrian zone is paved like a sidewalk, wall to wall, a little above the road.
-  writer.slab(laid(surfaces.paved), ROAD + 0.04, colours.sidewalk, colours.curb)
-  writer.slab(laid(surfaces.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
-  // In town, the blocks between the streets are filled: a skin on the ground that meets the streets' edges
-  // exactly (the fill is the plan's complement, and both stand on the same bed-blended ground), so the terrain
-  // fits the streets instead of poking through beside them.
+  // Living streets, pedestrian zones and squares are paved level with the blocks: one walking plane.
+  writer.slab(laid(surfaces.paved), KERB, colours.sidewalk, colours.curb)
+  // There are no sidewalk strips of their own: in town the raised fills are the pavement (below), and the
+  // sidewalk widths say how far the kerb stands from the carriageway.
+  // The blocks between the streets, raised to kerb height: one plane from the kerbs to the buildings,
+  // wrapping the kerbs' arcs at junctions (the fill is the road plan's complement), green where the map has
+  // parks and greenery. So the terrain is ours wherever the city is.
   if (ground.town && colours.land) {
     const bounded: { polygon: MultiPolygon[number]; box: PlanRect }[] = []
-    for (const region of [surfaces.road, surfaces.bike, surfaces.parking, surfaces.paved, surfaces.sidewalks]) {
+    for (const region of [surfaces.road, surfaces.bike, surfaces.parking, surfaces.paved]) {
       for (const polygon of region) bounded.push({ polygon, box: boundsOfRing(polygon[0]!) })
     }
     const waterPlan: MultiPolygon = ground.water.map((shape) => {
@@ -258,14 +260,27 @@ export function streetMesh(
         const cell: MultiPolygon = [[[[box.minX, box.minY], [box.maxX, box.minY], [box.maxX, box.maxY], [box.minX, box.maxY]]]]
         for (const face of difference(cell, ...near, ...water)) {
           const area = regionArea([face])
-          // A block, not open country: bounded, between streets.
-          if (area < 4 || area > 60000) continue
+          if (area < 4) continue
+          if (area > 60000) {
+            // Open country within town (a big park, the lakefront): no block fill, but the streets along it
+            // keep their pavements — the sidewalk strips of the plan, raised like the fills.
+            for (const strip of intersection([face], surfaces.sidewalks)) {
+              if (regionArea([strip]) < 2) continue
+              const at = labelPoint([strip])
+              if (!at) continue
+              const kept = cut([strip])
+              if (kept.length === 0) continue
+              cover.push(...kept)
+              writer.slab(kept, KERB, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
+            }
+            continue
+          }
           const at = labelPoint([face])
           if (!at) continue
           const fill = cut([face])
           if (fill.length === 0) continue
           cover.push(...fill)
-          writer.top(fill, FILL, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, FILL_STEP)
+          writer.slab(fill, KERB, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
         }
       }
     }
@@ -406,9 +421,9 @@ class StreetWriter {
    * A street surface as a solid: its top at a height over the bed, and its
    * sides down into the ground (no bottom: nobody sees it).
    */
-  slab(region: MultiPolygon, lift: number, colour: readonly number[], side: readonly number[]): void {
+  slab(region: MultiPolygon, lift: number, colour: readonly number[], side: readonly number[], step = STEP): void {
     if (region.length === 0) return
-    this.top(region, lift, colour)
+    this.top(region, lift, colour, step)
     for (const polygon of region) {
       for (const [r, ring] of polygon.entries()) {
         const open = orient(openRing(ring), r === 0)
