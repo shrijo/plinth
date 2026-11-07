@@ -403,7 +403,10 @@ function Effects({
     if (!pass || !controls || !(camera instanceof PerspectiveCamera)) return
     const seen = 2 * Math.min(controls.view.range, controls.altitude() * 3) * Math.tan((camera.fov * Math.PI) / 360)
     const radius = Math.min(Math.max(seen * 0.03, 0.8), 60)
-    if (Math.abs(radius - pass.configuration.aoRadius) > pass.configuration.aoRadius * 0.08) pass.configuration.aoRadius = radius
+    // Eased a little every frame: a step change repaints the whole shading at once and reads as a flicker,
+    // felt most near the ground, where the view's distance shifts fastest.
+    const current = pass.configuration.aoRadius
+    if (Math.abs(radius - current) > current * 0.002) pass.configuration.aoRadius = current + (radius - current) * 0.15
   })
   return (
     <EffectComposer multisampling={4} renderPriority={1}>
@@ -613,7 +616,8 @@ function ExplorerScene({
     const horizon = Math.sqrt(Math.max(fromCentre * fromCentre - surface * surface, 0))
     const near = Math.min(Math.max(altitude * 0.02, 0.3), 2e5)
     const far = Math.min(horizon + 300e3, 6e7)
-    if (Math.abs(camera.near - near) > near * 0.2 || Math.abs(camera.far - far) > far * 0.05) {
+    // Kept continuously: stepping the planes shifts every depth for a frame, a flicker while descending.
+    if (Math.abs(camera.near - near) > near * 0.005 || Math.abs(camera.far - far) > far * 0.005) {
       camera.near = near
       camera.far = far
       camera.updateProjectionMatrix()

@@ -59,8 +59,8 @@ function Occlusion() {
     const viewHeight = 2 * distance * Math.tan((fov * Math.PI) / 360)
     const radius = Math.min(Math.max(viewHeight * (top ? TOP_RADIUS_SHARE : RADIUS_SHARE), MIN_RADIUS), MAX_RADIUS)
     const current = pass.configuration.aoRadius
-    // Changed only by noticeable steps: each change resets the noise pattern.
-    if (Math.abs(radius - current) > current * 0.08) pass.configuration.aoRadius = radius
+    // Eased a little every frame: a step change repaints the whole shading at once and reads as a flicker.
+    if (Math.abs(radius - current) > current * 0.002) pass.configuration.aoRadius = current + (radius - current) * 0.15
   })
 
   return (
