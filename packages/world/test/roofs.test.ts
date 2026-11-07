@@ -46,6 +46,27 @@ describe('roofs from assumptions', () => {
     }
   })
 
+  it('keeps a terrace of many doors flat (one long roof would swallow it)', () => {
+    const mesh = buildingMesh(tile, [house(60, 7, 9)], () => 400, colours)!
+    for (let i = 0; i < mesh.positions.length / 3; i++) {
+      expect(Math.abs(mesh.colors![i * 3]! - 0.7)).toBeGreaterThan(1e-3)
+    }
+  })
+
+  it('stands the roof on the walls when the height was only guessed', () => {
+    const guessed = { ...house(12, 9, 5), guessedHeight: true }
+    const mesh = buildingMesh(tile, [guessed], () => 400, colours)!
+    let peak = 0
+    let walls = 0
+    for (let i = 0; i < mesh.positions.length / 3; i++) {
+      peak = Math.max(peak, mesh.positions[i * 3 + 1]!)
+      // Wall-coloured vertices still reach the guessed height.
+      if (Math.abs(mesh.colors![i * 3]! - 0.9) < 1e-3) walls = Math.max(walls, mesh.positions[i * 3 + 1]!)
+    }
+    expect(walls).toBeGreaterThan(404.5)
+    expect(peak).toBeGreaterThan(406.5)
+  })
+
   it('keeps a tower flat', () => {
     const mesh = buildingMesh(tile, [house(14, 14, 40)], () => 400, colours)!
     for (let i = 0; i < mesh.positions.length / 3; i++) {

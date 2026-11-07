@@ -446,8 +446,11 @@ export function buildingMesh(
     // assumption: small, compact, low). The walls stop under it and the roof rises to the mapped height. A
     // building cut by the tile's edge stays flat, so the two tiles' halves can't disagree about the ridge.
     const cut = seams.some((ring) => ring.some(Boolean))
-    const rise = !cut && building.minHeight === 0 ? pitchedRoof(frame, ground, building.height, top, colours, writer) : null
-    writer.prism(frame, ground, bottom, top - (rise ?? 0), building.minHeight > 0, colours, seams)
+    const sunk =
+      !cut && building.minHeight === 0
+        ? pitchedRoof(frame, ground, building.height, top, building.guessedHeight === true, colours, writer)
+        : null
+    writer.prism(frame, ground, bottom, top - (sunk ?? 0), building.minHeight > 0, colours, seams)
   }
   for (const road of options.roads ?? []) {
     if (!road.bridge || road.tunnel) continue
@@ -559,6 +562,8 @@ function pitchedRoof(
   ground: readonly number[][],
   height: number,
   top: number,
+  /** The map gave no height: the walls keep the guessed height whole, and the roof stands on them. */
+  guessed: boolean,
   colours: BuildingColours,
   writer: MeshWriter,
 ): number | null {
@@ -583,7 +588,7 @@ function pitchedRoof(
   const shaped: MultiPolygon = [rings]
   const area = Math.abs(ringArea(shaped[0]![0]!))
   if (area < HOUSE_AREA[0] || area > HOUSE_AREA[1]) return null
-  // Compact, like a house, not a long shed or a sprawling hall.
+  // Compact, like a house: not a long shed, a terrace of many doors, or a sprawling hall.
   let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity]
   for (const [x, y] of shaped[0]![0]!) {
     minX = Math.min(minX, x)
@@ -591,7 +596,10 @@ function pitchedRoof(
     minY = Math.min(minY, y)
     maxY = Math.max(maxY, y)
   }
-  if (area / Math.max((maxX - minX) * (maxY - minY), 1) < 0.35) return null
+  const long = Math.max(maxX - minX, maxY - minY)
+  const short = Math.min(maxX - minX, maxY - minY)
+  if (long > 42 || long > short * 4.2) return null
+  if (area / Math.max(long * short, 1) < 0.35) return null
 
   try {
     // A simple outline gets a gable; anything else (an L, a courtyard) a hip, which any shape can carry.
@@ -599,8 +607,10 @@ function pitchedRoof(
     const roof = { ...FLAT_ROOF, kind, pitch: ROOF_PITCH, overhang: 0.4, thickness: 0.2 } as const
     let rise = roofHeight(shaped, roof)
     if (!Number.isFinite(rise) || rise < 0.8) return null
-    // The mapped height is the ridge: the roof may take at most a share of it.
-    const most = Math.min(6, Math.max(2, height * 0.45))
+    // A mapped height is the ridge: the roof takes at most a share of it, and the walls keep a storey or
+    // two. A guessed height is the eaves: the roof stands on the walls (a house with no height mapped is a
+    // house, not a box sliced down to a tent).
+    const most = guessed ? 4 : Math.min(6, Math.max(2, height * 0.45), Math.max(1.5, height - 2.8))
     let pitch: number = ROOF_PITCH
     if (rise > most) {
       pitch = (Math.atan((Math.tan((ROOF_PITCH * Math.PI) / 180) * most) / rise) * 180) / Math.PI
@@ -608,9 +618,9 @@ function pitchedRoof(
     }
     const built = roofGeometry(shaped, 0, { ...roof, pitch }, 0.3)
     if (built.roof.indices.length === 0) return null
-    writer.meshAt(frame, lon0, lat0, top - rise, built.roof, colours.pitched)
-    if (built.walls.indices.length > 0) writer.meshAt(frame, lon0, lat0, top - rise, built.walls, colours.wall)
-    return rise
+    writer.meshAt(frame, lon0, lat0, guessed ? top : top - rise, built.roof, colours.pitched)
+    if (built.walls.indices.length > 0) writer.meshAt(frame, lon0, lat0, guessed ? top : top - rise, built.walls, colours.wall)
+    return guessed ? 0 : rise
   } catch {
     return null
   }

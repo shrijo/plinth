@@ -26,6 +26,8 @@ export interface BuildingFeature {
   height: number
   /** Height of the bottom above the ground (a part on top of another, or over a passage). */
   minHeight: number
+  /** The map gave no height: `height` is a guess, and a roof may stand on it rather than within it. */
+  guessedHeight?: boolean
 }
 
 export type RoadKind =
@@ -243,10 +245,11 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFea
   forEach(data, 'building', (feature, extent) => {
     const p = feature.properties
     if (feature.type !== 3 || p.hide_3d === true) return
+    const guessedHeight = p.render_height === undefined || p.render_height === null
     const height = Number(p.render_height ?? DEFAULT_HEIGHT) || DEFAULT_HEIGHT
     const minHeight = Number(p.render_min_height ?? 0) || 0
     if (height <= minHeight) return
-    for (const shape of shapesOf(feature.loadGeometry(), extent)) features.buildings.push({ shape, height, minHeight })
+    for (const shape of shapesOf(feature.loadGeometry(), extent)) features.buildings.push({ shape, height, minHeight, guessedHeight })
   })
   return features
 }
