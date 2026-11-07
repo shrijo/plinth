@@ -1,6 +1,6 @@
 import type { RoadFeature, Shape, TileFeatures } from './features.ts'
 import { insideRing } from './clip.ts'
-import { tileWidth } from './mesh.ts'
+import { tileWidth, WATER_DEPTH } from './mesh.ts'
 import type { HeightTile } from './terrarium.ts'
 import { tileLat, type TileId } from './tiles.ts'
 
@@ -23,9 +23,9 @@ export const TOWN_STREETS = new Set(['minor', 'tertiary', 'secondary', 'primary'
 const FALLOFF = 7
 /** Under a street the land lies this much lower than its bed, so it never shows through the street built on it. */
 const DIP = 0.35
-/** Smoothing of the land, and of a road's bed (radius, metres). */
+/** Smoothing of the land, and of a road's bed (radius, metres): a bed curves gently, like a real road's vertical alignment, not with every bump the elevation data has. */
 const LAND_SMOOTHING = 8
-const BED_SMOOTHING = 18
+const BED_SMOOTHING = 36
 /**
  * A water surface is the land's height smoothed this widely (metres): flat
  * enough on a lake, following a river down its valley, and the same
@@ -86,6 +86,8 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
 
   const source = features?.tile ?? null
   const water: Shape[] = features ? features.areas.filter((a) => a.kind === 'water').map((a) => a.shape) : []
+  /** How far beyond the water a shore keeps its bank (metres, in tile units once divided by the tile's width). */
+  const BANK_REACH = 30
   const boxes = water.map((shape) => {
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity]
     for (let i = 0; i < shape.outer.length; i += 2) {
@@ -187,17 +189,46 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return stations[k]! + (stations[k + 1]! - stations[k]!) * (at - k)
   }
 
-  /** The bed (street level) and the land (dipped under streets) at a point. */
+  /** Whether a point (source tile units) lies on water, and whether it lies near any water's box. */
+  const inWater = (u: number, v: number): boolean => {
+    for (let i = 0; i < water.length; i++) {
+      const [x0, y0, x1, y1] = boxes[i]!
+      if (u < x0 || u > x1 || v < y0 || v > y1) continue
+      const shape = water[i]!
+      if (insideRing(shape.outer, u, v) && !shape.holes.some((h) => insideRing(h, u, v))) return true
+    }
+    return false
+  }
+  const nearWater = (u: number, v: number): boolean => {
+    const pad = source ? BANK_REACH / tileWidth(source) : 0
+    for (const [x0, y0, x1, y1] of boxes) {
+      if (u >= x0 - pad && u <= x1 + pad && v >= y0 - pad && v <= y1 + pad) return true
+    }
+    return false
+  }
+
+  /** The bed (street level) and the land (dipped under streets, a basin under water) at a point. */
   const shape = (lon: number, lat: number): { level: number; land: number } => {
-    const land = smooth(lon, lat, LAND_SMOOTHING)
-    if (segments.length === 0 && squares.length === 0) return { level: land, land }
+    let land = smooth(lon, lat, LAND_SMOOTHING)
+    // Far out there's no map data at all (no source tile): the land is just the heights.
+    if (water.length === 0 && segments.length === 0 && squares.length === 0) return { level: land, land }
     const [u, v] = toSource(lon, lat)
+    const wet = water.length > 0 && inWater(u, v)
+    // A shore has a bank, not a long smooth ramp: on land near water, the ground stays above the surface.
+    if (!wet && water.length > 0 && nearWater(u, v)) land = Math.max(land, surface(lon, lat) + 0.25)
+    if (segments.length === 0 && squares.length === 0) {
+      if (wet) return { level: land, land: Math.min(land, surface(lon, lat) - WATER_DEPTH) }
+      return { level: land, land }
+    }
     const paved = squares.length > 0 && onSquare(u, v)
     const px = u * metres
     const py = v * metres
     const cell = metres / CELLS
     const list = cells.get((Math.floor(py / cell) + 4) * 64 + (Math.floor(px / cell) + 4))
-    if (!list) return { level: land, land: paved ? land - DIP : land }
+    if (!list) {
+      if (wet) return { level: land, land: Math.min(land, surface(lon, lat) - WATER_DEPTH) }
+      return { level: land, land: paved ? land - DIP : land }
+    }
     // Every street whose bed reaches here, weighted by how strongly: where two meet, their beds blend, so the
     // ground has no step at a junction (taking only the strongest would jump from one to the other).
     let weights = 0
@@ -219,6 +250,16 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       weights += w
       beds += w * bedAlong(s, t)
       under = Math.max(under, d <= s.half ? 1 : smoothstep(1 - (d - s.half) / 2))
+    }
+    if (wet) {
+      // Over water a street rides on a causeway just above the surface; under it the ground is an
+      // embankment just below its bed, and away from it the basin.
+      const top = surface(lon, lat)
+      const basin = Math.min(land, top - WATER_DEPTH)
+      if (weights === 0) return { level: land, land: basin }
+      let level = land + (beds / weights - land) * Math.min(weights, 1)
+      if (weights > 0.05) level = Math.max(level, top + 0.45)
+      return { level, land: basin + (level - DIP - basin) * under }
     }
     if (weights === 0) return { level: land, land: paved ? land - DIP : land }
     const level = land + (beds / weights - land) * Math.min(weights, 1)

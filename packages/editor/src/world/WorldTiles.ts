@@ -14,7 +14,6 @@ import {
   SRGBColorSpace,
   Sphere,
   Texture,
-  Vector2,
   Vector3,
   type Object3D,
   type Plane,
@@ -203,6 +202,9 @@ export class WorldTiles {
       sidewalk: linear('#eeede8'),
       curb: linear('#dfded9'),
       marking: linear('#fdfdfc'),
+      // Block fills between the streets (see streetMesh): the ground's land and green colours.
+      land: linear('#e6e5e1'),
+      green: linear('#dfe2d8'),
     }
     this.outlines = options.outlines ?? false
     // The map stops short of the poles (at 85°): caps close the globe there, sea in the north, ice in the south.
@@ -309,6 +311,7 @@ export class WorldTiles {
       {
         isReady: (key) => this.ground.get(key)?.state === 'ready',
         heightRange: (tile) => this.heightRange(tile),
+        isShown: (key) => this.shownGround.has(key),
       },
     )
 
@@ -610,12 +613,7 @@ export class WorldTiles {
       clippingPlanes: this.options.clip ?? null,
       clipIntersection: true,
     })
-    // Its parent's picture (kept while it's drawn, see evict), to fade from as it slides from its parent's shape.
-    const tile = entry.tile
-    const parentKey = tile.z > 0 ? tileKey({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) : null
-    const parentMesh = parentKey ? this.ground.get(parentKey)?.mesh : null
-    const parentMap = parentMesh?.material instanceof MeshStandardMaterial ? parentMesh.material.map : null
-    this.morphing(material, tile, parentMap)
+    this.morphing(material, entry.tile)
     const geometry = geometryOf(result.mesh, 'uv')
     geometry.setAttribute('morph', new BufferAttribute(result.mesh.morph ?? new Float32Array(result.mesh.positions.length), 3))
     const mesh = new Mesh(geometry, material)
@@ -644,11 +642,9 @@ export class WorldTiles {
    * parent's texels would look from the camera there (see MORPH_RANGE): the same rule the tiles are chosen
    * by, so a tile is its parent's shape when it takes over and when it gives way.
    */
-  private morphing(material: MeshStandardMaterial, tile: TileId, parentMap: Texture | null): void {
+  private morphing(material: MeshStandardMaterial, tile: TileId): void {
     const parentTexel = { value: tile.z > 0 ? tileWidth({ z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }) / TEXTURE_SIZE : 0 }
     const shown = { value: 1 }
-    // The tile's quarter of its parent's picture.
-    const quarter = new Vector2(tile.x % 2, tile.y % 2)
     material.userData.morph = { parentTexel, shown }
     material.customProgramCacheKey = () => 'world-ground-morph'
     material.onBeforeCompile = (shader) => {
@@ -656,8 +652,6 @@ export class WorldTiles {
       shader.uniforms.morphShown = shown
       shader.uniforms.morphPixelsPerMetre = this.morph.pixelsPerMetre
       shader.uniforms.morphMaxError = this.morph.maxError
-      shader.uniforms.morphParentMap = { value: parentMap ?? material.map }
-      shader.uniforms.morphQuarter = { value: quarter }
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
@@ -684,15 +678,14 @@ varying float vMorphFine;`,
         .replace(
           '#include <common>',
           `#include <common>
-uniform sampler2D morphParentMap;
-uniform vec2 morphQuarter;
 varying float vMorphFine;`,
         )
         .replace(
           '#include <map_fragment>',
           `#ifdef USE_MAP
-  // Its own picture near, its parent's (the same place, coarser) where it still has its parent's shape.
-  vec4 sampledDiffuseColor = mix(texture2D(morphParentMap, (vMapUv + morphQuarter) * 0.5), texture2D(map, vMapUv), vMorphFine);
+  // Where the tile still has its parent's shape, its picture reads a coarser mip of its own map: what the
+  // parent showed there, without holding the parent's texture (which may since be gone).
+  vec4 sampledDiffuseColor = texture2D(map, vMapUv, (1.0 - vMorphFine) * 2.0);
   diffuseColor *= sampledDiffuseColor;
 #endif`,
         )

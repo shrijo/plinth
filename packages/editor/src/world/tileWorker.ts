@@ -20,7 +20,6 @@ import {
   tileKey,
   TERRAIN_MAX_ZOOM,
   VECTOR_MAX_ZOOM,
-  WATER_DEPTH,
   type CoarseHeights,
   type Ground,
   type HeightTile,
@@ -135,12 +134,7 @@ async function parentSurface(tile: TileId, signal: AbortSignal): Promise<CoarseH
   if (parent.z >= ROAD_ZOOM) return 'same'
   const [data, heights] = await Promise.all([featuresOf(parent, signal), heightsFor(parent, signal)])
   const shaped = groundFor(parent, heights, data)
-  const water = parent.z >= WATER_ZOOM
-  return (lon, lat) => {
-    const h = shaped.at(lon, lat)
-    const surface = water ? shaped.waterAt(lon, lat) : null
-    return surface === null ? h : Math.min(h, surface - WATER_DEPTH)
-  }
+  return (lon, lat) => shaped.at(lon, lat)
 }
 
 async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signal: AbortSignal): Promise<WorkerResponse> {
@@ -151,13 +145,7 @@ async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signa
   ])
   const shaped = groundFor(request.tile, heights, data)
   const water = request.tile.z >= WATER_ZOOM ? waterMesh(request.tile, shaped) : null
-  const mesh = groundMesh(
-    request.tile,
-    (lon, lat) => shaped.at(lon, lat),
-    segmentsFor(request.tile, request.segments),
-    water ? (lon, lat) => shaped.waterAt(lon, lat) : undefined,
-    coarse,
-  )
+  const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), coarse)
   const canvas = new OffscreenCanvas(request.size, request.size)
   const context = canvas.getContext('2d')!
   paintGround(context, request.size, request.tile, data, request.style)
@@ -232,6 +220,8 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
 async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, signal: AbortSignal): Promise<WorkerResponse> {
   const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
   const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
+  const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
+  const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
   if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: null }
   const shaped = groundFor(request.tile, heights, data)
   // A site's own streets stand in its area: the world's are left out there.
@@ -242,7 +232,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
         return { lon: p.lon, lat: p.lat }
       })
     : undefined
-  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares) }
+  return { id: request.id, ok: true, type: 'streets', result: streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens) }
 }
 
 /** Keeps buildings outside the mask. */

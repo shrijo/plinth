@@ -1,5 +1,17 @@
 import earcut from 'earcut'
-import { CURB_HEIGHT, difference, layerStreetSurfaces, streetGeometry, type MultiPolygon, type Snapshot, type StreetPiece, type Vec2 } from '@plinth/core'
+import {
+  CURB_HEIGHT,
+  difference,
+  labelPoint,
+  layerStreetSurfaces,
+  regionArea,
+  streetGeometry,
+  type MultiPolygon,
+  type Snapshot,
+  type StreetPiece,
+  type Vec2,
+} from '@plinth/core'
+import { insideRing } from './clip.ts'
 import type { RoadFeature, RoadKind, Shape } from './features.ts'
 import type { Ground } from './ground.ts'
 import { ecefFromLonLat, type Frame } from './geo.ts'
@@ -26,10 +38,16 @@ export interface StreetColours {
   sidewalk: [number, number, number]
   curb: [number, number, number]
   marking: [number, number, number]
+  /** Block fills: the land between the streets, and its green spaces. */
+  land?: [number, number, number]
+  green?: [number, number, number]
 }
 
 /** How far each street's solid reaches below its surface (metres). */
 const DEPTH = 4
+/** Block fills lie this far over the ground, and follow it this finely (metres). */
+const FILL = 0.14
+const FILL_STEP = 11
 /** Road surfaces lie this far above the street bed; lanes and paint a little higher. */
 const ROAD = 0.06
 const LANES = 0.068
@@ -76,6 +94,8 @@ export function streetMesh(
   mask?: readonly { lon: number; lat: number }[],
   /** Squares, pedestrian areas and platforms (tile units): paved at sidewalk height, the streets' sidewalks running into them. */
   squares: readonly Shape[] = [],
+  /** Green spaces (parks, grass, woods; tile units): block fills there are green. */
+  greens: readonly Shape[] = [],
 ): MeshBuffers | null {
   const metres = tileWidth(tile)
   // Plan metres: x east, y north (tile units run south), as the editor's sites.
@@ -187,6 +207,55 @@ export function streetMesh(
   // A living street or pedestrian zone is paved like a sidewalk, wall to wall, a little above the road.
   writer.slab(cut(surfaces.paved), ROAD + 0.04, colours.sidewalk, colours.curb)
   writer.slab(cut(surfaces.sidewalks), ROAD + CURB_HEIGHT, colours.sidewalk, colours.curb)
+  // In town, the blocks between the streets are filled: a skin on the ground that meets the streets' edges
+  // exactly (the fill is the plan's complement, and both stand on the same bed-blended ground), so the terrain
+  // fits the streets instead of poking through beside them.
+  if (ground.town && colours.land) {
+    const cover: { polygon: MultiPolygon[number]; box: PlanRect }[] = []
+    for (const region of [surfaces.road, surfaces.bike, surfaces.parking, surfaces.paved, surfaces.sidewalks]) {
+      for (const polygon of region) cover.push({ polygon, box: boundsOfRing(polygon[0]!) })
+    }
+    const waterPlan: MultiPolygon = ground.water.map((shape) => {
+      const rings = [shape.outer, ...shape.holes].map((line) => {
+        const points: [number, number][] = []
+        for (let i = 0; i + 1 < line.length; i += 2) {
+          const p = toPlan(line[i]!, line[i + 1]!)
+          points.push([p.x, p.y])
+        }
+        return points
+      })
+      return rings
+    })
+    const waterBoxes = waterPlan.map((polygon) => boundsOfRing(polygon[0]!))
+    const greenAt = (x: number, y: number): boolean => {
+      const u = x / metres
+      const v = -y / metres
+      return greens.some((shape) => insideShape(shape, u, v))
+    }
+    const CELL = 300
+    const cellsAcross = Math.max(1, Math.round(metres / CELL))
+    const size = metres / cellsAcross
+    for (let j = 0; j < cellsAcross; j++) {
+      for (let i = 0; i < cellsAcross; i++) {
+        const box: PlanRect = { minX: i * size, maxX: (i + 1) * size, minY: -(j + 1) * size, maxY: -j * size }
+        const overlaps = (b: PlanRect) => b.maxX > box.minX && b.minX < box.maxX && b.maxY > box.minY && b.minY < box.maxY
+        const near = cover.filter((c) => overlaps(c.box)).map((c) => [c.polygon] as MultiPolygon)
+        if (near.length === 0) continue
+        const water = waterPlan.filter((_, k) => overlaps(waterBoxes[k]!)).map((polygon) => [polygon] as MultiPolygon)
+        const cell: MultiPolygon = [[[[box.minX, box.minY], [box.maxX, box.minY], [box.maxX, box.maxY], [box.minX, box.maxY]]]]
+        for (const face of difference(cell, ...near, ...water)) {
+          const area = regionArea([face])
+          // A block, not open country: bounded, between streets.
+          if (area < 4 || area > 60000) continue
+          const at = labelPoint([face])
+          if (!at) continue
+          const fill = cut([face])
+          if (fill.length === 0) continue
+          writer.top(fill, FILL, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, FILL_STEP)
+        }
+      }
+    }
+  }
   for (const piece of geometry.pieces) {
     for (const mark of [...piece.markings, ...piece.crosswalks]) {
       // A line can run the length of a long street: cut like the surfaces, not judged by its middle.
@@ -254,7 +323,7 @@ class StreetWriter {
   }
 
   /** A surface at a height over the bed: its top, split finely enough to follow the bed. */
-  top(region: MultiPolygon, lift: number, colour: readonly number[]): void {
+  top(region: MultiPolygon, lift: number, colour: readonly number[], step = STEP): void {
     for (const polygon of region) {
       const flat: number[] = []
       const holes: number[] = []
@@ -267,30 +336,38 @@ class StreetWriter {
       const triangles = earcut(flat, holes, 2)
       for (let t = 0; t < triangles.length; t += 3) {
         const p = (k: number): [number, number] => [flat[triangles[t + k]! * 2]!, flat[triangles[t + k]! * 2 + 1]!]
-        this.triangle(p(0), p(1), p(2), lift, colour, 0)
+        this.triangle(p(0), p(1), p(2), lift, colour, 0, step)
       }
     }
   }
 
-  private triangle(a: [number, number], b: [number, number], c: [number, number], lift: number, colour: readonly number[], depth: number): void {
+  private triangle(
+    a: [number, number],
+    b: [number, number],
+    c: [number, number],
+    lift: number,
+    colour: readonly number[],
+    depth: number,
+    step = STEP,
+  ): void {
     const ab = Math.hypot(a[0] - b[0], a[1] - b[1])
     const bc = Math.hypot(b[0] - c[0], b[1] - c[1])
     const ca = Math.hypot(c[0] - a[0], c[1] - a[1])
     const most = Math.max(ab, bc, ca)
-    if (most > STEP && depth < 10) {
+    if (most > step && depth < 12) {
       const mid = (p: [number, number], q: [number, number]): [number, number] => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
       if (most === ab) {
         const m = mid(a, b)
-        this.triangle(a, m, c, lift, colour, depth + 1)
-        this.triangle(m, b, c, lift, colour, depth + 1)
+        this.triangle(a, m, c, lift, colour, depth + 1, step)
+        this.triangle(m, b, c, lift, colour, depth + 1, step)
       } else if (most === bc) {
         const m = mid(b, c)
-        this.triangle(a, b, m, lift, colour, depth + 1)
-        this.triangle(a, m, c, lift, colour, depth + 1)
+        this.triangle(a, b, m, lift, colour, depth + 1, step)
+        this.triangle(a, m, c, lift, colour, depth + 1, step)
       } else {
         const m = mid(c, a)
-        this.triangle(a, b, m, lift, colour, depth + 1)
-        this.triangle(m, b, c, lift, colour, depth + 1)
+        this.triangle(a, b, m, lift, colour, depth + 1, step)
+        this.triangle(m, b, c, lift, colour, depth + 1, step)
       }
       return
     }
@@ -361,6 +438,23 @@ class StreetWriter {
 }
 
 type Ring = [number, number][]
+
+/** A ring's bounds on the plan. */
+function boundsOfRing(ring: Ring): PlanRect {
+  const box = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
+  for (const [x, y] of ring) {
+    box.minX = Math.min(box.minX, x)
+    box.maxX = Math.max(box.maxX, x)
+    box.minY = Math.min(box.minY, y)
+    box.maxY = Math.max(box.maxY, y)
+  }
+  return box
+}
+
+/** Whether a point (tile units) lies in a shape. */
+function insideShape(shape: Shape, u: number, v: number): boolean {
+  return insideRing(shape.outer, u, v) && !shape.holes.some((hole) => insideRing(hole, u, v))
+}
 
 function openRing(ring: Ring): Ring {
   const first = ring[0]

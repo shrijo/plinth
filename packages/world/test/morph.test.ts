@@ -10,7 +10,7 @@ describe("a ground tile's slide into its parent's shape", () => {
   const parent = { z: 15, x: 17161, y: 11474 }
   const child = { z: 16, x: 34323, y: 22949 }
   const segments = 8
-  const fine = groundMesh(child, hills, segments, undefined, 'same')
+  const fine = groundMesh(child, hills, segments, 'same')
   const coarse = groundMesh(parent, hills, segments)
   const side = segments + 1
 

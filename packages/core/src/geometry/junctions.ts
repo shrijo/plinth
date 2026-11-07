@@ -195,13 +195,9 @@ export function buildJunction(node: Vec2, given: readonly JunctionEnd[], radius 
       need((k + 1) % n, apart)
     } else if (kind === 'fillet') {
       const road = fillet(current.end, current.end.road.left, next.end, next.end.road.right, radius)
-      // The back of the sidewalk follows the kerb, the sidewalk's width further in.
-      const sidewalk = Math.max(
-        current.end.outer.left - current.end.road.left,
-        next.end.outer.right - next.end.road.right,
-      )
-      const outerRadius = Math.max(0, (road?.radius ?? 0) - sidewalk)
-      const outer = fillet(current.end, current.end.outer.left, next.end, next.end.outer.right, outerRadius)
+      // The kerb is rounded; the back of the sidewalk takes the square corner a real pavement has (radius 0:
+      // the mitre point), so crossings read crisp.
+      const outer = fillet(current.end, current.end.outer.left, next.end, next.end.outer.right, 0)
       // A kerb that would reach past either street's end (a short street, a shallow angle) is joined straight instead.
       const fits = (f: typeof road) => !!f && f.along[0] <= current.end.limit * 1.01 && f.along[1] <= next.end.limit * 1.01
       sector.fillet = { road: fits(road) ? road : null, outer: fits(outer) ? outer : null }

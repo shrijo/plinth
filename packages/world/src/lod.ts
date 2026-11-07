@@ -70,6 +70,8 @@ export interface Selector {
   isReady: (key: string) => boolean
   /** Ground heights known for a tile (from it or an ancestor), for its bounds. */
   heightRange: (tile: TileId) => [number, number]
+  /** Whether a tile is on screen right now: a split tile merges back only once it's clearly too fine (hysteresis), so the ground doesn't flicker between levels as the view moves. */
+  isShown?: (key: string) => boolean
 }
 
 const boundsCache = new Map<string, { bounds: Bounds; low: number; high: number }>()
@@ -113,7 +115,11 @@ export function selectTiles(view: View, selector: Selector): Selection {
     const error = (texel / distance) * view.pixelsPerMetre
     const ready = selector.isReady(key)
     const unknown = ready ? 0 : unready + 1
-    const refine = tile.z < view.maxZoom && (tile.z < 2 || error > view.maxError) && unknown <= MAX_UNREADY
+    // Hysteresis: a tile already split stays split until its texels would be clearly fine enough, so the
+    // ground doesn't swap levels back and forth as the view moves about the threshold.
+    const wasSplit = selector.isShown ? tileChildren(tile).some((child) => selector.isShown!(tileKey(child))) : false
+    const over = error > (wasSplit ? view.maxError * 0.8 : view.maxError)
+    const refine = tile.z < view.maxZoom && (tile.z < 2 || over) && unknown <= MAX_UNREADY
     if (!refine) ideal.push(tile)
     if (refine) {
       const parts: TileId[] = []

@@ -73,13 +73,7 @@ export type CoarseHeights = HeightAt | 'same'
  * down round its edge so no gap shows where it meets a neighbour drawn in
  * less detail. Texture coordinates run from the north-west corner.
  */
-export function groundMesh(
-  tile: TileId,
-  heightAt: HeightAt,
-  segments: number,
-  waterAt?: (lon: number, lat: number) => number | null,
-  coarse?: CoarseHeights,
-): GroundMesh {
+export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, coarse?: CoarseHeights): GroundMesh {
   const frame = tileFrame(tile)
   const side = segments + 1
   const grid = side * side
@@ -100,10 +94,8 @@ export function groundMesh(
   for (let j = 0; j < side; j++) {
     for (let i = 0; i < side; i++) {
       const k = j * side + i
-      let h = heightAt(lons[i]!, lats[j]!)
-      // Under water the ground falls away into a basin, so it never shows through the surface.
-      const water = waterAt?.(lons[i]!, lats[j]!)
-      if (water !== undefined && water !== null) h = Math.min(h, water - WATER_DEPTH)
+      // The ground itself knows its basins under water and its beds under streets (see makeGround).
+      const h = heightAt(lons[i]!, lats[j]!)
       heights[k] = h
       low = Math.min(low, h)
       high = Math.max(high, h)
