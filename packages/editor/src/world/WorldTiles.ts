@@ -19,6 +19,7 @@ import {
   Vector3,
   type Object3D,
   type Plane,
+  type Scene,
   type WebGLRenderer,
 } from 'three'
 import {
@@ -42,7 +43,8 @@ import {
   type TileId,
   type Vec3,
 } from '@plinth/world'
-import type { GroundResult, WorkerRequest, WorkerResponse, WorldMask } from './protocol.ts'
+import { GRASS_MASK, type GroundResult, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
+import { WorldGrass } from './grass.ts'
 import { WorldWater } from './water.ts'
 
 /**
@@ -175,6 +177,8 @@ interface BuildingEntry {
   frame: Frame
   /** Streets: where they cover the ground (see coverMask), for ground tiles not to draw themselves there. */
   cover?: Texture | null
+  /** Streets: where grass grows over the tile (see grassMask in the worker). */
+  grass?: Uint8Array | null
 }
 
 /** No cover: the ground draws itself everywhere. */
@@ -234,6 +238,10 @@ export class WorldTiles {
   private readonly fading: { mesh: Mesh; fade: { value: number }; start: number }[] = []
   /** The renderer, once known (see reflect): new pictures go up to the GPU as they arrive, not when first drawn. */
   private renderer: WebGLRenderer | null = null
+  /** The scene the world is drawn in (see reflect), for the grass's height map. */
+  private scene: Scene | null = null
+  /** Grass on the green spaces, close to the camera. */
+  readonly grass: WorldGrass
   private disposed = false
   /** Called when tiles arrive or change, for views that draw on demand. */
   onChange: (() => void) | null = null
@@ -277,6 +285,15 @@ export class WorldTiles {
     this.outlines = options.outlines ?? false
     // The map stops short of the poles (at 85°): caps close the globe there, sea in the north, ice in the south.
     const style = options.style ?? GROUND_STYLE
+    this.grass = new WorldGrass(
+      {
+        grassAt: (lon, lat) => this.grassAt(lon, lat),
+        groundHeight: (lon, lat, minZoom) => this.groundHeight(lon, lat, minZoom),
+        place: (mesh, frame) => this.place(mesh as Mesh, frame),
+      },
+      options.clip ?? null,
+    )
+    this.group.add(this.grass.group)
     for (const north of [true, false]) {
       const cap = polarCap(north)
       const mesh = new Mesh(geometryOf(cap.mesh, 'uv'), new MeshStandardMaterial({ color: north ? style.areas.water : style.areas.ice, roughness: 1 }))
@@ -308,6 +325,7 @@ export class WorldTiles {
     for (const entry of this.buildings.values()) if (entry.mesh) this.place(entry.mesh, entry.frame)
     for (const entry of this.streets.values()) if (entry.mesh) this.place(entry.mesh, entry.frame)
     for (const cap of this.caps) this.place(cap.mesh, cap.frame)
+    this.grass.replace()
   }
 
   /** A point on the globe (ECEF) in the scene. */
@@ -568,6 +586,13 @@ export class WorldTiles {
     }
     prefetch(this.buildings, 'buildings', [...aheadKeys(BUILDING_ZOOM), ...(altitude < AROUND_BUILDINGS ? squaresAround(under.lon, under.lat, 1) : [])])
     prefetch(this.streets, 'streets', [...aheadKeys(STREET_ZOOM), ...(altitude < AROUND_STREETS ? nearestSquares(under.lon, under.lat) : [])])
+    this.grass.update(cameraEcef, camera.position, altitude, now)
+    if (this.renderer && this.scene) {
+      // The grass's roots go on the surfaces really there: ground, fills and beds, not buildings.
+      const hide: Object3D[] = [this.grass.group]
+      for (const entry of this.buildings.values()) if (entry.mesh) hide.push(entry.mesh)
+      this.grass.capture(this.renderer, this.scene, camera.position, hide, now)
+    }
     // Loads the view has long moved away from give way (not at once: a turn back shouldn't start them again).
     for (const [job, { worker, entry }] of this.pending) {
       if (now - entry.wanted > CANCEL_AFTER) {
@@ -711,6 +736,7 @@ export class WorldTiles {
    */
   reflect(renderer: WebGLRenderer, scene: Object3D, camera: PerspectiveCamera): void {
     this.renderer = renderer
+    if ((scene as Scene).isScene) this.scene = scene as Scene
     camera.getWorldPosition(scratch)
     let nearest: Mesh | null = null
     let best = Infinity
@@ -853,8 +879,9 @@ varying float vMorphFine;`,
     }
   }
 
-  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: ImageBitmap | null }): void {
+  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: ImageBitmap | null; grass: Uint8Array | null }): void {
     entry.state = 'ready'
+    entry.grass = result.grass
     if (result.cover) {
       const texture = new Texture(result.cover)
       texture.flipY = false
@@ -937,6 +964,7 @@ varying float vMorphFine;`,
       if (entry.state !== 'warm' || !entry.mesh) continue
       disposeMesh(entry.mesh)
       ;(entry as BuildingEntry).cover?.dispose()
+      if ('kind' in entry) entry.grass = null
       entry.mesh = null
       entry.state = 'failed'
       map.delete(entry.key)
@@ -964,7 +992,7 @@ varying float vMorphFine;`,
       }
       cover.dispose()
     }
-    const bytes = meshBytes(mesh)
+    const bytes = meshBytes(mesh) + ((entry as BuildingEntry).grass?.byteLength ?? 0)
     if (bytes <= WARM_BYTES / 6) {
       freeGpu(mesh)
       entry.state = 'warm'
@@ -1098,6 +1126,25 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
    * out coarser tiles (their hills are too rough to keep a camera off the
    * ground by). Cheap: no rays, no triangles.
    */
+  /**
+   * Where grass grows at a point (see WorldGrass): 0 none, 1 on the ground,
+   * 2 on a raised green fill; null while the streets there aren't loaded.
+   */
+  grassAt(lon: number, lat: number): number | null {
+    const n = 2 ** BUILDING_ZOOM
+    const φ = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
+    const fx = ((lon + 180) / 360) * n
+    const fy = ((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n
+    const x = Math.floor(fx)
+    const y = Math.floor(fy)
+    const entry = this.streets.get(`${BUILDING_ZOOM}/${x}/${y}`)
+    if (!entry || (entry.state !== 'ready' && entry.state !== 'warm')) return null
+    if (!entry.grass) return 0
+    const px = Math.min(GRASS_MASK - 1, Math.floor((fx - x) * GRASS_MASK))
+    const py = Math.min(GRASS_MASK - 1, Math.floor((fy - y) * GRASS_MASK))
+    return entry.grass[py * GRASS_MASK + px]!
+  }
+
   groundHeight(lon: number, lat: number, minZoom = 0): number | null {
     const φ = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
     const fx = (lon + 180) / 360
@@ -1125,6 +1172,7 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
 
   dispose(): void {
     this.disposed = true
+    this.grass.dispose()
     for (const worker of this.workers) worker.terminate()
     for (const resolve of this.asked.values()) resolve(null)
     this.asked.clear()

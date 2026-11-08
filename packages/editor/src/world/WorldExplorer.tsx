@@ -551,7 +551,7 @@ function ExplorerScene({
   const lightRef = useRef(light)
   const sky = useRef<Mesh>(null)
   const parts = useRef<{ world: WorldTiles; controls: GlobeControls; sun: Sun | null; fog: Fog } | null>(null)
-  const reported = useRef({ at: 0, close: false, frame: 0, wind: 0 })
+  const reported = useRef({ at: 0, close: false, frame: 0, wind: 0, grass: 0 })
 
   useEffect(() => {
     const { scene, camera, gl } = get()
@@ -652,6 +652,12 @@ function ExplorerScene({
       destination: to && pose ? { position: pose.position, up: pose.up, target: ecefFromLonLat(to.lon, to.lat, to.height) } : null,
     })
     world.reflect(get().gl, get().scene, camera)
+    // The grass leans with the wind here (from the weather, or a breeze from the west), a few times a second.
+    if (performance.now() - reported.current.grass > 500) {
+      reported.current.grass = performance.now()
+      const w = weather ? windAt(weather, view.lon, view.lat) : null
+      world.grass.setWind(w?.east ?? 4, w?.north ?? 1)
+    }
     if (clouds) {
       const now = performance.now()
       const seconds = reported.current.frame ? Math.min((now - reported.current.frame) / 1000, 0.1) : 0

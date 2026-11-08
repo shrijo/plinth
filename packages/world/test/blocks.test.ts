@@ -64,4 +64,16 @@ describe('block fills', () => {
       expect(Math.abs(open.colors![i * 3]! - land[0])).toBeGreaterThan(1e-3)
     }
   })
+
+  it('tells the green fills (where grass grows) from the paved surfaces', () => {
+    // The whole square is a park.
+    const park = { outer: Float64Array.from([0.4, 0.4, 0.6, 0.4, 0.6, 0.6, 0.4, 0.6]), holes: [] }
+    const built = streetMesh(tile, loop, flat, colours, undefined, [], [park])
+    expect(built.greenFills.length).toBeGreaterThan(0)
+    expect(built.paved.length).toBeGreaterThan(0)
+    expect(built.cover.length).toBe(built.greenFills.length + built.paved.length)
+    // The middle of the block is green; the street along its edge is paved.
+    expect(pointInRegion({ x: 0.5 * m, y: -0.5 * m }, built.greenFills)).toBe(true)
+    expect(pointInRegion({ x: 0.5 * m, y: -0.5 * m }, built.paved)).toBe(false)
+  })
 })

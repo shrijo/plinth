@@ -90,6 +90,10 @@ export interface StreetsBuilt {
    * metres: where the ground needn't be drawn, since ours stands over it.
    */
   cover: MultiPolygon
+  /** Of the cover: the green block fills (parks and greenery in town, raised to kerb height), where grass grows. */
+  greenFills: MultiPolygon
+  /** Of the cover: everything else (streets, paving, plain fills), where no grass grows. */
+  paved: MultiPolygon
 }
 
 /** The streets of a tile (zoom 14 map data): see StreetsBuilt. */
@@ -137,7 +141,7 @@ export function streetMesh(
     if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
     else lines.push({ points, props })
   }
-  if (lines.length === 0 && squares.length === 0) return { mesh: null, cover: [] }
+  if (lines.length === 0 && squares.length === 0) return { mesh: null, cover: [], greenFills: [], paved: [] }
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
   // data's edge (beyond the tile) are where it was cut, not dead ends.
   const network = tidyNetwork(lines, {
@@ -210,9 +214,12 @@ export function streetMesh(
   })
   const surfaces = layerStreetSurfaces([...geometry.pieces, ...paving])
   const cover: MultiPolygon = []
+  const greenFills: MultiPolygon = []
+  const paved: MultiPolygon = []
   const laid = (region: MultiPolygon): MultiPolygon => {
     const own = cut(region)
     cover.push(...own)
+    paved.push(...own)
     return own
   }
   writer.slab(laid(surfaces.road), ROAD, colours.road, colours.curb)
@@ -271,7 +278,9 @@ export function streetMesh(
               const kept = cut([strip])
               if (kept.length === 0) continue
               cover.push(...kept)
-              writer.slab(kept, KERB, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
+              const green = greenAt(at.x, at.y)
+              ;(green ? greenFills : paved).push(...kept)
+              writer.slab(kept, KERB, green ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
             }
             continue
           }
@@ -280,7 +289,9 @@ export function streetMesh(
           const fill = cut([face])
           if (fill.length === 0) continue
           cover.push(...fill)
-          writer.slab(fill, KERB, greenAt(at.x, at.y) ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
+          const green = greenAt(at.x, at.y)
+          ;(green ? greenFills : paved).push(...fill)
+          writer.slab(fill, KERB, green ? (colours.green ?? colours.land) : colours.land, colours.curb, FILL_STEP)
         }
       }
     }
@@ -292,7 +303,7 @@ export function streetMesh(
       if (region.length > 0) writer.top(region, PAINT, colours.marking)
     }
   }
-  return { mesh: writer.finish(), cover }
+  return { mesh: writer.finish(), cover, greenFills, paved }
 }
 
 const UP = [0, 1, 0] as const

@@ -132,7 +132,15 @@ export class Sun {
         if (this.ready.has(m)) continue
         this.ready.add(m)
         if (!isLit(m)) continue
+        // CSM sets its own onBeforeCompile; a material's own (the ground's geomorph and cut-outs, the fade-in,
+        // the grass) must run too, before it: chained, not replaced.
+        const own = m.onBeforeCompile
         this.csm.setupMaterial(m)
+        const cascades = m.onBeforeCompile
+        m.onBeforeCompile = function (shader, renderer) {
+          own.call(this, shader, renderer)
+          cascades.call(this, shader, renderer)
+        }
         m.needsUpdate = true
       }
     })

@@ -27,7 +27,7 @@ import {
   tileWidth,
   type TileId,
 } from '@plinth/world'
-import type { WorkerRequest, WorkerResponse, WorldMask } from './protocol.ts'
+import { GRASS_MASK, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
 
 /**
  * Builds the world's tiles off the main thread: fetches map data and
@@ -223,7 +223,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
   const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
   const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
   const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
-  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, cover: null } }
+  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, cover: null, grass: null } }
   const shaped = groundFor(request.tile, heights, data)
   // A site's own streets stand in its area: the world's are left out there.
   const mask = request.mask
@@ -234,7 +234,99 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
       })
     : undefined
   const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens)
-  return { id: request.id, ok: true, type: 'streets', result: { mesh: built.mesh, cover: coverMask(request.tile, built.cover) } }
+  const LAWN = new Set(['park', 'grass', 'sport', 'cemetery'])
+  const lawns = data.areas.filter((a) => LAWN.has(a.kind)).map((a) => a.shape)
+  return {
+    id: request.id,
+    ok: true,
+    type: 'streets',
+    result: {
+      mesh: built.mesh,
+      cover: coverMask(request.tile, built.cover),
+      grass: grassMask(
+        request.tile,
+        lawns,
+        data.buildings.filter((b) => b.minHeight === 0).map((b) => b.shape),
+        built,
+      ),
+    },
+  }
+}
+
+/**
+ * Where grass grows over the tile (see GRASS_MASK): the lawns in the map
+ * data (parks, grass, sports fields, cemeteries) at ground level, and the
+ * green block fills raised to kerb height, never on a street or paving.
+ * Pulled in a pixel at every edge, so no blade leans out over a kerb.
+ */
+function grassMask(
+  tile: TileId,
+  lawns: readonly { outer: Float64Array; holes: Float64Array[] }[],
+  /** Footprints of the buildings standing on the ground: nothing grows under a roof. */
+  buildings: readonly { outer: Float64Array; holes: Float64Array[] }[],
+  built: { greenFills: readonly (readonly [number, number][][])[]; paved: readonly (readonly [number, number][][])[] },
+): Uint8Array | null {
+  if (lawns.length === 0 && built.greenFills.length === 0) return null
+  const scale = GRASS_MASK / tileWidth(tile)
+  const canvas = new OffscreenCanvas(GRASS_MASK, GRASS_MASK)
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  const plan = (polygons: readonly (readonly [number, number][][])[]) => {
+    const path = new Path2D()
+    for (const polygon of polygons) {
+      for (const ring of polygon) {
+        ring.forEach(([x, y], i) => (i === 0 ? path.moveTo(x * scale, -y * scale) : path.lineTo(x * scale, -y * scale)))
+        path.closePath()
+      }
+    }
+    return path
+  }
+  // Shapes in tile units, as a path over the mask.
+  const shapes = (list: readonly { outer: Float64Array; holes: Float64Array[] }[]) => {
+    const path = new Path2D()
+    for (const shape of list) {
+      for (const ring of [shape.outer, ...shape.holes]) {
+        for (let i = 0; i + 1 < ring.length; i += 2) {
+          const x = ring[i]! * GRASS_MASK
+          const y = ring[i + 1]! * GRASS_MASK
+          if (i === 0) path.moveTo(x, y)
+          else path.lineTo(x, y)
+        }
+        path.closePath()
+      }
+    }
+    return path
+  }
+  // Lawns at ground level.
+  context.fillStyle = 'rgb(128, 0, 0)'
+  context.fill(shapes(lawns), 'evenodd')
+  // Never on a street, paving or a plain fill.
+  const pavedPath = plan(built.paved)
+  context.globalCompositeOperation = 'destination-out'
+  context.fill(pavedPath)
+  context.lineWidth = 2
+  context.stroke(pavedPath)
+  // The green fills, raised, pulled in from their kerbs.
+  const greenPath = plan(built.greenFills)
+  context.globalCompositeOperation = 'source-over'
+  context.fillStyle = 'rgb(255, 0, 0)'
+  context.fill(greenPath)
+  context.globalCompositeOperation = 'destination-out'
+  context.stroke(greenPath)
+  // Never under a roof.
+  const roofs = shapes(buildings)
+  context.fill(roofs, 'evenodd')
+  context.stroke(roofs)
+  const pixels = context.getImageData(0, 0, GRASS_MASK, GRASS_MASK).data
+  const mask = new Uint8Array(GRASS_MASK * GRASS_MASK)
+  let any = false
+  for (let i = 0; i < mask.length; i++) {
+    if (pixels[i * 4 + 3]! < 160) continue
+    const red = pixels[i * 4]!
+    const value = red > 200 ? 2 : red > 90 ? 1 : 0
+    mask[i] = value
+    if (value) any = true
+  }
+  return any ? mask : null
 }
 
 /**
@@ -291,7 +383,10 @@ function transfers(response: WorkerResponse): Transferable[] {
     const { mesh, image, water, heights } = response.result
     return [...buffers(mesh), mesh.uvs.buffer, ...(mesh.morph ? [mesh.morph.buffer] : []), heights.buffer, image, ...buffers(water)] as Transferable[]
   }
-  if (response.type === 'streets') return [...buffers(response.result.mesh), ...(response.result.cover ? [response.result.cover] : [])] as Transferable[]
+  if (response.type === 'streets') {
+    const { mesh, cover, grass } = response.result
+    return [...buffers(mesh), ...(cover ? [cover] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
+  }
   return buffers(response.result) as Transferable[]
 }
 

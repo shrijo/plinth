@@ -30,6 +30,19 @@ export interface GroundResult {
 export type WorkerResponse =
   | { id: number; ok: true; type: 'ground'; result: GroundResult }
   | { id: number; ok: true; type: 'buildings'; result: MeshBuffers | null }
-  | { id: number; ok: true; type: 'streets'; result: { mesh: MeshBuffers | null; cover: ImageBitmap | null } }
+  | {
+      id: number
+      ok: true
+      type: 'streets'
+      result: {
+        mesh: MeshBuffers | null
+        cover: ImageBitmap | null
+        /** Where grass grows, a byte per pixel over the tile (GRASS_MASK square): 0 none, 1 on the ground, 2 on a raised green fill. */
+        grass: Uint8Array | null
+      }
+    }
   | { id: number; ok: true; type: 'area'; result: ImageBitmap }
   | { id: number; ok: false; error: string; aborted: boolean }
+
+/** The grass mask's size (pixels a side, over a zoom-14 tile: about 1.6 m each). */
+export const GRASS_MASK = 1024
