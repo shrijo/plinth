@@ -19,6 +19,9 @@ import {
   Texture,
   UnsignedByteType,
   Vector3,
+  WebGLRenderTarget,
+  type Camera,
+  type Material,
   type Object3D,
   type Plane,
   type Scene,
@@ -47,7 +50,7 @@ import {
 } from '@plinth/world'
 import { GRASS_MASK, type GroundResult, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
 import { WorldGrass } from './grass.ts'
-import { WorldWater } from './water.ts'
+import { MAIN_VIEW_LAYER, WorldWater } from './water.ts'
 
 /**
  * The real world, streamed in as tiles: the ground draped over its hills
@@ -100,7 +103,7 @@ const MAX_IN_FLIGHT = 14
 const ADD_BUDGET = 4
 /** The same, while the camera moves (smooth frames come first) and once it's still (catch up) (ms). */
 const ADD_BUDGET_MOVING = 2.5
-const ADD_BUDGET_STILL = 9
+const ADD_BUDGET_STILL = 5
 /**
  * Loading ahead, as open-world games stream: where the camera will be this
  * long from now (its motion carried on, s) is loaded too, in the slots the
@@ -111,6 +114,13 @@ const LOOK_AHEAD = 1.2
 const MARGIN_FOV = 1.4
 /** Request slots kept for what's in view: loading ahead never takes the last of them. */
 const RESERVED = 4
+/**
+ * Request slots the ground in view leaves for the buildings and streets in view: else a view's many ground
+ * tiles take every slot, and its 3D detail only starts once all of them are in.
+ */
+const DETAIL_SLOTS = 3
+/** A late result is kept for a tile given up on (see receive); this many such loads are remembered at most. */
+const MAX_GIVEN_UP = 64
 /**
  * Moving faster than its own height above the ground per second, the
  * camera doesn't ask for the finest tiles, buildings or streets: they'd be
@@ -196,6 +206,15 @@ uniform vec3 carpetReach;`
 const carpetOn = (grass: string) =>
   `diffuseColor.rgb = mix(diffuseColor.rgb, carpetColour, smoothstep(0.35, 0.65, ${grass}) * carpetReach.z * (1.0 - smoothstep(carpetReach.x, carpetReach.y, length(vViewPosition))));`
 
+/** How lit materials are set up for the sun's shadows before they're first drawn, and let go of (see useMaterials). */
+export interface MaterialHooks {
+  setup(material: Material): void
+  release(material: Material): void
+}
+
+/** The kinds of tile whose shaders are built before any is drawn (see warmUp). */
+type Kind = 'ground' | 'buildings' | 'streets' | 'grass'
+
 /** No cover: the ground draws itself everywhere, and no grass grows. */
 const NO_COVER = new DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1)
 NO_COVER.needsUpdate = true
@@ -258,6 +277,17 @@ export class WorldTiles {
   /** Grass on the green spaces, close to the camera. */
   readonly grass: WorldGrass
   private disposed = false
+  /** See useMaterials. */
+  private materialHooks: MaterialHooks | null = null
+  /** How far the view reaches this frame (see update's motion.maxDistance). */
+  private maxDistance: number | undefined = undefined
+  /** Loads given up on (see the cancelling in update), by job: their results are still welcome if they come. */
+  private readonly givenUp = new Map<number, GroundEntry | BuildingEntry>()
+  /** The kinds of tile whose shaders are built (see warmUp): only those are drawn, so none holds up a frame. */
+  private readonly programs = new Set<Kind>()
+  private warming = false
+  /** Bound while shaders are built, as the effects draw the scene: into a target (no tone mapping, linear colour). */
+  private readonly compileTarget = new WebGLRenderTarget(1, 1)
   /** Called when tiles arrive or change, for views that draw on demand. */
   onChange: (() => void) | null = null
 
@@ -323,6 +353,70 @@ export class WorldTiles {
       const worker = new Worker(new URL('./tileWorker.ts', import.meta.url), { type: 'module', name: `world-${i}` })
       worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.receive(event.data)
       this.workers.push(worker)
+    }
+  }
+
+  /**
+   * How lit materials are set up for the sun's shadows (and let go of): each as it's made, so its shader is
+   * built once, shadows and all, and not first without them.
+   */
+  useMaterials(hooks: MaterialHooks): void {
+    this.materialHooks = hooks
+    for (const cap of this.caps) hooks.setup(cap.mesh.material as Material)
+    hooks.setup(this.grass.material)
+  }
+
+  /** A new material, set up for the sun's shadows. */
+  private prepared<M extends Material>(material: M): M {
+    this.materialHooks?.setup(material)
+    return material
+  }
+
+  /**
+   * Builds the shaders of every kind of tile before any is drawn, in the background: the GPU compiles them in
+   * parallel while frames go on. Built when first drawn instead, a lit, shadowed material's shader holds up
+   * the frame for a second or more on a cold start (and the next kind's, and the next). Until its kind is
+   * ready, a tile waits unseen (see update).
+   */
+  private warmUp(camera: Camera): void {
+    const renderer = this.renderer
+    const scene = this.scene
+    if (this.warming || !renderer || !scene || !this.materialHooks) return
+    this.warming = true
+    // Asked of the GPU once, now, while it's idle: asked first as a picture goes up, with shaders compiling, the
+    // answer waits for all of them.
+    renderer.capabilities.getMaxAnisotropy()
+    // A triangle with what a kind of tile's geometry carries: the attributes are part of what a shader is built for.
+    const triangle = (extra: 'uv' | 'color' | 'none', morph = false): BufferGeometry => {
+      const geometry = new BufferGeometry()
+      geometry.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]), 3))
+      geometry.setAttribute('normal', new BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]), 3))
+      if (extra === 'uv') geometry.setAttribute('uv', new BufferAttribute(new Float32Array(6), 2))
+      if (extra === 'color') geometry.setAttribute('color', new BufferAttribute(new Float32Array(9), 3))
+      if (morph) geometry.setAttribute('morph', new BufferAttribute(new Float32Array(9), 3))
+      return geometry
+    }
+    const somewhere: TileId = { z: BUILDING_ZOOM, x: 0, y: 0 }
+    const lines = new BufferGeometry()
+    lines.setAttribute('position', new BufferAttribute(new Float32Array(6), 3))
+    // Kept, never drawn: a shader is let go of once no material uses it, and these hold on to theirs.
+    const kinds: [Kind, Object3D[]][] = [
+      ['ground', [new Mesh(triangle('uv', true), this.groundMaterial(NO_COVER, somewhere)), new Mesh(triangle('none'), this.water.material), ...this.caps.map((c) => c.mesh)]],
+      ['streets', [new Mesh(triangle('color'), this.fadeMaterial(this.streetMaterial, { tile: somewhere, mask: NO_COVER }).material)]],
+      ['buildings', [new Mesh(triangle('color'), this.fadeMaterial(this.buildingMaterial).material), new LineSegments(lines, this.edgeMaterial)]],
+      ['grass', [new Mesh(triangle('none'), this.grass.material)]],
+    ]
+    for (const [kind, objects] of kinds) {
+      const before = renderer.getRenderTarget()
+      renderer.setRenderTarget(this.compileTarget)
+      const built = objects.map((object) => renderer.compileAsync(object, camera, scene))
+      renderer.setRenderTarget(before)
+      // Never kept waiting for good (a GPU without parallel compiling still gets there, the old way).
+      const timeout = new Promise((resolve) => setTimeout(resolve, 20000))
+      void Promise.race([Promise.all(built), timeout]).then(
+        () => this.programs.add(kind),
+        () => this.programs.add(kind),
+      )
     }
   }
 
@@ -395,9 +489,12 @@ export class WorldTiles {
       still?: boolean
       /** Where a flight under way is going: the camera there and what it looks at (ECEF). */
       destination?: { position: Vec3; up: Vec3; target: Vec3 } | null
+      /** Nothing further than this (metres) is seen: lost in the haze, say. Tiles beyond aren't drawn or loaded. */
+      maxDistance?: number
     } = {},
   ): void {
     if (this.disposed) return
+    this.maxDistance = motion.maxDistance ?? this.options.maxDistance
     this.clock++
     camera.updateMatrixWorld()
     projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
@@ -420,7 +517,7 @@ export class WorldTiles {
         textureSize: TEXTURE_SIZE,
         maxError: MAX_ERROR,
         maxZoom: MAX_ZOOM,
-        maxDistance: this.options.maxDistance,
+        maxDistance: this.maxDistance,
       },
       {
         isReady: (key) => this.ground.get(key)?.state === 'ready',
@@ -444,12 +541,19 @@ export class WorldTiles {
     do this.arrived.shift()?.()
     while (this.arrived.length > 0 && performance.now() < until)
 
-    // What to show.
+    // What to show (each kind once its shaders are built: see warmUp).
+    this.warmUp(camera)
+    const groundReady = this.programs.has('ground')
+    const buildingsReady = this.programs.has('buildings')
+    const streetsReady = this.programs.has('streets')
+    for (const cap of this.caps) cap.mesh.visible = groundReady
+    this.grass.group.visible = this.programs.has('grass')
     for (const mesh of this.drawn) mesh.visible = false
     this.drawn = []
     this.morph.pixelsPerMetre.value = pixelsPerMetre
     const shown = new Set<string>()
     for (const tile of selection.draw) {
+      if (!groundReady) break
       const key = tileKey(tile)
       const entry = this.ground.get(key)
       if (!entry?.mesh) continue
@@ -477,7 +581,7 @@ export class WorldTiles {
       entry.used = this.clock
       entry.wanted = now
       if (entry.state === 'warm') this.revive(entry)
-      if (entry.mesh && entry.state === 'ready') {
+      if (entry.mesh && entry.state === 'ready' && buildingsReady) {
         entry.mesh.visible = true
         this.drawn.push(entry.mesh)
       }
@@ -491,7 +595,7 @@ export class WorldTiles {
       entry.used = this.clock
       entry.wanted = now
       if (entry.state === 'warm') this.revive(entry)
-      if (entry.mesh && entry.state === 'ready') {
+      if (entry.mesh && entry.state === 'ready' && streetsReady) {
         entry.mesh.visible = true
         this.drawn.push(entry.mesh)
       }
@@ -503,7 +607,7 @@ export class WorldTiles {
     for (const key of keepKeys) {
       if (streetKeys.has(key)) continue
       const entry = this.streets.get(key)
-      if (!entry?.mesh || entry.state !== 'ready') continue
+      if (!entry?.mesh || entry.state !== 'ready' || !streetsReady) continue
       entry.used = this.clock
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
@@ -536,7 +640,9 @@ export class WorldTiles {
       const holders = entry?.mesh?.material instanceof MeshStandardMaterial ? (entry.mesh.material.userData.cover as { on: { value: number } } | undefined) : undefined
       if (!entry || !holders) continue
       const streets = entry.tile.z >= BUILDING_ZOOM ? this.streets.get(tileKey(ancestorAt(entry.tile, BUILDING_ZOOM))) : undefined
-      holders.on.value = streets?.cover && streets.mesh?.visible ? 1 : 0
+      // Only once the streets have dissolved in: cut away sooner, the ground under them would show holes.
+      const fade = streets?.mesh?.userData.fade as { value: number } | undefined
+      holders.on.value = streets?.cover && streets.mesh?.visible && (fade?.value ?? 1) >= 1 ? 1 : 0
     }
 
     // What to load, most needed first, the way open-world games stream: what's in view (the ground coarsest
@@ -573,15 +679,16 @@ export class WorldTiles {
       if (entry.state === 'warm') this.revive(entry)
       else if (entry.state === 'failed' && this.clock >= entry.retryAt && room(spare) && !(fast && tile.z >= FINE_ZOOM)) this.requestGround(entry)
     }
+    for (const tile of want) groundWanted(tile, DETAIL_SLOTS)
+    // The buildings and streets in view, nearest first.
+    for (const key of nearestFirst([...streetKeys, ...buildingKeys], under.lon, under.lat)) {
+      const streets = this.streets.get(key)
+      if (streetKeys.has(key) && streets?.state === 'failed' && this.clock >= streets.retryAt && room(0) && !fast) this.requestStreets(streets)
+      const buildings = this.buildings.get(key)
+      if (buildingKeys.has(key) && buildings?.state === 'failed' && this.clock >= buildings.retryAt && room(0) && !fast) this.requestBuildings(buildings)
+    }
+    // And the ground in view in the slots it left, if the buildings and streets didn't need them.
     for (const tile of want) groundWanted(tile, 0)
-    for (const key of buildingKeys) {
-      const entry = this.buildings.get(key)!
-      if (entry.state === 'failed' && this.clock >= entry.retryAt && room(0) && !fast) this.requestBuildings(entry)
-    }
-    for (const key of streetKeys) {
-      const entry = this.streets.get(key)!
-      if (entry.state === 'failed' && this.clock >= entry.retryAt && room(0) && !fast) this.requestStreets(entry)
-    }
     // Ahead, in the slots the view leaves.
     for (const tile of this.ahead.want) groundWanted(tile, RESERVED)
     const aheadKeys = (minZoom: number) => {
@@ -617,6 +724,9 @@ export class WorldTiles {
         this.pending.delete(job)
         entry.state = 'failed'
         entry.retryAt = 0
+        // A worker busy with it finishes it all the same: kept then, not thrown away and built again later.
+        this.givenUp.set(job, entry)
+        if (this.givenUp.size > MAX_GIVEN_UP) this.givenUp.delete(this.givenUp.keys().next().value!)
       }
     }
     this.evict(selection.draw)
@@ -648,11 +758,20 @@ export class WorldTiles {
     return [-100, 9000]
   }
 
+  /**
+   * The worker for a tile: the one its source tile always goes to, which keeps that tile's data, unless it's
+   * clearly busier than another. All the fine ground round the camera shares a source (its zoom-14 square),
+   * and with its buildings and streets (seconds of work) it would all queue on one worker.
+   */
   private workerFor(tile: TileId): Worker {
-    // The same source tile always goes to the same worker, which keeps its data.
     const source = ancestorAt(tile, Math.min(tile.z, BUILDING_ZOOM))
     const hash = (source.x * 73856093) ^ (source.y * 19349663) ^ (source.z * 83492791)
-    return this.workers[Math.abs(hash) % this.workers.length]!
+    const home = this.workers[Math.abs(hash) % this.workers.length]!
+    const load = new Map<Worker, number>()
+    for (const { worker, entry } of this.pending.values()) load.set(worker, (load.get(worker) ?? 0) + ('kind' in entry && entry.kind === 'streets' ? 4 : 1))
+    let least = home
+    for (const worker of this.workers) if ((load.get(worker) ?? 0) < (load.get(least) ?? 0)) least = worker
+    return (load.get(home) ?? 0) > (load.get(least) ?? 0) + 1 ? least : home
   }
 
   private requestGround(entry: GroundEntry): void {
@@ -712,13 +831,17 @@ export class WorldTiles {
       return
     }
     const job = this.pending.get(response.id)
-    if (!job) {
+    const late = job ? undefined : this.givenUp.get(response.id)
+    this.givenUp.delete(response.id)
+    // A load given up on, finished after all: kept if the tile still has nothing (not asked for again since).
+    const keep = late && response.ok && !late.mesh && late.state === 'failed' && late.job === response.id
+    if (!job && !keep) {
       if (response.ok && response.type === 'ground') response.result.image.close()
       return
     }
     if (response.ok && response.type === 'area') return
     this.pending.delete(response.id)
-    const entry = job.entry
+    const entry = job?.entry ?? late!
     if (this.disposed || entry.job !== response.id) return
     if (!response.ok) {
       this.lastError = response.error
@@ -763,6 +886,8 @@ export class WorldTiles {
       const geometry = water.geometry
       if (!geometry.boundingSphere) geometry.computeBoundingSphere()
       sphere.copy(geometry.boundingSphere!).applyMatrix4(water.matrixWorld)
+      // Only water in view needs its reflection drawn (the view as update last saw it, this frame).
+      if (!frustum.intersectsSphere(sphere)) continue
       const d = Math.max(0, sphere.center.distanceTo(scratch) - sphere.radius)
       if (d < best) {
         best = d
@@ -793,14 +918,7 @@ export class WorldTiles {
     texture.needsUpdate = true
     // Up to the GPU now, within this frame's arrival budget, not in the frame it's first drawn.
     this.renderer?.initTexture(texture)
-    const material = new MeshStandardMaterial({
-      map: texture,
-      roughness: 1,
-      metalness: 0,
-      clippingPlanes: this.options.clip ?? null,
-      clipIntersection: true,
-    })
-    this.morphing(material, entry.tile)
+    const material = this.groundMaterial(texture, entry.tile)
     const geometry = geometryOf(result.mesh, 'uv')
     geometry.setAttribute('morph', new BufferAttribute(result.mesh.morph ?? new Float32Array(result.mesh.positions.length), 3))
     const mesh = new Mesh(geometry, material)
@@ -823,6 +941,19 @@ export class WorldTiles {
     entry.heights = result.heights
     entry.state = 'ready'
     this.coverGround(entry)
+  }
+
+  /** A ground tile's material: its picture, sliding into its shape (see morphing), set up for the sun's shadows. */
+  private groundMaterial(texture: Texture, tile: TileId): MeshStandardMaterial {
+    const material = new MeshStandardMaterial({
+      map: texture,
+      roughness: 1,
+      metalness: 0,
+      clippingPlanes: this.options.clip ?? null,
+      clipIntersection: true,
+    })
+    this.morphing(material, tile)
+    return this.prepared(material)
   }
 
   /**
@@ -918,6 +1049,10 @@ uniform float morphShown;`,
     if (!result.mesh) return
     const { material, fade } = this.fadeMaterial(this.streetMaterial, { tile: entry.tile, mask: entry.cover ?? NO_COVER })
     const mesh = new Mesh(geometryOf(result.mesh, 'color'), material)
+    mesh.userData.fade = fade
+    // Not in the water's reflection: flat, and at a fraction of the screen's resolution the ground's own
+    // picture of the streets (under them) stands in for them there, for far fewer triangles.
+    mesh.layers.set(MAIN_VIEW_LAYER)
     mesh.matrixAutoUpdate = false
     mesh.receiveShadow = true
     mesh.visible = false
@@ -985,7 +1120,7 @@ uniform float morphShown;`,
       const { entry, map, bytes } = this.warm.shift()!
       this.warmBytes -= bytes
       if (entry.state !== 'warm' || !entry.mesh) continue
-      disposeMesh(entry.mesh)
+      this.disposeMesh(entry.mesh)
       ;(entry as BuildingEntry).cover?.dispose()
       if ('kind' in entry) entry.grass = null
       entry.mesh = null
@@ -1023,7 +1158,7 @@ uniform float morphShown;`,
       this.warm.push({ entry, map, bytes })
       this.warmBytes += bytes
     } else {
-      disposeMesh(mesh)
+      this.disposeMesh(mesh)
       map.delete(entry.key)
     }
   }
@@ -1039,13 +1174,22 @@ uniform float morphShown;`,
       entry.state = 'failed'
       return
     }
-    entry.mesh.visible = false
-    this.group.add(entry.mesh)
-    entry.state = 'ready'
-    entry.used = this.clock
-    if ('kind' in entry) {
-      if (entry.cover) for (const ground of this.ground.values()) this.coverGround(ground)
-    } else this.coverGround(entry)
+    // Back on the GPU in the arrivals' time, a few a frame (turning round brings back dozens at once), its
+    // picture up before it's drawn. Loading until then, so nothing asks for it again.
+    entry.state = 'loading'
+    const mesh = entry.mesh
+    this.arrived.push(() => {
+      if (this.disposed || entry.mesh !== mesh) return
+      mesh.visible = false
+      const map = (mesh.material as MeshStandardMaterial).map
+      if (map) this.renderer?.initTexture(map)
+      this.group.add(mesh)
+      entry.state = 'ready'
+      entry.used = this.clock
+      if ('kind' in entry) {
+        if (entry.cover) for (const ground of this.ground.values()) this.coverGround(ground)
+      } else this.coverGround(entry)
+    })
   }
 
   /** The entry for a buildings or streets tile, made if there's none yet. */
@@ -1092,7 +1236,7 @@ uniform float morphShown;`,
           textureSize: TEXTURE_SIZE,
           maxError: MAX_ERROR,
           maxZoom: MAX_ZOOM,
-          maxDistance: this.options.maxDistance,
+          maxDistance: this.maxDistance,
         },
         { isReady: (key) => this.ground.get(key)?.state === 'ready', heightRange: (tile) => this.heightRange(tile) },
       )
@@ -1151,7 +1295,7 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
         .replace('#include <common>', `#include <common>\n${CARPET_PARS}\nuniform sampler2D carpetMask;\nvarying vec2 vCarpetUv;`)
         .replace('#include <color_fragment>', `#include <color_fragment>\n${carpetOn('texture2D(carpetMask, vCarpetUv).g')}`)
     }
-    return { material, fade }
+    return { material: this.prepared(material), fade }
   }
 
   // Questions about what's shown
@@ -1198,23 +1342,37 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
     return null
   }
 
+  /** Takes a mesh off the GPU and lets go of what's its own: its material (and picture) unless shared. */
+  private disposeMesh(mesh: Mesh): void {
+    mesh.geometry.dispose()
+    for (const child of mesh.children) (child as Mesh).geometry?.dispose()
+    const material = mesh.material as MeshStandardMaterial
+    if (material.userData.shared) return
+    this.materialHooks?.release(material)
+    const image = material.map?.image as { close?: () => void } | undefined
+    material.map?.dispose()
+    image?.close?.()
+    material.dispose()
+  }
+
   dispose(): void {
     this.disposed = true
+    this.compileTarget.dispose()
     this.grass.dispose()
     for (const worker of this.workers) worker.terminate()
     for (const resolve of this.asked.values()) resolve(null)
     this.asked.clear()
-    for (const entry of this.ground.values()) if (entry.mesh) disposeMesh(entry.mesh)
-    for (const entry of this.buildings.values()) if (entry.mesh) disposeMesh(entry.mesh)
+    for (const entry of this.ground.values()) if (entry.mesh) this.disposeMesh(entry.mesh)
+    for (const entry of this.buildings.values()) if (entry.mesh) this.disposeMesh(entry.mesh)
     for (const entry of this.streets.values()) {
-      if (entry.mesh) disposeMesh(entry.mesh)
+      if (entry.mesh) this.disposeMesh(entry.mesh)
       entry.cover?.dispose()
     }
     this.streetMaterial.dispose()
     this.buildingMaterial.dispose()
     this.edgeMaterial.dispose()
     this.water.dispose()
-    for (const cap of this.caps) disposeMesh(cap.mesh)
+    for (const cap of this.caps) this.disposeMesh(cap.mesh)
     this.group.clear()
     this.ground.clear()
     this.buildings.clear()
@@ -1320,11 +1478,15 @@ function nearestSquares(lon: number, lat: number): string[] {
   return [`14/${x}/${y}`, `14/${x + dx}/${y}`, `14/${x}/${y + dy}`, `14/${x + dx}/${y + dy}`]
 }
 
-function disposeMesh(mesh: Mesh): void {
-  mesh.geometry.dispose()
-  for (const child of mesh.children) (child as Mesh).geometry?.dispose()
-  const material = mesh.material as MeshStandardMaterial
-  if (material.userData.shared) return
-  material.map?.dispose()
-  material.dispose()
+/** Zoom-14 square keys, nearest a point first (by their middles; flat enough over the few squares in view). */
+function nearestFirst(keys: string[], lon: number, lat: number): string[] {
+  const n = 2 ** 14
+  const φ = Math.max(-85, Math.min(85, lat)) * (Math.PI / 180)
+  const fx = ((lon + 180) / 360) * n
+  const fy = ((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n
+  const distance = (key: string) => {
+    const [, x, y] = key.split('/').map(Number) as [number, number, number]
+    return Math.hypot(x + 0.5 - fx, y + 0.5 - fy)
+  }
+  return [...new Set(keys)].sort((a, b) => distance(a) - distance(b))
 }

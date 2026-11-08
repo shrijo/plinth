@@ -48,9 +48,17 @@ export class Sun {
   private ready = new WeakSet<Material>()
   /** The camera settings and reach the bands were last fitted to. */
   private fitted = ''
+  /** Frames since the scene was last looked through for new materials, and how many to leave between looks (see update). */
+  private sinceLook = Infinity
+  private readonly lookEvery: number
 
-  constructor(camera: PerspectiveCamera, parent: Object3D) {
+  /**
+   * `lookEvery`: how many frames go by between looks through the scene for new materials; 1 (every frame)
+   * unless whatever makes the scene's materials sets them up itself (see setup).
+   */
+  constructor(camera: PerspectiveCamera, parent: Object3D, lookEvery = 1) {
     this.camera = camera
+    this.lookEvery = lookEvery
     this.csm = new CSM({
       camera: this.proxy,
       parent,
@@ -91,20 +99,23 @@ export class Sun {
     const proxy = this.proxy
     proxy.matrixWorld.copy(camera.matrixWorld)
     proxy.matrixWorldInverse.copy(camera.matrixWorldInverse)
-    const near = Math.min(camera.near, 4)
+    // The near plane in powers of two: the camera's moves on every frame of a descent, and refitting the bands
+    // on every frame resizes their maps, so the shadows' texels crawl instead of holding still.
+    const near = 2 ** Math.round(Math.log2(Math.min(Math.max(camera.near, 0.05), 4)))
     // Steps of about 19%, so zooming doesn't refit the bands every frame; rounded up, never short of what's wanted.
     const wanted = Math.min(Math.max(distance, MIN_REACH, contentFrom * 1.2), Math.max(MAX_REACH, contentFrom * 1.5))
     const reach = 2 ** (Math.ceil(Math.log2(wanted) * 4) / 4)
     // Steps too, so the split moves only now and then.
     const from = contentFrom > 0 ? 2 ** (Math.floor(Math.log2(contentFrom) * 8) / 8) : 0
-    const key = `${near}|${camera.far}|${camera.fov}|${camera.aspect}|${reach}|${from}`
+    const key = `${near}|${camera.fov}|${camera.aspect}|${reach}|${from}`
     if (key !== this.fitted) {
       this.fitted = key
       this.contentFrom = from
       proxy.fov = camera.fov
       proxy.aspect = camera.aspect
       proxy.near = near
-      proxy.far = camera.far
+      // Far past the bands, whatever the camera's far plane is doing (the bands end at their reach).
+      proxy.far = Math.max(reach * 4, 1e6)
       proxy.updateProjectionMatrix()
       this.csm.maxFar = reach
       this.csm.updateFrustums()
@@ -120,30 +131,41 @@ export class Sun {
       }
     }
     this.csm.update()
-    this.prepare(scene)
+    // Materials made elsewhere are found by looking through the scene now and then; those whose makers set
+    // them up as they make them (see setup) are ready before they're first drawn.
+    if (++this.sinceLook >= this.lookEvery) {
+      this.sinceLook = 0
+      scene.traverse((object) => {
+        const material = (object as Object3D & { material?: Material | Material[] }).material
+        if (!material) return
+        for (const m of Array.isArray(material) ? material : [material]) this.setup(m)
+      })
+    }
   }
 
-  /** Sets up lit materials not yet seen, before they are first drawn. */
-  private prepare(scene: Object3D): void {
-    scene.traverse((object) => {
-      const material = (object as Object3D & { material?: Material | Material[] }).material
-      if (!material) return
-      for (const m of Array.isArray(material) ? material : [material]) {
-        if (this.ready.has(m)) continue
-        this.ready.add(m)
-        if (!isLit(m)) continue
-        // CSM sets its own onBeforeCompile; a material's own (the ground's geomorph and cut-outs, the fade-in,
-        // the grass) must run too, before it: chained, not replaced.
-        const own = m.onBeforeCompile
-        this.csm.setupMaterial(m)
-        const cascades = m.onBeforeCompile
-        m.onBeforeCompile = function (shader, renderer) {
-          own.call(this, shader, renderer)
-          cascades.call(this, shader, renderer)
-        }
-        m.needsUpdate = true
-      }
-    })
+  /**
+   * Sets up a lit material for the bands, once: best before it's first drawn, or its shader is built twice
+   * (without them, then with).
+   */
+  setup(m: Material): void {
+    if (this.ready.has(m)) return
+    this.ready.add(m)
+    if (!isLit(m)) return
+    // CSM sets its own onBeforeCompile; a material's own (the ground's geomorph and cut-outs, the fade-in,
+    // the grass) must run too, before it: chained, not replaced.
+    const own = m.onBeforeCompile
+    this.csm.setupMaterial(m)
+    const cascades = m.onBeforeCompile
+    m.onBeforeCompile = function (shader, renderer) {
+      own.call(this, shader, renderer)
+      cascades.call(this, shader, renderer)
+    }
+    m.needsUpdate = true
+  }
+
+  /** Lets go of a material that's being thrown away (CSM keeps every material it set up, to update them). */
+  release(m: Material): void {
+    this.csm.shaders.delete(m)
   }
 
   dispose(): void {

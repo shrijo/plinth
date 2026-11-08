@@ -9,6 +9,7 @@ import {
   UniformsUtils,
   Vector2,
   Vector3,
+  Vector4,
   WebGLRenderTarget,
   type Object3D,
   type WebGLRenderer,
@@ -17,8 +18,9 @@ import {
 /**
  * Water: lakes, rivers and the sea, with the world mirrored in them. One
  * reflection is drawn per frame for all of it (the scene seen from below a
- * plane at the water's level, everything under the water clipped away)
- * and every water surface reads from it, rippled by waves made in the
+ * plane at the water's level, everything under the water cut away by the
+ * mirror camera's near plane, so no material needs a clipping variant of
+ * its shader) and every water surface reads from it, rippled by waves made in the
  * shader (no textures), brighter at glancing angles (Fresnel) and glinting
  * where the sun catches it. The colours stay in the model's pale greys,
  * with a hint of blue.
@@ -157,12 +159,20 @@ const normal = new Vector3(0, 1, 0)
 const point = new Vector3()
 const rotation = new Matrix4()
 const screen = new Vector2()
+const q = new Vector4()
+const clip = new Vector4()
+
+/**
+ * Only the main view draws what's on this layer (as well as layer 0): the grass, say, which a rippled
+ * reflection at a fraction of the screen's resolution can't show anyway.
+ */
+export const MAIN_VIEW_LAYER = 1
 
 export class WorldWater {
   readonly material: ShaderMaterial
   private readonly target = new WebGLRenderTarget(1, 1, { type: HalfFloatType })
   private readonly mirror = new PerspectiveCamera()
-  private readonly clip = new Plane()
+  private readonly plane = new Plane()
   private start = performance.now()
 
   constructor(deep = '#b9c6cf', sky = '#e8ecee') {
@@ -213,10 +223,12 @@ export class WorldWater {
       uniforms.mirrored!.value = 0
       return
     }
-    // The size: half the screen's, plenty for a rippled reflection.
+    // The size: half the screen's, in CSS pixels (not the device's, of which a retina screen has four times as
+    // many): plenty for a rippled reflection.
     const size = renderer.getDrawingBufferSize(screen)
-    const w = Math.max(1, Math.floor(size.x / 2))
-    const h = Math.max(1, Math.floor(size.y / 2))
+    const scale = 0.5 / Math.max(1, renderer.getPixelRatio())
+    const w = Math.max(1, Math.floor(size.x * scale))
+    const h = Math.max(1, Math.floor(size.y * scale))
     if (this.target.width !== w || this.target.height !== h) this.target.setSize(w, h)
 
     // The camera mirrored in the plane y = level.
@@ -237,20 +249,30 @@ export class WorldWater {
     mirror.updateMatrixWorld()
     ;(uniforms.mirror!.value as Matrix4).copy(bias).multiply(mirror.projectionMatrix).multiply(mirror.matrixWorldInverse)
 
-    // Everything but the water itself, above the water only, without redrawing the shadows.
-    this.clip.set(normal, -level + 0.05)
-    const clipping = renderer.clippingPlanes
+    // Above the water only: its plane becomes the mirror camera's near plane (an oblique projection, after
+    // Lengyel, as three's Reflector does). Only the depth row changes, so where things land in the picture
+    // (and the logarithmic depth, taken from w) stays as it was.
+    this.plane.setFromNormalAndCoplanarPoint(normal, point.set(0, level + 0.05, 0)).applyMatrix4(mirror.matrixWorldInverse)
+    clip.set(this.plane.normal.x, this.plane.normal.y, this.plane.normal.z, this.plane.constant)
+    const m = mirror.projectionMatrix.elements
+    q.set((Math.sign(clip.x) + m[8]!) / m[0]!, (Math.sign(clip.y) + m[9]!) / m[5]!, -1, (1 + m[10]!) / m[14]!)
+    clip.multiplyScalar(2 / clip.dot(q))
+    m[2] = clip.x
+    m[6] = clip.y
+    m[10] = clip.z + 1
+    m[14] = clip.w
+    mirror.projectionMatrixInverse.copy(mirror.projectionMatrix).invert()
+
+    // Everything but the water itself (and what only the main view draws), without redrawing the shadows.
     const shadows = renderer.shadowMap.autoUpdate
     const before = renderer.getRenderTarget()
     this.material.visible = false
-    renderer.clippingPlanes = [this.clip]
     renderer.shadowMap.autoUpdate = false
     renderer.setRenderTarget(this.target)
     renderer.clear()
     renderer.render(scene as Parameters<WebGLRenderer['render']>[0], mirror)
     renderer.setRenderTarget(before)
     renderer.shadowMap.autoUpdate = shadows
-    renderer.clippingPlanes = clipping
     this.material.visible = true
     uniforms.mirrored!.value = 1
   }

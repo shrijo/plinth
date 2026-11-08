@@ -107,9 +107,11 @@ const ROAD_ZOOM = 14
  */
 async function heightsFor(tile: TileId, signal: AbortSignal): Promise<HeightTile[]> {
   if (tile.z < SHAPE_ZOOM) return [await heightsOf(tile, signal)].filter((h): h is HeightTile => h !== null)
-  // Fine elevation: two zooms deeper than the tile (up to the data's finest), so a tile and its parent read
-  // almost the same heights and the slide between them moves nothing that shows.
-  const zoom = Math.min(TERRAIN_MAX_ZOOM, tile.z + 2)
+  // From zoom 14 on, the finest elevation there is (zoom 15's), so a tile and its parent read the same
+  // heights and the slide between them moves nothing. The coarser shaped tiles (zooms 12 and 13, kilometres
+  // off) read their own zoom's, already finer than their grid: read two zooms deeper, as they were, one took
+  // 36 to 72 downloads, and they were most of a view's.
+  const zoom = tile.z >= ROAD_ZOOM ? TERRAIN_MAX_ZOOM : tile.z
   const b = tileBounds(tile)
   const margin = 70 / 111320
   const wide = margin / Math.max(Math.cos((((b.north + b.south) / 2) * Math.PI) / 180), 0.05)

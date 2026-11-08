@@ -12,6 +12,23 @@ import { tileLat, tileLon, type TileId } from './tiles.ts'
 
 export const VECTOR_TILEJSON = 'https://tiles.openfreemap.org/planet'
 export const TERRAIN_TILES = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+/**
+ * The same terrain tiles under each of the bucket's names. It speaks only HTTP/1.1, so a browser opens six
+ * connections to a host at most, shared by every worker: spread over four names, a view's tiles come four
+ * times as fast. Each tile always from the same one, so the browser's cache still finds it.
+ */
+const TERRAIN_HOSTS = [
+  'https://s3.amazonaws.com/elevation-tiles-prod',
+  'https://elevation-tiles-prod.s3.amazonaws.com',
+  'https://s3.us-east-1.amazonaws.com/elevation-tiles-prod',
+  'https://elevation-tiles-prod.s3.us-east-1.amazonaws.com',
+] as const
+
+/** Where a terrain tile is fetched from (see TERRAIN_HOSTS). */
+export function terrainUrl(tile: TileId): string {
+  const host = TERRAIN_HOSTS[Math.abs((tile.x * 73856093) ^ (tile.y * 19349663) ^ tile.z) % TERRAIN_HOSTS.length]!
+  return `${host}/terrarium/${tile.z}/${tile.x}/${tile.y}.png`
+}
 /** The finest zoom each source has: below it, tiles show part of one at this zoom. */
 export const VECTOR_MAX_ZOOM = 14
 export const TERRAIN_MAX_ZOOM = 15
@@ -95,7 +112,7 @@ export async function fetchFeatures(tile: TileId, signal?: AbortSignal): Promise
 /** A tile's ground heights. */
 export async function fetchHeights(tile: TileId, signal?: AbortSignal): Promise<HeightTile | null> {
   try {
-    const response = await fetchWithRetry(address(TERRAIN_TILES, tile), signal)
+    const response = await fetchWithRetry(terrainUrl(tile), signal)
     // Read here rather than through a canvas: the pixels are numbers, and must come out exactly.
     const image = await decodePng(new Uint8Array(await response.arrayBuffer()))
     return heightsFromTerrarium(tile, image.data, image.width)

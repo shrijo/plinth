@@ -24,6 +24,7 @@ import { CloudsEffect, SKIES, windAt } from './clouds.ts'
 import { ChevronIcon, SlidersIcon } from '../ui/icons.tsx'
 import { DEFAULT_VIEW, GlobeControls, poseOf, type GlobeView } from './globeControls.ts'
 import { WorldTiles } from './WorldTiles.ts'
+import { MAIN_VIEW_LAYER } from './water.ts'
 import '../editor.css'
 import './explorer.css'
 
@@ -175,10 +176,13 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
     <div className="plinth-editor pw-explorer">
       <Canvas
         className="pe-canvas"
-        gl={{ logarithmicDepthBuffer: true, antialias: true, toneMapping: NeutralToneMapping }}
+        // No antialiasing of the canvas's own: the effects draw the scene into their own (multisampled) buffers.
+        gl={{ logarithmicDepthBuffer: true, antialias: false, toneMapping: NeutralToneMapping }}
         camera={{ fov: 40, near: 1, far: 1e8, position: [0, 1e7, 0] }}
         shadows
-        dpr={[1, 2]}
+        // At most one and a half device pixels to a CSS pixel: a retina screen's full two would draw nearly
+        // twice the pixels for a picture that hardly looks different, and halve the frame rate.
+        dpr={[1, 1.5]}
         // R3F's performance signal (see the frame loop): dropped while the view moves, back after 300 ms still.
         performance={{ min: 0.5, max: 1, debounce: 300 }}
       >
@@ -193,9 +197,8 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
           onView={onViewChange}
           onClose={setClose}
         />
-        {(look.occlusion || look.clouds !== 'off') && (
-          <Effects controlsRef={controlsRef} occlusion={look.occlusion} clouds={look.clouds === 'off' ? null : clouds} />
-        )}
+        {/* Always drawn through the effects (even with both off), so the scene's shaders never change with them. */}
+        <Effects controlsRef={controlsRef} occlusion={look.occlusion} clouds={look.clouds === 'off' ? null : clouds} />
       </Canvas>
       <ViewPanel look={look} onChange={changeLook} weather={look.clouds === 'live' ? weather : null} controlsRef={controlsRef} />
       {choosing !== null && (
@@ -398,7 +401,16 @@ function Effects({
   occlusion: boolean
   clouds: CloudsEffect | null
 }) {
-  const ao = useRef<{ configuration: { aoRadius: number } } | null>(null)
+  const ao = useRef<{ configuration: { aoRadius: number; transparencyAware: boolean } } | null>(null)
+  const composer = useRef<unknown>(null)
+  // Four samples a pixel on a plain screen; two at higher densities, where pixels are small already and the
+  // multisampled buffers cost the most (four of them at 1.5x took about as long as the rest of the frame).
+  const dpr = useThree((s) => s.viewport.dpr)
+  useEffect(() => {
+    // Nothing see-through to shade for: no walk through the scene every frame looking for it.
+    if (ao.current) ao.current.configuration.transparencyAware = false
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__plinthEffects = { composer, ao }
+  }, [occlusion])
   useFrame(({ camera }) => {
     const pass = ao.current
     const controls = controlsRef.current
@@ -411,8 +423,8 @@ function Effects({
     if (Math.abs(radius - current) > current * 0.002) pass.configuration.aoRadius = current + (radius - current) * 0.15
   })
   return (
-    <EffectComposer multisampling={4} renderPriority={1}>
-      <>{occlusion && <N8AO ref={ao} halfRes aoSamples={16} denoiseSamples={8} denoiseRadius={12} aoRadius={4} distanceFalloff={1} intensity={3} color="black" />}</>
+    <EffectComposer ref={composer as never} multisampling={dpr > 1 ? 2 : 4} renderPriority={1}>
+      <>{occlusion && <N8AO ref={ao} halfRes aoSamples={8} denoiseSamples={4} denoiseRadius={12} aoRadius={4} distanceFalloff={1} intensity={3} color="black" />}</>
       <>{clouds && <primitive object={clouds} dispose={null} />}</>
       <ToneMapping mode={ToneMappingMode.NEUTRAL} />
     </EffectComposer>
@@ -564,7 +576,11 @@ function ExplorerScene({
     const fog = new Fog(light.skyHorizon.clone(), 1e9, 2e9)
     scene.fog = fog
     scene.background = light.skyHorizon.clone()
-    const sun = new Sun(camera, scene)
+    // The world sets up its own materials for the sun as it makes them: the scene is only looked through now and then.
+    const sun = new Sun(camera, scene, 20)
+    world.useMaterials({ setup: (m) => sun.setup(m), release: (m) => sun.release(m) })
+    // The main view draws what reflections and captures leave out (the grass).
+    camera.layers.enable(MAIN_VIEW_LAYER)
     sun.setLight(light.direction, light.sun, light.sunIntensity)
     world.water.setSun(light.direction, light.sun)
     world.water.setSky(light.skyHorizon)
@@ -647,10 +663,17 @@ function ExplorerScene({
 
     const to = controls.destination
     const pose = to ? poseOf(to) : null
+    // Past the haze's far edge the ground is the sky's colour: not drawn, nor loaded. (The haze goes by depth
+    // along the view, which reaches furthest out in the corners.)
+    const cornerAngle = Math.atan(Math.tan((camera.fov * Math.PI) / 360) * Math.hypot(1, camera.aspect))
     world.update(camera, size.height, {
       still: state.performance.current >= 1,
       destination: to && pose ? { position: pose.position, up: pose.up, target: ecefFromLonLat(to.lon, to.lat, to.height) } : null,
+      maxDistance: (fog.far / Math.cos(cornerAngle)) * 1.05,
     })
+    // The sun's bands fitted (and any new materials set up for them) before anything is drawn this frame:
+    // the reflection too, or new materials would be built once without the shadows first.
+    sun?.update(Math.min(Math.max(view.range * 2.5, 150), 9000), get().scene, Math.max(0, (altitude - 400) * 0.7))
     world.reflect(get().gl, get().scene, camera)
     // The grass leans with the wind here (from the weather, or a breeze from the west), a few times a second.
     if (performance.now() - reported.current.grass > 500) {
@@ -670,7 +693,6 @@ function ExplorerScene({
       }
       clouds.setView(camera, world, lightRef.current, { color: fog.color, near: fog.near, far: fog.far }, seconds)
     }
-    sun?.update(Math.min(Math.max(view.range * 2.5, 150), 9000), get().scene, Math.max(0, (altitude - 400) * 0.7))
 
     // The square being marked out, on the screen.
     if (choosing !== null && outline.current) {

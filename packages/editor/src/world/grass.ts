@@ -24,6 +24,7 @@ import {
 } from 'three'
 import { ecefFromLonLat, fromFrame, lonLatFromEcef, tileFrame, tileKey, tileWidth, toFrame, type Frame, type TileId, type Vec3 } from '@plinth/world'
 import { GRASS_MASK } from './protocol.ts'
+import { MAIN_VIEW_LAYER } from './water.ts'
 
 /**
  * Grass on the green spaces round the camera, the way games grow it (after
@@ -196,7 +197,8 @@ export class WorldGrass {
   private readonly source: GrassSource
   private readonly curved = bladeGeometry(4)
   private readonly simple = bladeGeometry(1)
-  private readonly material: MeshStandardMaterial
+  /** The blades' material (one for all of them). */
+  readonly material: MeshStandardMaterial
   private readonly uniforms = {
     grassTime: { value: 0 },
     /** x, z: the wind's way in the scene; y: its strength (0 to 1). */
@@ -238,6 +240,9 @@ void main() { gl_FragColor = vec4(vHeight, 0.0, 0.0, 1.0); }`,
   constructor(source: GrassSource, clip: Plane[] | null) {
     this.source = source
     this.uniforms.grassHeights.value = this.heights.texture
+    // The height map is of everything on the ground the main view draws (the streets and fills too), the grass
+    // itself hidden while it's taken (see capture).
+    this.above.layers.enable(MAIN_VIEW_LAYER)
     this.material = new MeshStandardMaterial({
       color: '#ffffff',
       roughness: 0.92,
@@ -586,6 +591,8 @@ diffuseColor.rgb *= mix(grassBase, grassTip, smoothstep(0.0, 1.0, vGrassUp)) * (
     mesh.castShadow = false
     mesh.raycast = () => {}
     mesh.visible = false
+    // Not in the water's reflection, nor the height map: the main view's alone.
+    mesh.layers.set(MAIN_VIEW_LAYER)
     return { mesh, geometry, roots, shapes, size, simple: false }
   }
 
@@ -668,6 +675,9 @@ diffuseColor.rgb *= mix(grassBase, grassTip, smoothstep(0.0, 1.0, vGrassUp)) * (
     const shown: [Object3D, boolean][] = hide.map((o) => [o, o.visible])
     for (const o of hide) o.visible = false
     const override = scene.overrideMaterial
+    // No background: drawn, it would fill every texel nothing covers with the sky's colour, read as a height.
+    const background = scene.background
+    scene.background = null
     const target = renderer.getRenderTarget()
     const autoShadows = renderer.shadowMap.autoUpdate
     const planes = renderer.clippingPlanes
@@ -685,6 +695,7 @@ diffuseColor.rgb *= mix(grassBase, grassTip, smoothstep(0.0, 1.0, vGrassUp)) * (
     renderer.clippingPlanes = planes
     renderer.shadowMap.autoUpdate = autoShadows
     scene.overrideMaterial = override
+    scene.background = background
     for (const [o, visible] of shown) o.visible = visible
 
     this.uniforms.grassHeightsArea.value.set(camera.x, camera.z, half, 1)
