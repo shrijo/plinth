@@ -299,6 +299,11 @@ export class GlobeControls {
     return this.flight !== null
   }
 
+  /** Where the flight under way is going, or null: the world loads it while the camera is on its way. */
+  get destination(): GlobeView | null {
+    return this.flight?.to ?? null
+  }
+
   stop(): void {
     this.flight = null
     this.stopCoasting()

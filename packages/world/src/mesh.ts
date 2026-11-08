@@ -450,7 +450,17 @@ export function buildingMesh(
       !cut && building.minHeight === 0
         ? pitchedRoof(frame, ground, building.height, top, building.guessedHeight === true, colours, writer)
         : null
-    writer.prism(frame, ground, bottom, top - (sunk ?? 0), building.minHeight > 0, colours, seams)
+    // A flat roof on a building of some size gets what flat roofs have: a parapet round its edge, and on a
+    // big one the stair and lift housing and the plant. A building cut by the tile's edge stays plain, so
+    // the two tiles' halves can't disagree.
+    const parapet = sunk === null && !cut && building.minHeight === 0 && building.height >= PARAPET_FROM_HEIGHT ? flatRoofDetail(ground, building.height) : null
+    if (parapet) {
+      const roof = top - parapet.height
+      writer.prism(frame, ground, bottom, top, false, colours, seams, roof)
+      for (const [wall, inner] of parapet.ledges) writer.ledge(frame, wall, inner, roof, top, colours.wall)
+      const plant = shade(colours.wall, 0.86)
+      for (const box of parapet.boxes) writer.prism(frame, [box.ring], roof - 0.05, roof + box.height, false, { ...colours, wall: plant, roof: plant })
+    } else writer.prism(frame, ground, bottom, top - (sunk ?? 0), building.minHeight > 0, colours, seams)
   }
   for (const road of options.roads ?? []) {
     if (!road.bridge || road.tunnel) continue
@@ -544,6 +554,162 @@ function bridge(
 
 /** A street bridge's sidewalks, either side of its deck (metres). */
 const BRIDGE_WALK = 1.8
+
+/** Flat roofs: a parapet round buildings at least this high and big (metres, square metres), this thick. */
+const PARAPET_FROM_HEIGHT = 6
+const PARAPET_FROM_AREA = 60
+const PARAPET_THICKNESS = 0.3
+/** Rooftop plant (a stair and lift housing, ventilation units) on flat roofs at least this big and high. */
+const PLANT_FROM_AREA = 280
+const PLANT_FROM_HEIGHT = 9
+
+interface FlatRoofDetail {
+  /** The parapet's height above the roof. */
+  height: number
+  /** Per ring of the outline: the wall ring and the ring set in from it (longitudes and latitudes). */
+  ledges: [number[], number[]][]
+  /** Boxes on the roof: their outline (anticlockwise) and height above it. */
+  boxes: { ring: number[]; height: number }[]
+}
+
+/** A colour a little darker (or lighter, over 1). */
+function shade(colour: readonly number[], by: number): [number, number, number] {
+  return [colour[0]! * by, colour[1]! * by, colour[2]! * by]
+}
+
+/** A ring offset sideways (to the left of its way, metres), with mitred corners. */
+function offsetLeft(ring: [number, number][], distance: number): [number, number][] {
+  const n = ring.length
+  return ring.map((p, i) => {
+    const prev = ring[(i + n - 1) % n]!
+    const next = ring[(i + 1) % n]!
+    const e1 = [p[0] - prev[0], p[1] - prev[1]]
+    const e2 = [next[0] - p[0], next[1] - p[1]]
+    const l1 = Math.hypot(e1[0]!, e1[1]!) || 1
+    const l2 = Math.hypot(e2[0]!, e2[1]!) || 1
+    const n1 = [-e1[1]! / l1, e1[0]! / l1]
+    const n2 = [-e2[1]! / l2, e2[0]! / l2]
+    let mx = n1[0]! + n2[0]!
+    let my = n1[1]! + n2[1]!
+    const ml = Math.hypot(mx, my) || 1
+    mx /= ml
+    my /= ml
+    const cosine = Math.max(mx * n1[0]! + my * n1[1]!, 0.4)
+    return [p[0] + (mx * distance) / cosine, p[1] + (my * distance) / cosine]
+  })
+}
+
+function insideLocal(ring: [number, number][], x: number, y: number): boolean {
+  let hit = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i]!
+    const [xj, yj] = ring[j]!
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit
+  }
+  return hit
+}
+
+/**
+ * What a flat roof carries, from its outline (the walls' rings, outer
+ * anticlockwise, holes clockwise, as longitudes and latitudes) and the
+ * building's height. Null for a roof too small for a parapet. Placed the
+ * same way every time (seeded by where the building is), so a tile built
+ * again looks the same.
+ */
+function flatRoofDetail(ground: readonly number[][], height: number): FlatRoofDetail | null {
+  const outer = ground[0]
+  if (!outer || outer.length < 6) return null
+  let lon0 = 0
+  let lat0 = 0
+  const corners = outer.length / 2
+  for (let i = 0; i < corners; i++) {
+    lon0 += outer[i * 2]! / corners
+    lat0 += outer[i * 2 + 1]! / corners
+  }
+  const east = 111320 * Math.max(Math.cos((lat0 * Math.PI) / 180), 0.05)
+  const north = 111320
+  const local = ground.map((ring) => {
+    const points: [number, number][] = []
+    for (let i = 0; i + 1 < ring.length; i += 2) points.push([(ring[i]! - lon0) * east, (ring[i + 1]! - lat0) * north])
+    return points
+  })
+  const back = (ring: [number, number][]): number[] => ring.flatMap(([x, y]) => [lon0 + x / east, lat0 + y / north])
+  const ringArea = (ring: [number, number][]) => {
+    let sum = 0
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) sum += ring[j]![0] * ring[i]![1] - ring[i]![0] * ring[j]![1]
+    return sum / 2
+  }
+  const area = Math.abs(ringArea(local[0]!)) - local.slice(1).reduce((sum, hole) => sum + Math.abs(ringArea(hole)), 0)
+  if (area < PARAPET_FROM_AREA) return null
+  // Narrow buildings have no room for a parapet's inner ring.
+  let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity]
+  for (const [x, y] of local[0]!) {
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+  }
+  if (Math.min(maxX - minX, maxY - minY) < 4) return null
+
+  // Into the building's material is to the left of each ring's way (outer anticlockwise, holes clockwise).
+  const ledges: [number[], number[]][] = local.map((ring) => [back(ring), back(offsetLeft(ring, PARAPET_THICKNESS))])
+  const parapet = height > 20 ? 1.1 : 0.8
+  const boxes: FlatRoofDetail['boxes'] = []
+  if (area >= PLANT_FROM_AREA && height >= PLANT_FROM_HEIGHT) {
+    // Clear of the parapet by a little, and of any courtyard.
+    const free = offsetLeft(local[0]!, PARAPET_THICKNESS + 0.8)
+    const courtyards = local.slice(1).map((ring) => offsetLeft(ring, PARAPET_THICKNESS + 0.8))
+    const onRoof = (x: number, y: number) => insideLocal(free, x, y) && !courtyards.some((ring) => insideLocal(ring, x, y))
+    // Aligned with the building: along its longest side.
+    let angle = 0
+    let longest = 0
+    const ring = local[0]!
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i]!
+      const b = ring[(i + 1) % ring.length]!
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1])
+      if (l > longest) {
+        longest = l
+        angle = Math.atan2(b[1] - a[1], b[0] - a[0])
+      }
+    }
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    // Seeded by where the building is.
+    let seed = (Math.floor(lon0 * 1e6) * 73856093) ^ (Math.floor(lat0 * 1e6) * 19349663)
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const placed: { x: number; y: number; r: number }[] = []
+    const tryBox = (width: number, depth: number, boxHeight: number, x: number, y: number): boolean => {
+      const corners: [number, number][] = [
+        [-width / 2, -depth / 2],
+        [width / 2, -depth / 2],
+        [width / 2, depth / 2],
+        [-width / 2, depth / 2],
+      ].map(([u, v]) => [x + u! * cos - v! * sin, y + u! * sin + v! * cos])
+      if (!corners.every(([cx, cy]) => onRoof(cx, cy))) return false
+      const r = Math.hypot(width, depth) / 2
+      if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < p.r + r + 0.6)) return false
+      placed.push({ x, y, r })
+      boxes.push({ ring: back(corners), height: boxHeight })
+      return true
+    }
+    // The stair and lift housing: near the middle if it fits there.
+    const middle = local[0]!.reduce((sum, p) => [sum[0] + p[0] / local[0]!.length, sum[1] + p[1] / local[0]!.length], [0, 0])
+    let housed = tryBox(3.6, 2.8, 2.6, middle[0], middle[1])
+    for (let k = 0; k < 12 && !housed; k++) housed = tryBox(3.6, 2.8, 2.6, minX + random() * (maxX - minX), minY + random() * (maxY - minY))
+    // Ventilation units, more on bigger roofs.
+    const units = Math.min(4, Math.floor((area - 200) / 450))
+    for (let u = 0, tries = 0; u < units && tries < 30; tries++) {
+      if (tryBox(2.4, 1.6, 1.1, minX + random() * (maxX - minX), minY + random() * (maxY - minY))) u++
+    }
+  }
+  return { height: parapet, ledges, boxes }
+}
 
 /** A house roof's usual pitch (degrees), and what counts as a house (metres, square metres). */
 const ROOF_PITCH = 34
@@ -658,7 +824,17 @@ class MeshWriter {
   }
 
   /** Walls round each ring (lon, lat pairs) from `bottom` to `top`, a roof, and a floor if it's raised. */
-  prism(frame: Frame, rings: number[][], bottom: number, top: number, underside: boolean, colours: BuildingColours, seams?: boolean[][]): void {
+  prism(
+    frame: Frame,
+    rings: number[][],
+    bottom: number,
+    top: number,
+    underside: boolean,
+    colours: BuildingColours,
+    seams?: boolean[][],
+    /** The roof's height, if below the walls' top (a parapet stands round it); the top by default. */
+    roofAt = top,
+  ): void {
     const at = (lon: number, lat: number, h: number): Vec3 => {
       place(frame, ecefFromLonLat(lon, lat, h), this.scratch, 0)
       return [this.scratch[0]!, this.scratch[1]!, this.scratch[2]!]
@@ -695,14 +871,14 @@ class MeshWriter {
         this.indices.push(k0, k1, k2, k0, k2, k3)
       }
     }
-    // The roof, triangulated on the map (east, north) and laid at the top.
+    // The roof, triangulated on the map (east, north) and laid at its height.
     const flat: number[] = []
     const holes: number[] = []
     const lonLat: number[] = []
     rings.forEach((ring, r) => {
       if (r > 0) holes.push(flat.length / 2)
       for (let i = 0; i < ring.length; i += 2) {
-        const p = at(ring[i]!, ring[i + 1]!, top)
+        const p = at(ring[i]!, ring[i + 1]!, roofAt)
         flat.push(p[0], -p[2])
         lonLat.push(ring[i]!, ring[i + 1]!)
       }
@@ -711,7 +887,7 @@ class MeshWriter {
     if (triangles.length === 0) return
     const up: Vec3 = [0, 1, 0]
     const first = this.positions.length / 3
-    for (let i = 0; i < lonLat.length; i += 2) this.vertex(frame, lonLat[i]!, lonLat[i + 1]!, top, up, colours.roof)
+    for (let i = 0; i < lonLat.length; i += 2) this.vertex(frame, lonLat[i]!, lonLat[i + 1]!, roofAt, up, colours.roof)
     for (let t = 0; t < triangles.length; t += 3) {
       const a = triangles[t]!
       const b = triangles[t + 1]!
@@ -736,6 +912,67 @@ class MeshWriter {
   }
 
   /** A slab along points (deck heights given), `width` wide and `thickness` deep: top, sides and underside. */
+  /**
+   * A parapet's inside: from the roof up to the walls' top along `inner` (a
+   * ring set in from the wall ring `wall`, in the same direction), facing
+   * the roof, and the coping on top between the two rings.
+   */
+  ledge(frame: Frame, wall: number[], inner: number[], roof: number, top: number, colour: readonly number[]): void {
+    const at = (lon: number, lat: number, h: number): Vec3 => {
+      place(frame, ecefFromLonLat(lon, lat, h), this.scratch, 0)
+      return [this.scratch[0]!, this.scratch[1]!, this.scratch[2]!]
+    }
+    const n = inner.length / 2
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n
+      const a = at(inner[i * 2]!, inner[i * 2 + 1]!, roof)
+      const b = at(inner[j * 2]!, inner[j * 2 + 1]!, roof)
+      const dx = b[0] - a[0]
+      const dz = b[2] - a[2]
+      const l = Math.hypot(dx, dz)
+      if (l < 0.05) continue
+      // Facing the roof: to the left of the ring's way (the side the building's material isn't).
+      const normal: Vec3 = [dz / l, 0, -dx / l]
+      const k0 = this.vertex(frame, inner[i * 2]!, inner[i * 2 + 1]!, roof, normal, colour)
+      const k1 = this.vertex(frame, inner[j * 2]!, inner[j * 2 + 1]!, roof, normal, colour)
+      const k2 = this.vertex(frame, inner[j * 2]!, inner[j * 2 + 1]!, top, normal, colour)
+      const k3 = this.vertex(frame, inner[i * 2]!, inner[i * 2 + 1]!, top, normal, colour)
+      this.indices.push(k0, k2, k1, k0, k3, k2)
+      const topA = at(inner[i * 2]!, inner[i * 2 + 1]!, top)
+      const topB = at(inner[j * 2]!, inner[j * 2 + 1]!, top)
+      this.edges.push(...topA, ...topB)
+    }
+    // The coping: the band between the rings, the bigger one outside.
+    const area = (ring: number[]) => {
+      let sum = 0
+      const m = ring.length / 2
+      for (let i = 0, k = m - 1; i < m; k = i++) sum += ring[k * 2]! * ring[i * 2 + 1]! - ring[i * 2]! * ring[k * 2 + 1]!
+      return Math.abs(sum)
+    }
+    const [outer, hole] = area(inner) > area(wall) ? [inner, wall] : [wall, inner]
+    const flat: number[] = []
+    const lonLat: number[] = []
+    for (const ring of [outer, hole]) {
+      for (let i = 0; i < ring.length; i += 2) {
+        const p = at(ring[i]!, ring[i + 1]!, top)
+        flat.push(p[0], -p[2])
+        lonLat.push(ring[i]!, ring[i + 1]!)
+      }
+    }
+    const triangles = earcut(flat, [outer.length / 2], 2)
+    const up: Vec3 = [0, 1, 0]
+    const first = this.positions.length / 3
+    for (let i = 0; i < lonLat.length; i += 2) this.vertex(frame, lonLat[i]!, lonLat[i + 1]!, top, up, colour)
+    for (let t = 0; t < triangles.length; t += 3) {
+      const a = triangles[t]!
+      const b = triangles[t + 1]!
+      const c = triangles[t + 2]!
+      const ccw = (flat[b * 2]! - flat[a * 2]!) * (flat[c * 2 + 1]! - flat[a * 2 + 1]!) - (flat[b * 2 + 1]! - flat[a * 2 + 1]!) * (flat[c * 2]! - flat[a * 2]!) > 0
+      if (ccw) this.indices.push(first + a, first + b, first + c)
+      else this.indices.push(first + a, first + c, first + b)
+    }
+  }
+
   /** An editor-space mesh (x east, y up, z south; metres) placed at a spot on the globe, lifted to a height. */
   meshAt(frame: Frame, lon: number, lat: number, lift: number, data: MeshData, colour: readonly number[]): void {
     const east = 111320 * Math.max(Math.cos((lat * Math.PI) / 180), 0.05)

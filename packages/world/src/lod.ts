@@ -24,6 +24,12 @@ export interface View {
   maxZoom: number
   /** Tiles further than this from the camera (metres) are left out; infinite by default. */
   maxDistance?: number
+  /**
+   * Where the camera looks (a unit vector, ECEF). With it, tiles toward the
+   * middle of the view load before those at its edges, within each level
+   * (Cesium's foveated loading): what the eye is on fills in first.
+   */
+  forward?: Vec3
 }
 
 export interface Bounds {
@@ -131,7 +137,18 @@ export function selectTiles(view: View, selector: Selector): Selection {
       }
       if (covered) return parts
     }
-    if (!ready) want.push({ tile, priority: tile.z * 1e9 + distance })
+    if (!ready) {
+      let weight = 1
+      if (view.forward) {
+        const dx = bounds.centre[0] - view.camera[0]
+        const dy = bounds.centre[1] - view.camera[1]
+        const dz = bounds.centre[2] - view.camera[2]
+        const l = Math.hypot(dx, dy, dz) || 1
+        const cos = (dx * view.forward[0] + dy * view.forward[1] + dz * view.forward[2]) / l
+        weight = 1 + 2 * (1 - Math.max(cos, -1))
+      }
+      want.push({ tile, priority: tile.z * 1e9 + distance * weight })
+    }
     return ready ? [tile] : null
   }
   draw.push(...(cover({ z: 0, x: 0, y: 0 }) ?? []))

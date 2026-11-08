@@ -80,9 +80,8 @@ describe('buildings', () => {
         roof: [0.9, 0.9, 0.9],
       })!
       const p = mesh.positions
-      const centre = [0, 0, 0]
-      for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) centre[k]! += p[i + k]! / (p.length / 3)
-      let walls = 0
+      let facades = 0
+      let parapet = 0
       for (let t = 0; t < mesh.indices.length; t += 3) {
         const [a, b, c] = [mesh.indices[t]!, mesh.indices[t + 1]!, mesh.indices[t + 2]!].map((k) => [p[k * 3]!, p[k * 3 + 1]!, p[k * 3 + 2]!])
         const u = [b![0]! - a![0]!, b![1]! - a![1]!, b![2]! - a![2]!]
@@ -92,13 +91,26 @@ describe('buildings', () => {
         const k = mesh.indices[t]! * 3
         const normal = [mesh.normals[k]!, mesh.normals[k + 1]!, mesh.normals[k + 2]!]
         expect(face[0]! * normal[0]! + face[1]! * normal[1]! + face[2]! * normal[2]!).toBeGreaterThan(0)
-        if (Math.abs(normal[1]!) < 0.1) {
-          walls++
-          const out = [a![0]! - centre[0]!, 0, a![2]! - centre[2]!]
-          expect(out[0]! * normal[0]! + out[2]! * normal[2]!).toBeGreaterThan(0)
-        } else expect(normal[1]).toBeGreaterThan(0.9)
+        if (Math.abs(normal[1]!) >= 0.1) {
+          expect(normal[1]).toBeGreaterThan(0.9)
+          continue
+        }
+        // Upright: a facade (reaching down to the footing) faces out; the inside of the parapet round the flat
+        // roof (standing wholly above the roof) faces in, over it. The plant on the roof, a shade darker, has
+        // walls of its own. The tile's frame is centred on the tile, so outwards is away from its middle.
+        if (mesh.colors![k]! < 0.95) continue
+        const outwards = a![0]! * normal[0]! + a![2]! * normal[2]!
+        const lowest = Math.min(a![1]!, b![1]!, c![1]!)
+        if (lowest < 410) {
+          facades++
+          expect(outwards).toBeGreaterThan(0)
+        } else {
+          parapet++
+          expect(outwards).toBeLessThan(0)
+        }
       }
-      expect(walls).toBe(8)
+      expect(facades).toBe(8)
+      expect(parapet).toBe(8)
     })
   }
 })

@@ -53,4 +53,26 @@ describe('choosing tiles', () => {
     expect(want.length).toBeGreaterThan(0)
     for (let i = 1; i < want.length; i++) expect(want[i]!.z).toBeGreaterThanOrEqual(want[i - 1]!.z)
   })
+
+  it('asks for the middle of the view before its edges, within a level (foveated)', () => {
+    // Looking east, low over Zurich: of the tiles wanted at one zoom, those ahead come before those to the side.
+    const camera = ecefFromLonLat(8.54, 47.37, 600)
+    const ahead = ecefFromLonLat(8.56, 47.37, 0)
+    const length = Math.hypot(ahead[0] - camera[0], ahead[1] - camera[1], ahead[2] - camera[2])
+    const forward: [number, number, number] = [
+      (ahead[0] - camera[0]) / length,
+      (ahead[1] - camera[1]) / length,
+      (ahead[2] - camera[2]) / length,
+    ]
+    const view: View = { ...viewFrom(600, 2500), camera, forward }
+    const { want } = selectTiles(view, { isReady: (k) => Number(k.split('/')[0]) < 12, heightRange: () => [0, 500] })
+    const level = Math.max(...want.map((t) => t.z))
+    const finest = want.filter((t) => t.z === level)
+    expect(finest.length).toBeGreaterThan(4)
+    // The first few lie east of the camera (ahead), on average further east than the last few.
+    const east = (t: TileId) => t.x + 0.5
+    const firsts = finest.slice(0, 3).reduce((sum, t) => sum + east(t), 0) / 3
+    const lasts = finest.slice(-3).reduce((sum, t) => sum + east(t), 0) / 3
+    expect(firsts).toBeGreaterThan(lasts)
+  })
 })

@@ -22,7 +22,7 @@ import { Sun } from '../scene/sun.ts'
 import { CLOUD_SKIES, readViewPreferences, writeViewPreferences, type CloudSky } from '../state.ts'
 import { CloudsEffect, SKIES, windAt } from './clouds.ts'
 import { ChevronIcon, SlidersIcon } from '../ui/icons.tsx'
-import { DEFAULT_VIEW, GlobeControls, type GlobeView } from './globeControls.ts'
+import { DEFAULT_VIEW, GlobeControls, poseOf, type GlobeView } from './globeControls.ts'
 import { WorldTiles } from './WorldTiles.ts'
 import '../editor.css'
 import './explorer.css'
@@ -179,6 +179,8 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
         camera={{ fov: 40, near: 1, far: 1e8, position: [0, 1e7, 0] }}
         shadows
         dpr={[1, 2]}
+        // R3F's performance signal (see the frame loop): dropped while the view moves, back after 300 ms still.
+        performance={{ min: 0.5, max: 1, debounce: 300 }}
       >
         <ExplorerScene
           onControls={keepControls}
@@ -602,13 +604,22 @@ function ExplorerScene({
     parts.current?.world.setOutlines(look.outlines)
   }, [look.outlines])
 
-  useFrame(({ camera, size }) => {
+  const lastView = useRef('')
+  useFrame((state) => {
+    const { camera, size } = state
     const p = parts.current
     if (!p || !(camera instanceof PerspectiveCamera)) return
     const { world, controls, sun, fog } = p
     controls.update(performance.now())
     const altitude = controls.altitude()
     const view = controls.view
+    // Moving: R3F's performance regresses, and comes back once the view has been still a moment. The world
+    // streams by it: arrivals take less of each frame while moving (smooth first), more once still.
+    const seen = `${view.lon.toFixed(7)},${view.lat.toFixed(7)},${view.range.toFixed(2)},${view.heading.toFixed(4)},${view.pitch.toFixed(4)}`
+    if (seen !== lastView.current) {
+      lastView.current = seen
+      state.performance.regress()
+    }
 
     // Depth: from close in to past the horizon (and the mountains beyond it).
     const surface = Math.hypot(...ecefFromLonLat(view.lon, view.lat, 0))
@@ -634,7 +645,12 @@ function ExplorerScene({
       sky.current.visible = high < 1
     }
 
-    world.update(camera, size.height)
+    const to = controls.destination
+    const pose = to ? poseOf(to) : null
+    world.update(camera, size.height, {
+      still: state.performance.current >= 1,
+      destination: to && pose ? { position: pose.position, up: pose.up, target: ecefFromLonLat(to.lon, to.lat, to.height) } : null,
+    })
     world.reflect(get().gl, get().scene, camera)
     if (clouds) {
       const now = performance.now()
