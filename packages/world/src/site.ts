@@ -1,0 +1,696 @@
+import {
+  createId,
+  FLAT_ROOF,
+  insertPolyline,
+  insertStreet,
+  intersection,
+  levelName,
+  longestSideAngle,
+  polygonCentroid,
+  restackLevels,
+  signedArea2,
+  addSpotHeights,
+  groundUnder,
+  terrainThrough,
+  type MultiPolygon,
+  type Roof,
+  type RoofKind,
+  DEFAULT_STREET,
+  STREET_TYPES,
+  type StreetKind,
+  type StreetProps,
+  type Tx,
+  type Vec2,
+} from '@plinth/core'
+import type { BuildingFeature, RoadKind, TileFeatures } from './features.ts'
+import { clipLine, type Rect } from './clip.ts'
+import { enuFrame, frameToLonLat, lonLatToFrame, type Frame } from './geo.ts'
+import type { OsmBuilding, OsmData } from './osm.ts'
+import { tidyNetwork } from './network.ts'
+import { tileLat, tileLon, tilesCovering, type LonLatBounds } from './tiles.ts'
+
+/**
+ * A site made from a square of the real world: its buildings (each with
+ * floors, height and roof as far as the map says), its streets (with
+ * lanes and sidewalks by their kind) and the lie of the land as spot
+ * heights. Planned from map data first (plain numbers, in site metres
+ * east and north of the square's middle), then built into a document.
+ */
+
+export interface SitePlan {
+  name: string
+  lon: number
+  lat: number
+  /** The height above sea level the site's zero stands for: the ground at the middle. */
+  ground: number
+  /** The square, in site metres. */
+  area: Vec2[]
+  buildings: PlannedBuilding[]
+  streets: PlannedStreet[]
+  /** Heights above sea level, as spot heights keep them (the site is drawn from `ground`). */
+  spots: { x: number; y: number; z: number }[]
+  /** Where the buildings and streets came from: OpenStreetMap itself, or map tiles. */
+  source: 'osm' | 'tiles'
+}
+
+export interface PlannedBuilding {
+  name: string
+  outline: Vec2[]
+  floors: number
+  floorHeight: number
+  roof: Roof | null
+}
+
+export interface PlannedStreet {
+  points: Vec2[]
+  props: Partial<StreetProps>
+}
+
+/** The square round a point: its corners in site metres and its extent in longitude and latitude. */
+export function squareAround(lon: number, lat: number, size: number, margin = 0): { frame: Frame; area: Vec2[]; bounds: LonLatBounds } {
+  const frame = enuFrame(lon, lat, 0)
+  const h = size / 2
+  const area = [
+    { x: -h, y: -h },
+    { x: h, y: -h },
+    { x: h, y: h },
+    { x: -h, y: h },
+  ]
+  const m = h + margin
+  const sw = frameToLonLat(frame, -m, -m)
+  const ne = frameToLonLat(frame, m, m)
+  const nw = frameToLonLat(frame, -m, m)
+  const se = frameToLonLat(frame, m, -m)
+  return {
+    frame,
+    area,
+    bounds: {
+      west: Math.min(sw.lon, nw.lon),
+      east: Math.max(ne.lon, se.lon),
+      south: Math.min(sw.lat, se.lat),
+      north: Math.max(ne.lat, nw.lat),
+    },
+  }
+}
+
+export interface PlanInput {
+  name: string
+  lon: number
+  lat: number
+  size: number
+  /** Ground heights above sea level. */
+  heightAt: (lon: number, lat: number) => number
+  /** The water's surface where there's water (the ground there lies a little under it). */
+  waterAt?: (lon: number, lat: number) => number | null
+}
+
+/** Spot heights on a grid over the square, closer on small sites. */
+function spotsFor(input: PlanInput, frame: Frame): SitePlan['spots'] {
+  const step = Math.min(Math.max(input.size / 24, 8), 25)
+  const n = Math.ceil(input.size / step)
+  const spots: SitePlan['spots'] = []
+  for (let j = 0; j <= n; j++) {
+    for (let i = 0; i <= n; i++) {
+      const x = -input.size / 2 + (i * input.size) / n
+      const y = -input.size / 2 + (j * input.size) / n
+      const place = frameToLonLat(frame, x, y)
+      const ground = input.heightAt(place.lon, place.lat)
+      const water = input.waterAt?.(place.lon, place.lat) ?? null
+      // Under water the ground lies below the surface, as the world's does.
+      spots.push({ x: round(x), y: round(y), z: round(water === null ? ground : Math.min(ground, water - 1.5)) })
+    }
+  }
+  return spots
+}
+
+const round = (v: number, step = 0.01) => Math.round(v / step) * step
+
+// From OpenStreetMap
+
+export function planFromOsm(input: PlanInput, osm: OsmData): SitePlan {
+  const { frame, area } = squareAround(input.lon, input.lat, input.size)
+  const toSite = ([lon, lat]: [number, number]): Vec2 => {
+    const [e, n] = lonLatToFrame(frame, lon, lat, 0)
+    return { x: e, y: n }
+  }
+  const ground = Math.round(input.heightAt(input.lon, input.lat))
+  const half = input.size / 2
+  const inside = (p: Vec2) => Math.abs(p.x) <= half && Math.abs(p.y) <= half
+
+  const buildings: PlannedBuilding[] = []
+  const named = new Map<string, number>()
+  for (const building of osm.buildings) {
+    if (!keepBuilding(building.tags)) continue
+    const outer = building.outer.map(toSite)
+    const holes = building.holes.map((h) => h.map(toSite))
+    for (const outline of piecesWithoutHoles(outer, holes)) {
+      const clean = tidyOutline(outline)
+      if (!clean || !inside(polygonCentroid(clean))) continue
+      buildings.push(buildingFromTags(clean, building, named))
+    }
+  }
+
+  let streets: PlannedStreet[] = []
+  const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
+  // Sidewalks mapped as footways of their own: the streets' sidewalks go where they are.
+  const footways: Vec2[][] = []
+  // Surveyed surfaces (area:highway): carriageway outlines of road classes, and sidewalk outlines.
+  const roadAreas: Vec2[][] = []
+  const sidewalkAreas: Vec2[][] = []
+  for (const area of osm.areas ?? []) {
+    const ring = area.outer.map(toSite)
+    if (ring.length < 3) continue
+    if (KINDS[area.kind.replace(/_link$/, '')] && area.kind !== 'pedestrian') roadAreas.push(ring)
+    else if (area.kind === 'footway') sidewalkAreas.push(ring)
+  }
+  for (const way of osm.streets) {
+    if (way.tags.footway === 'sidewalk' && (way.tags.highway === 'footway' || way.tags.highway === 'path')) footways.push(way.points.map(toSite))
+    const props = streetFromTags(way.tags)
+    if (!props) continue
+    const drawn = isReversed(way.tags) ? [...way.points].reverse() : way.points
+    const line = Float64Array.from(drawn.flatMap((p) => {
+      const s = toSite(p)
+      return [s.x, s.y]
+    }))
+    for (const piece of clipLine(line, rect)) {
+      const points = simplify(toPoints(piece), 0.4)
+      if (points.length >= 2) streets.push({ points, props })
+    }
+  }
+
+  streets = tidied(streets, half, footways, { roadAreas, sidewalkAreas })
+
+  // Marked pedestrian crossings (nodes on the ways) become zebras on the street ends they sit at.
+  const zebras = (osm.crossings ?? []).filter((c) => isMarkedCrossing(c.tags)).map((c) => toSite(c.at))
+  if (zebras.length > 0) {
+    for (const street of streets) {
+      const [a, b] = [street.points[0]!, street.points[street.points.length - 1]!]
+      for (const zebra of zebras) {
+        if (Math.hypot(zebra.x - a.x, zebra.y - a.y) < CROSSING_REACH) street.props.crosswalkA = true
+        if (Math.hypot(zebra.x - b.x, zebra.y - b.y) < CROSSING_REACH) street.props.crosswalkB = true
+      }
+    }
+  }
+  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets, spots: spotsFor(input, frame), source: 'osm' }
+}
+
+/** A crossing node's end of street gets a zebra when it lies within this of the end (metres). */
+const CROSSING_REACH = 7
+
+/** Whether a crossing is marked on the ground (a zebra or signals), not just a place people cross. */
+function isMarkedCrossing(tags: Record<string, string>): boolean {
+  if (tags.crossing === 'unmarked' || tags.crossing === 'no' || tags['crossing:markings'] === 'no') return false
+  return (
+    tags.crossing === 'zebra' ||
+    tags.crossing === 'marked' ||
+    tags.crossing === 'traffic_signals' ||
+    tags.crossing_ref === 'zebra' ||
+    (tags['crossing:markings'] ?? '') !== ''
+  )
+}
+
+/** Open structures (carports, canopies) and buildings being demolished aren't buildings to model. */
+function keepBuilding(tags: Record<string, string>): boolean {
+  const kind = tags.building
+  if (!kind || kind === 'no' || kind === 'roof' || kind === 'carport' || kind === 'ruins' || kind === 'construction') return false
+  if (tags['demolished:building'] || tags['razed:building']) return false
+  return true
+}
+
+const SMALL = new Set(['garage', 'garages', 'shed', 'hut', 'kiosk', 'cabin', 'service', 'transformer_tower', 'toilets', 'bunker', 'greenhouse'])
+const HOUSES = new Set(['house', 'detached', 'semidetached_house', 'terrace', 'bungalow', 'farm', 'residential', 'villa'])
+
+const ROOF_SHAPES: Record<string, RoofKind> = {
+  gabled: 'gable',
+  'double_saltbox': 'gable',
+  saltbox: 'gable',
+  gambrel: 'gable',
+  hipped: 'hip',
+  'half-hipped': 'hip',
+  'side_hipped': 'hip',
+  pyramidal: 'hip',
+  mansard: 'hip',
+  skillion: 'shed',
+  lean_to: 'shed',
+  flat: 'flat',
+}
+const DEFAULT_PITCH: Record<RoofKind, number> = { flat: 35, gable: 40, hip: 35, shed: 15 }
+
+/** A number from a tag ("12", "12.5 m", "12,5"), or null. */
+export function tagNumber(value: string | undefined): number | null {
+  if (!value) return null
+  const match = /-?\d+(?:[.,]\d+)?/.exec(value)
+  if (!match) return null
+  let n = Number(match[0].replace(',', '.'))
+  // Feet, if marked as such.
+  if (/ft|'/.test(value)) n *= 0.3048
+  return Number.isFinite(n) ? n : null
+}
+
+function buildingFromTags(outline: Vec2[], building: OsmBuilding, named: Map<string, number>): PlannedBuilding {
+  const tags = building.tags
+  const levels = tagNumber(tags['building:levels'])
+  const height = tagNumber(tags.height) ?? tagNumber(tags['building:height'])
+  const kind = ROOF_SHAPES[tags['roof:shape'] ?? ''] ?? 'flat'
+  const pitched = kind !== 'flat'
+  let roofHeight = tagNumber(tags['roof:height'])
+  const area = Math.abs(signedArea2(outline)) / 2
+  let perimeter = 0
+  outline.forEach((a, i) => {
+    const b = outline[(i + 1) % outline.length]!
+    perimeter += Math.hypot(b.x - a.x, b.y - a.y)
+  })
+  // Half the building's depth, about: exact for a square, a little more for a long block.
+  const halfDepth = Math.max((2 * area) / Math.max(perimeter, 1), 2)
+
+  let pitch = DEFAULT_PITCH[kind]
+  const angle = tagNumber(tags['roof:angle'])
+  if (angle !== null && angle > 3 && angle < 75) pitch = angle
+  else if (pitched && roofHeight !== null && roofHeight > 0) {
+    const run = kind === 'shed' ? halfDepth * 2 : halfDepth
+    pitch = Math.min(Math.max((Math.atan(roofHeight / run) * 180) / Math.PI, 8), 65)
+  }
+  if (pitched && roofHeight === null) {
+    const run = kind === 'shed' ? halfDepth * 2 : halfDepth
+    roofHeight = Math.tan((pitch * Math.PI) / 180) * run
+  }
+
+  let floors: number
+  let floorHeight = 3
+  const walls = height !== null ? Math.max(height - (pitched ? (roofHeight ?? 0) : 0), 2.4) : null
+  if (levels !== null && levels >= 1) {
+    floors = Math.round(levels)
+    if (walls !== null) floorHeight = walls / floors
+  } else if (walls !== null) {
+    floors = Math.max(1, Math.round(walls / 3.1))
+    floorHeight = walls / floors
+  } else {
+    floors = SMALL.has(tags.building ?? '') ? 1 : HOUSES.has(tags.building ?? '') ? 2 : 3
+  }
+  floors = Math.min(Math.max(floors, 1), 120)
+  floorHeight = Math.round(Math.min(Math.max(floorHeight, 2.5), 6) * 100) / 100
+
+  let roof: Roof | null = null
+  if (pitched) {
+    let direction: number | null = null
+    const facing = tagNumber(tags['roof:direction'])
+    if (kind === 'shed' && facing !== null) direction = (((90 - facing) % 360) + 360) % 360
+    else if (tags['roof:orientation'] === 'across') {
+      direction = (((longestSideAngle([[outline.map((p) => [p.x, p.y] as [number, number])]]) + 90) % 360) + 360) % 360
+    }
+    roof = { ...FLAT_ROOF, kind, pitch: Math.round(pitch), overhang: 0.3, direction }
+  }
+
+  const street = tags['addr:street']
+  const number = tags['addr:housenumber']
+  let name = tags.name ?? (street ? `${street}${number ? ` ${number}` : ''}` : '')
+  if (name) {
+    // Parts of one building, or one address over several: numbered.
+    const seen = named.get(name) ?? 0
+    named.set(name, seen + 1)
+    if (seen > 0) name = `${name} (${seen + 1})`
+  }
+  return { name, outline, floors, floorHeight, roof }
+}
+
+/** OpenStreetMap's highway types as the street types they are. */
+const KINDS: Record<string, StreetKind> = {
+  motorway: 'motorway',
+  trunk: 'trunk',
+  primary: 'primary',
+  secondary: 'secondary',
+  tertiary: 'tertiary',
+  unclassified: 'unclassified',
+  road: 'unclassified',
+  residential: 'residential',
+  living_street: 'living_street',
+  pedestrian: 'pedestrian',
+  service: 'service',
+  busway: 'service',
+}
+
+/**
+ * A street's cross-section from its tags, read the way OpenStreetMap
+ * data is meant to be read (Key:lanes and its assumptions; osm2lanes'
+ * defaults where a width is untagged):
+ *
+ * - `lanes`, or the sum of `lanes:forward`, `lanes:backward` and
+ *   `lanes:both_ways`. Untagged, a two-way road has 2 lanes and a one-way
+ *   street 1, except motorways and the carriageways of divided trunk
+ *   roads, which have 2 (the wiki's assumed values).
+ * - `width` (or `est_width`) is the carriageway's, shared over the lanes.
+ * - Sidewalks per `sidewalk`/`sidewalk:left`/`sidewalk:right`, with
+ *   `sidewalk:<side>:width` where tagged; cycle lanes per `cycleway:*`
+ *   with their `:width`; parking lanes per `parking:*`.
+ *
+ * Null for ways that aren't streets to model. (A one-way street mapped
+ * against its drawing, `oneway=-1`, is to be turned round: see isReversed.)
+ */
+export function streetFromTags(tags: Record<string, string>): StreetProps | null {
+  const highway = (tags.highway ?? '').replace(/_link$/, '')
+  const kind = KINDS[highway]
+  if (!kind) return null
+  if (tags.area === 'yes' || tags.tunnel === 'yes' || tags.tunnel === 'building_passage' || tags.covered === 'yes') return null
+  if (highway === 'service' && tags.service && tags.service !== 'alley') return null
+  const base = STREET_TYPES[kind].props
+  const props: StreetProps = { ...DEFAULT_STREET, ...base, crosswalkA: false, crosswalkB: false }
+  // A roundabout's ring is one way by definition (junction=roundabout implies it), one lane unless tagged.
+  const roundabout = tags.junction === 'roundabout' || tags.junction === 'circular'
+  const oneway =
+    tags.oneway === 'yes' || tags.oneway === '1' || tags.oneway === 'true' || tags.oneway === '-1' || highway === 'motorway' || roundabout
+  props.oneway = oneway && kind !== 'pedestrian'
+
+  // Lanes: the tag, or the directional tags summed (lanes:both_ways is a middle turning lane).
+  const forward = tagNumber(tags['lanes:forward'])
+  const backward = tagNumber(tags['lanes:backward'])
+  const bothWays = tagNumber(tags['lanes:both_ways'])
+  const lanes =
+    tagNumber(tags.lanes) ?? (forward !== null || backward !== null ? (forward ?? 0) + (oneway ? 0 : backward ?? 0) + (bothWays ?? 0) : null)
+  if (lanes !== null && lanes >= 1) props.lanes = Math.min(Math.round(lanes), 8)
+  else if (roundabout) props.lanes = 1
+  // Untagged: one lane one way, but 2 on a motorway or a divided trunk road's carriageway.
+  else if (oneway) props.lanes = kind === 'motorway' || kind === 'trunk' ? Math.max(props.lanes, 2) : 1
+  const link = (tags.highway ?? '').endsWith('_link')
+  if (link) {
+    // Slip roads: one lane, no sidewalks.
+    props.lanes = Math.min(props.lanes, 1)
+    props.sidewalkLeft = props.sidewalkRight = 0
+  }
+  // The carriageway's width, if given, shared between the lanes.
+  const width = tagNumber(tags.width) ?? tagNumber(tags.est_width)
+  if (width !== null && width > 2 && width < 40) props.laneWidth = Math.round((width / props.lanes) * 100) / 100
+  else if (props.lanes === 1 && props.laneWidth < 3.25 && kind !== 'service') props.laneWidth = 3.5
+
+  // Sidewalks as tagged, where they are. One mapped as a footway of its own (`separate`) is still there:
+  // footways aren't modelled, so the street draws it.
+  const sidewalk = tags.sidewalk ?? tags['sidewalk:both']
+  const side = base.sidewalkLeft || 1.8
+  const has = (value: string | undefined) => value === 'yes' || value === 'separate'
+  if (sidewalk === 'both' || has(sidewalk)) props.sidewalkLeft = props.sidewalkRight = side
+  else if (sidewalk === 'left') {
+    props.sidewalkLeft = side
+    props.sidewalkRight = 0
+  } else if (sidewalk === 'right') {
+    props.sidewalkLeft = 0
+    props.sidewalkRight = side
+  } else if (sidewalk === 'no' || sidewalk === 'none') props.sidewalkLeft = props.sidewalkRight = 0
+  if (tags['sidewalk:left'] === 'no') props.sidewalkLeft = 0
+  else if (has(tags['sidewalk:left'])) props.sidewalkLeft = side
+  if (tags['sidewalk:right'] === 'no') props.sidewalkRight = 0
+  else if (has(tags['sidewalk:right'])) props.sidewalkRight = side
+  // Their widths, where tagged.
+  const span = (key: string, most: number) => {
+    const value = tagNumber(tags[key])
+    return value !== null && value > 0.5 && value < 10 ? Math.min(value, most) : null
+  }
+  const walks = span('sidewalk:both:width', 6) ?? span('sidewalk:width', 6)
+  if (props.sidewalkLeft > 0) props.sidewalkLeft = span('sidewalk:left:width', 6) ?? walks ?? props.sidewalkLeft
+  if (props.sidewalkRight > 0) props.sidewalkRight = span('sidewalk:right:width', 6) ?? walks ?? props.sidewalkRight
+
+  const cycle = (key: string) => /lane|track|exclusive/.test(tags[key] ?? '')
+  if (cycle('cycleway') || cycle('cycleway:both')) props.bikeLeft = props.bikeRight = 1.6
+  if (cycle('cycleway:left')) props.bikeLeft = 1.6
+  if (cycle('cycleway:right')) props.bikeRight = 1.6
+  const cycles = span('cycleway:both:width', 3.5) ?? span('cycleway:width', 3.5)
+  if (props.bikeLeft > 0) props.bikeLeft = span('cycleway:left:width', 3.5) ?? cycles ?? props.bikeLeft
+  if (props.bikeRight > 0) props.bikeRight = span('cycleway:right:width', 3.5) ?? cycles ?? props.bikeRight
+
+  const parks = (key: string) => /parallel|lane|diagonal|perpendicular|yes/.test(tags[key] ?? '')
+  if (parks('parking:both') || parks('parking:lane:both')) props.parkingLeft = props.parkingRight = 2.2
+  if (parks('parking:left') || parks('parking:lane:left')) props.parkingLeft = 2.2
+  if (parks('parking:right') || parks('parking:lane:right')) props.parkingRight = 2.2
+  return props
+}
+
+/** Whether a way's traffic runs against the way it's drawn (`oneway=-1`). */
+export function isReversed(tags: Record<string, string>): boolean {
+  return tags.oneway === '-1' || tags.oneway === 'reverse'
+}
+
+/** Planned streets tidied into a network (see tidyNetwork), as two-point streets again. */
+function tidied(
+  streets: PlannedStreet[],
+  half: number,
+  footways: Vec2[][] = [],
+  surfaces: { roadAreas?: Vec2[][]; sidewalkAreas?: Vec2[][] } = {},
+): PlannedStreet[] {
+  const network = tidyNetwork(
+    streets.map((s) => ({ points: s.points, props: { ...DEFAULT_STREET, ...s.props } })),
+    // Ends on the square's edge are where the streets were cut, not dead ends.
+    { keepEnd: (p) => Math.abs(p.x) > half - 0.5 || Math.abs(p.y) > half - 0.5, footways, ...surfaces },
+  )
+  return Object.values(network.streets).map((street) => {
+    const { id: _id, a, b, control: _control, ...props } = street
+    return { points: [network.nodes[a]!, network.nodes[b]!].map((p) => ({ x: round(p.x), y: round(p.y) })), props }
+  })
+}
+
+// From map tiles (when OpenStreetMap's servers are busy)
+
+const TILE_STREETS: Partial<Record<RoadKind, string>> = {
+  motorway: 'motorway',
+  trunk: 'trunk',
+  primary: 'primary',
+  secondary: 'secondary',
+  tertiary: 'tertiary',
+  minor: 'residential',
+  service: 'service',
+}
+
+export function planFromTiles(input: PlanInput, tiles: readonly TileFeatures[]): SitePlan {
+  const { frame, area } = squareAround(input.lon, input.lat, input.size)
+  const ground = Math.round(input.heightAt(input.lon, input.lat))
+  const half = input.size / 2
+  const rect: Rect = { minX: -half, minY: -half, maxX: half, maxY: half }
+  const buildings: PlannedBuilding[] = []
+  const streets: PlannedStreet[] = []
+  // Footways in the tiles: where sidewalks are mapped as their own, the streets' sidewalks go there.
+  const footways: Vec2[][] = []
+  for (const data of tiles) {
+    const { z, x, y } = data.tile
+    const toSite = (u: number, v: number): Vec2 => {
+      const [e, n] = lonLatToFrame(frame, tileLon(x + u, z), tileLat(y + v, z), 0)
+      return { x: e, y: n }
+    }
+    const ring = (line: Float64Array) => {
+      const points: Vec2[] = []
+      for (let i = 0; i < line.length; i += 2) points.push(toSite(line[i]!, line[i + 1]!))
+      return points
+    }
+    // Each tile's own part (they overlap a little), and only what's in the square.
+    const corners: [number, number][] = [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ]
+    const own: MultiPolygon = [[corners.map(([u, v]) => {
+      const p = toSite(u, v)
+      return [p.x, p.y] as [number, number]
+    })]]
+    for (const building of data.buildings as BuildingFeature[]) {
+      const outer = ring(building.shape.outer)
+      const holes = building.shape.holes.map(ring)
+      const clipped = intersection([[outer, ...holes].map((r) => r.map((p) => [p.x, p.y] as [number, number]))], own)
+      for (const polygon of clipped) {
+        const [o, ...h] = polygon.map((r) => r.map(([px, py]) => ({ x: px, y: py })))
+        for (const outline of piecesWithoutHoles(o!, h)) {
+          const clean = tidyOutline(outline)
+          if (!clean) continue
+          const c = polygonCentroid(clean)
+          if (Math.abs(c.x) > half || Math.abs(c.y) > half) continue
+          const floors = Math.max(1, Math.round(building.height / 3.2))
+          buildings.push({ name: '', outline: clean, floors, floorHeight: Math.round(Math.min(Math.max(building.height / floors, 2.5), 6) * 100) / 100, roof: null })
+        }
+      }
+    }
+    for (const road of data.roads) {
+      if (road.kind === 'path' && (road.subclass === 'footway' || road.subclass === 'path') && !road.tunnel && !road.bridge) footways.push(ring(road.line))
+      const highway = TILE_STREETS[road.kind]
+      if (!highway || road.tunnel) continue
+      const props = streetFromTags({ highway, ...(road.oneway ? { oneway: 'yes' } : {}) })!
+      const tileRect = ownRect(toSite)
+      const line = Float64Array.from(ring(road.line).flatMap((p) => [p.x, p.y]))
+      for (const piece of clipLine(line, tileRect).flatMap((l) => clipLine(l, rect))) {
+        const points = simplify(toPoints(piece), 0.4)
+        if (points.length >= 2) streets.push({ points, props })
+      }
+    }
+  }
+  return { name: input.name, lon: input.lon, lat: input.lat, ground, area, buildings, streets: tidied(streets, half, footways), spots: spotsFor(input, frame), source: 'tiles' }
+}
+
+/** A tile's own extent in site metres, near enough as a rectangle at site scale. */
+function ownRect(toSite: (u: number, v: number) => Vec2): Rect {
+  const a = toSite(0, 0)
+  const b = toSite(1, 1)
+  return { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) }
+}
+
+/** The z14 tiles covering an area. */
+export function tilesFor(bounds: LonLatBounds) {
+  return tilesCovering(bounds, 14)
+}
+
+// Outlines
+
+/**
+ * A polygon with holes as pieces without: cut across each hole (through
+ * its middle) until none is left. A block round a courtyard becomes its
+ * wings; buildings in Plinth are solid outlines.
+ */
+export function piecesWithoutHoles(outer: Vec2[], holes: Vec2[][]): Vec2[][] {
+  const start: MultiPolygon = [[outer, ...holes].map((r) => r.map((p) => [p.x, p.y] as [number, number]))]
+  const done: Vec2[][] = []
+  let queue: { polygon: MultiPolygon[number]; depth: number }[] = start.map((polygon) => ({ polygon, depth: 0 }))
+  while (queue.length > 0) {
+    const next: typeof queue = []
+    for (const { polygon, depth } of queue) {
+      const [ring, ...inner] = polygon
+      if (!ring) continue
+      if (inner.length === 0 || depth > 6) {
+        done.push(ring.map(([x, y]) => ({ x, y })))
+        continue
+      }
+      // Cut through the first hole's middle, across the polygon's longer way.
+      const hole = inner[0]!
+      const xs = ring.map((p) => p[0])
+      const ys = ring.map((p) => p[1])
+      const minX = Math.min(...xs) - 1
+      const maxX = Math.max(...xs) + 1
+      const minY = Math.min(...ys) - 1
+      const maxY = Math.max(...ys) + 1
+      const hx = hole.reduce((s, p) => s + p[0], 0) / hole.length
+      const hy = hole.reduce((s, p) => s + p[1], 0) / hole.length
+      const across = maxX - minX < maxY - minY
+      const box = (x0: number, y0: number, x1: number, y1: number): MultiPolygon => [
+        [
+          [
+            [x0, y0],
+            [x1, y0],
+            [x1, y1],
+            [x0, y1],
+          ],
+        ],
+      ]
+      const halves = across ? [box(minX, minY, maxX, hy), box(minX, hy, maxX, maxY)] : [box(minX, minY, hx, maxY), box(hx, minY, maxX, maxY)]
+      for (const half of halves) for (const piece of intersection([polygon], half)) next.push({ polygon: piece, depth: depth + 1 })
+    }
+    queue = next
+  }
+  return done.map((ring) => {
+    const first = ring[0]
+    const last = ring.at(-1)
+    return first && last && ring.length > 1 && first.x === last.x && first.y === last.y ? ring.slice(0, -1) : ring
+  })
+}
+
+/** An outline without repeated or nearly-straight-through points, or null if too small to be a building. */
+export function tidyOutline(points: Vec2[]): Vec2[] | null {
+  let ring = simplifyRing(points, 0.12)
+  // Anticlockwise, as Plinth draws outlines.
+  if (signedArea2(ring) < 0) ring = [...ring].reverse()
+  if (ring.length < 3 || Math.abs(signedArea2(ring)) / 2 < 6) return null
+  return ring.map((p) => ({ x: round(p.x), y: round(p.y) }))
+}
+
+function toPoints(line: Float64Array): Vec2[] {
+  const points: Vec2[] = []
+  for (let i = 0; i < line.length; i += 2) points.push({ x: line[i]!, y: line[i + 1]! })
+  return points
+}
+
+/** Douglas–Peucker: points closer than `tolerance` to the line through their neighbours go. */
+export function simplify(points: Vec2[], tolerance: number): Vec2[] {
+  if (points.length <= 2) return points
+  const keep = new Uint8Array(points.length)
+  keep[0] = keep[points.length - 1] = 1
+  const stack: [number, number][] = [[0, points.length - 1]]
+  while (stack.length > 0) {
+    const [a, b] = stack.pop()!
+    let worst = -1
+    let far = tolerance
+    for (let i = a + 1; i < b; i++) {
+      const d = distanceToSegment(points[i]!, points[a]!, points[b]!)
+      if (d > far) {
+        far = d
+        worst = i
+      }
+    }
+    if (worst >= 0) {
+      keep[worst] = 1
+      stack.push([a, worst], [worst, b])
+    }
+  }
+  return points.filter((_, i) => keep[i])
+}
+
+function simplifyRing(points: Vec2[], tolerance: number): Vec2[] {
+  // Without repeats first, then simplified as a loop (split at the point furthest from the first).
+  const unique = points.filter((p, i) => {
+    const q = points[(i + 1) % points.length]!
+    return Math.hypot(p.x - q.x, p.y - q.y) > 0.02
+  })
+  if (unique.length < 4) return unique
+  let far = 0
+  let split = 0
+  unique.forEach((p, i) => {
+    const d = Math.hypot(p.x - unique[0]!.x, p.y - unique[0]!.y)
+    if (d > far) {
+      far = d
+      split = i
+    }
+  })
+  const first = simplify(unique.slice(0, split + 1), tolerance)
+  const second = simplify([...unique.slice(split), unique[0]!], tolerance)
+  return [...first.slice(0, -1), ...second.slice(0, -1)]
+}
+
+function distanceToSegment(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const l = dx * dx + dy * dy
+  const t = l === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l))
+  return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t)
+}
+
+// Into the document
+
+/**
+ * Builds a planned site: the meta (its place on Earth, its ground height
+ * and area), spot heights, streets, then the buildings, each on the
+ * terrain under it: a ground floor with its walls and a run of copies of
+ * it for the floors above, and its roof.
+ */
+export function buildSite(tx: Tx, plan: SitePlan): { buildings: number; streets: number } {
+  tx.setMeta({ name: plan.name, origin: { kind: 'lonlat', lon: plan.lon, lat: plan.lat }, ground: plan.ground, worldArea: plan.area })
+  addSpotHeights(tx, plan.spots)
+  const terrain = terrainThrough(plan.spots.map((s, i) => ({ id: String(i), ...s })))
+  let streets = 0
+  for (const street of plan.streets) {
+    for (let i = 0; i + 1 < street.points.length; i++) streets += insertStreet(tx, street.points[i]!, street.points[i + 1]!, street.props).length > 0 ? 1 : 0
+  }
+  let count = 0
+  for (const planned of plan.buildings) {
+    count++
+    const id = createId()
+    tx.putBuilding({ id, name: planned.name || `Building ${count}`, ...(planned.roof ? { roof: planned.roof } : {}) })
+    const ground = tx.putLevel({ id: createId(), buildingId: id, name: levelName(0), elevation: 0, height: planned.floorHeight, masterId: null })
+    insertPolyline(tx, ground.id, planned.outline, true)
+    if (planned.floors > 1) {
+      tx.putLevel({
+        id: createId(),
+        buildingId: id,
+        name: `${levelName(1)} – ${levelName(planned.floors - 1)}`,
+        elevation: planned.floorHeight,
+        height: planned.floorHeight,
+        masterId: ground.id,
+        count: planned.floors - 1,
+      })
+    }
+    // On the lowest ground under its corners, measured from the site's zero.
+    const under = terrain ? groundUnder(terrain, planned.outline) : null
+    restackLevels(tx, id, under === null ? 0 : Math.round((under - plan.ground) * 100) / 100)
+  }
+  return { buildings: count, streets }
+}

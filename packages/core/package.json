@@ -1,0 +1,26 @@
+{
+  "name": "@plinth/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "delaunator": "5.0.1",
+    "earcut": "^3.2.4",
+    "polygon-clipping": "^0.15.7",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/delaunator": "5.0.3",
+    "dxf-parser": "1.1.2",
+    "vitest": "^5.1.0",
+    "web-ifc": "0.0.66"
+  }
+}

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="224" fill="#16181d"/>
+  <!-- object on the plinth -->
+  <path d="M512 214 L668 304 L512 394 L356 304 Z" fill="#f2efe8"/>
+  <path d="M356 304 L512 394 L512 574 L356 484 Z" fill="#c9c4b8"/>
+  <path d="M668 304 L512 394 L512 574 L668 484 Z" fill="#a39d90"/>
+  <!-- plinth -->
+  <path d="M512 534 L792 646 L512 758 L232 646 Z" fill="#e36b3a"/>
+  <path d="M232 646 L512 758 L512 836 L232 724 Z" fill="#b8532b"/>
+  <path d="M792 646 L512 758 L512 836 L792 724 Z" fill="#8f3f20"/>
+</svg>

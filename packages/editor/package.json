@@ -1,0 +1,32 @@
+{
+  "name": "@plinth/editor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "react": "^19.3.1",
+    "vite": "^8.3.6"
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  },
+  "dependencies": {
+    "@plinth/core": "workspace:*",
+    "@plinth/world": "workspace:*",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "@react-three/postprocessing": "3.2.2",
+    "earcut": "^3.2.4",
+    "postprocessing": "^6.39.6",
+    "three": "^0.187.0",
+    "zustand": "^5.0.16"
+  }
+}
