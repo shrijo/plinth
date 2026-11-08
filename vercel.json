@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "[ -f node_modules/.plinth-workspace ] || rm -rf node_modules apps/*/node_modules packages/*/node_modules; pnpm install --frozen-lockfile && touch node_modules/.plinth-workspace",
   "buildCommand": "pnpm run build",
   "outputDirectory": "apps/web/dist"
 }
