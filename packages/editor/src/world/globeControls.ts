@@ -1,5 +1,6 @@
 import { PerspectiveCamera, Raycaster, Vector2, Vector3 } from 'three'
 import { distanceBetween, ecefFromLonLat, enuFrame, fromFrame, lonLatFromEcef, type Vec3 } from '@plinth/world'
+import { twoFingerGesture, type Point as TouchPoint } from '../scene/touchTilt.ts'
 import type { WorldTiles } from './WorldTiles.ts'
 
 /**
@@ -611,14 +612,8 @@ export class GlobeControls {
       const gesture = this.gesture
       if (!gesture.kind) {
         // Both fingers sliding up or down together, without spreading or turning, is a tilt; anything else a pinch.
-        const moved = [...this.touches.values()].map((t, i) => ({ dx: t.x - gesture.start[i]!.x, dy: t.y - gesture.start[i]!.y }))
-        const [a, b] = moved as [{ dx: number; dy: number }, { dx: number; dy: number }]
-        const travel = Math.max(Math.hypot(a.dx, a.dy), Math.hypot(b.dx, b.dy))
-        if (travel > 12) {
-          const together = Math.sign(a.dy) === Math.sign(b.dy) && Math.abs(a.dy) > Math.abs(a.dx) * 1.5 && Math.abs(b.dy) > Math.abs(b.dx) * 1.5
-          const spread = Math.abs(Math.abs(a.dy) - Math.abs(b.dy))
-          gesture.kind = together && spread < Math.max(Math.abs(a.dy), Math.abs(b.dy)) * 0.5 ? 'tilt' : 'pinch'
-        }
+        const told = twoFingerGesture(gesture.start as [TouchPoint, TouchPoint], [...this.touches.values()] as [TouchPoint, TouchPoint])
+        if (told) gesture.kind = told === 'tilt' ? 'tilt' : 'pinch'
       }
       if (gesture.kind === 'tilt') this.orbit(0, next.mid.y - before.mid.y)
       else if (gesture.kind === 'pinch') {
@@ -691,14 +686,17 @@ export class GlobeControls {
     this.grab = null
   }
 
+  // Safari's own gesture events: a pinch on a Mac's trackpad, which sends no pointer events. On an iPhone or
+  // iPad they come with every two-finger touch as well, which the pointer events already handle (a pinch,
+  // or a tilt): followed there too, a pinch zoomed twice and a tilt wobbled in and out.
   private onGestureStart = (e: Event & { scale?: number }) => {
     e.preventDefault()
-    this.gestureScale = e.scale ?? 1
+    this.gestureScale = this.touches.size > 0 ? null : (e.scale ?? 1)
   }
 
   private onGestureChange = (e: Event & { scale?: number; clientX?: number; clientY?: number }) => {
     e.preventDefault()
-    if (this.gestureScale === null) return
+    if (this.gestureScale === null || this.touches.size > 0) return
     const scaleNow = e.scale ?? 1
     const rect = this.rect()
     this.zoomAt(this.gestureScale / scaleNow, e.clientX ?? rect.left + rect.width / 2, e.clientY ?? rect.top + rect.height / 2)

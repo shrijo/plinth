@@ -6,6 +6,7 @@ import { sortedLevels, stackHeight, type Snapshot } from '@plinth/core'
 import { useEditor, useEditorContext, useSnapshot } from '../context.ts'
 import { siteSphere } from './siteSphere.ts'
 import { fieldOfView } from './lens.ts'
+import { attachTouchTilt } from './touchTilt.ts'
 
 const MAX_POLAR = Math.PI / 2 - 0.05
 const DEFAULT_AZIMUTH = Math.PI / 4
@@ -19,7 +20,8 @@ const TOP_LENS = 200
  * (in the top view it turns the plan), the wheel or a pinch zooms. A
  * left-drag on something that can be moved moves it instead, and a click
  * still selects or places. On touch, drawing tools keep one finger for
- * drawing; two fingers pan and zoom, three orbit.
+ * drawing; two fingers pan and zoom, or tilt when they slide up or down
+ * together (see touchTilt); three orbit.
  * In the building editor the camera follows the active level up and down.
  * Opening a building flies in to it; going back to the site returns to
  * where the site view was.
@@ -52,10 +54,23 @@ export function CameraRig() {
 
   useEffect(() => {
     controlsRef.current = ref.current
+    // For looking into it from the console while developing.
+    if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__plinthCamera = ref.current
     return () => {
       controlsRef.current = null
     }
   }, [controlsRef])
+
+  // Two fingers sliding up or down together tilt the camera (not in the top view, which looks straight down).
+  const canvas = useThree((s) => s.gl.domElement)
+  useEffect(
+    () =>
+      attachTouchTilt(canvas, {
+        enabled: () => viewRef.current !== 'top',
+        tilt: (radians) => void ref.current?.rotate(0, radians, false),
+      }),
+    [canvas],
+  )
 
   useEffect(() => {
     const controls = ref.current
