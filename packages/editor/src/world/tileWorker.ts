@@ -236,21 +236,34 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
   const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens)
   const LAWN = new Set(['park', 'grass', 'sport', 'cemetery'])
   const lawns = data.areas.filter((a) => LAWN.has(a.kind)).map((a) => a.shape)
+  const grass = grassMask(
+    request.tile,
+    lawns,
+    data.buildings.filter((b) => b.minHeight === 0).map((b) => b.shape),
+    data.roads.filter((r) => r.bridge),
+    { areas: data.areas.filter((a) => a.kind === 'water').map((a) => a.shape), ways: data.waterways },
+    built,
+  )
   return {
     id: request.id,
     ok: true,
     type: 'streets',
-    result: {
-      mesh: built.mesh,
-      cover: coverMask(request.tile, built.cover),
-      grass: grassMask(
-        request.tile,
-        lawns,
-        data.buildings.filter((b) => b.minHeight === 0).map((b) => b.shape),
-        built,
-      ),
-    },
+    result: { mesh: built.mesh, cover: groundMask(coverMask(request.tile, built.cover), grass), grass },
   }
+}
+
+/**
+ * The ground's mask over the tile, two bytes a pixel (see the streets
+ * result): how much our own surfaces cover it, and where grass grows.
+ */
+function groundMask(cover: Uint8Array | null, grass: Uint8Array | null): Uint8Array | null {
+  if (!cover && !grass) return null
+  const mask = new Uint8Array(GRASS_MASK * GRASS_MASK * 2)
+  for (let i = 0; i < GRASS_MASK * GRASS_MASK; i++) {
+    mask[i * 2] = cover ? cover[i]! : 0
+    mask[i * 2 + 1] = grass && grass[i]! > 0 ? 255 : 0
+  }
+  return mask
 }
 
 /**
@@ -264,6 +277,10 @@ function grassMask(
   lawns: readonly { outer: Float64Array; holes: Float64Array[] }[],
   /** Footprints of the buildings standing on the ground: nothing grows under a roof. */
   buildings: readonly { outer: Float64Array; holes: Float64Array[] }[],
+  /** Bridges (tile units, metres wide): nothing grows under a deck, nor climbs onto it where it comes down to the ground. */
+  bridges: readonly { line: Float64Array; width: number; kind: string }[],
+  /** Lakes, ponds and rivers (tile units; ways metres wide): nothing grows in the water. */
+  water: { areas: readonly { outer: Float64Array; holes: Float64Array[] }[]; ways: readonly { line: Float64Array; width: number }[] },
   built: { greenFills: readonly (readonly [number, number][][])[]; paved: readonly (readonly [number, number][][])[] },
 ): Uint8Array | null {
   if (lawns.length === 0 && built.greenFills.length === 0) return null
@@ -316,6 +333,41 @@ function grassMask(
   const roofs = shapes(buildings)
   context.fill(roofs, 'evenodd')
   context.stroke(roofs)
+  // Nor in the water, and not quite to its edge (the banks drop to it).
+  const lakes = shapes(water.areas)
+  context.fill(lakes, 'evenodd')
+  context.lineWidth = 2
+  context.stroke(lakes)
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  for (const way of water.ways) {
+    const path = new Path2D()
+    for (let i = 0; i + 1 < way.line.length; i += 2) {
+      const x = way.line[i]! * GRASS_MASK
+      const y = way.line[i + 1]! * GRASS_MASK
+      if (i === 0) path.moveTo(x, y)
+      else path.lineTo(x, y)
+    }
+    context.lineWidth = way.width * scale + 2
+    context.stroke(path)
+  }
+  // Nor under a bridge, nor onto its deck where it comes down to the ground: the deck as the world draws it
+  // (a street's with its walkways), a little wider, ending where the bridge does.
+  context.lineCap = 'butt'
+  context.lineJoin = 'round'
+  for (const bridge of bridges) {
+    const path = new Path2D()
+    for (let i = 0; i + 1 < bridge.line.length; i += 2) {
+      const x = bridge.line[i]! * GRASS_MASK
+      const y = bridge.line[i + 1]! * GRASS_MASK
+      if (i === 0) path.moveTo(x, y)
+      else path.lineTo(x, y)
+    }
+    const street = bridge.kind !== 'rail' && bridge.kind !== 'path' && bridge.kind !== 'track' && bridge.kind !== 'pier'
+    const deck = (bridge.kind === 'rail' ? 6 : bridge.width) + 0.8 + (street ? 2 * 1.8 : 0)
+    context.lineWidth = (deck + 2) * scale
+    context.stroke(path)
+  }
   const pixels = context.getImageData(0, 0, GRASS_MASK, GRASS_MASK).data
   const mask = new Uint8Array(GRASS_MASK * GRASS_MASK)
   let any = false
@@ -335,13 +387,13 @@ function grassMask(
  * border is pulled in a few metres (the picture is coarse: the ground
  * keeps a strip under the edges, hidden beneath them).
  */
-function coverMask(tile: TileId, cover: readonly (readonly [number, number][][])[]): ImageBitmap | null {
+function coverMask(tile: TileId, cover: readonly (readonly [number, number][][])[]): Uint8Array | null {
   if (cover.length === 0) return null
-  const SIZE = 1024
+  const SIZE = GRASS_MASK
   const metres = tileWidth(tile)
   const scale = SIZE / metres
   const canvas = new OffscreenCanvas(SIZE, SIZE)
-  const context = canvas.getContext('2d')!
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
   context.fillStyle = '#fff'
   context.strokeStyle = '#fff'
   const path = new Path2D()
@@ -361,7 +413,11 @@ function coverMask(tile: TileId, cover: readonly (readonly [number, number][][])
   context.globalCompositeOperation = 'destination-out'
   context.lineWidth = 2 * 4 * scale
   context.stroke(path)
-  return canvas.transferToImageBitmap()
+  // How much of each pixel is covered.
+  const pixels = context.getImageData(0, 0, SIZE, SIZE).data
+  const mask = new Uint8Array(SIZE * SIZE)
+  for (let i = 0; i < mask.length; i++) mask[i] = pixels[i * 4 + 3]!
+  return mask
 }
 
 /** Keeps buildings outside the mask. */
@@ -385,7 +441,7 @@ function transfers(response: WorkerResponse): Transferable[] {
   }
   if (response.type === 'streets') {
     const { mesh, cover, grass } = response.result
-    return [...buffers(mesh), ...(cover ? [cover] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
+    return [...buffers(mesh), ...(cover ? [cover.buffer] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
   }
   return buffers(response.result) as Transferable[]
 }

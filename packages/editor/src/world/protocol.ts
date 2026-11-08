@@ -36,7 +36,12 @@ export type WorkerResponse =
       type: 'streets'
       result: {
         mesh: MeshBuffers | null
-        cover: ImageBitmap | null
+        /**
+         * What lies over the tile's ground, two bytes a pixel (GRASS_MASK square, rows from the north): how
+         * much our own surfaces cover it (streets, paving and block fills: the ground leaves itself out
+         * there), and 255 where grass grows (the ground and the green fills turn green under the blades).
+         */
+        cover: Uint8Array | null
         /** Where grass grows, a byte per pixel over the tile (GRASS_MASK square): 0 none, 1 on the ground, 2 on a raised green fill. */
         grass: Uint8Array | null
       }
@@ -44,5 +49,5 @@ export type WorkerResponse =
   | { id: number; ok: true; type: 'area'; result: ImageBitmap }
   | { id: number; ok: false; error: string; aborted: boolean }
 
-/** The grass mask's size (pixels a side, over a zoom-14 tile: about 1.6 m each). */
+/** The size of the masks over a zoom-14 tile (grass and cover: pixels a side, about 1.6 m each). */
 export const GRASS_MASK = 1024

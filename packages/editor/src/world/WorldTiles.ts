@@ -13,9 +13,11 @@ import {
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
+  RGFormat,
   SRGBColorSpace,
   Sphere,
   Texture,
+  UnsignedByteType,
   Vector3,
   type Object3D,
   type Plane,
@@ -175,13 +177,26 @@ interface BuildingEntry {
   wanted: number
   retryAt: number
   frame: Frame
-  /** Streets: where they cover the ground (see coverMask), for ground tiles not to draw themselves there. */
+  /**
+   * Streets: what lies over the tile's ground (see the worker's groundMask): where our own surfaces cover it,
+   * for ground tiles not to draw themselves there, and where grass grows, for the ground to turn green.
+   */
   cover?: Texture | null
   /** Streets: where grass grows over the tile (see grassMask in the worker). */
   grass?: Uint8Array | null
 }
 
-/** No cover: the ground draws itself everywhere. */
+/** The grass's carpet (see WorldGrass.carpet): its colour, and how far round the camera it lies and how strongly. */
+const CARPET_PARS = `uniform vec3 carpetColour;
+uniform vec3 carpetReach;`
+/**
+ * Turns the surface's colour grass-green where `grass` (the mask, 0 to 1) says grass grows, round the camera.
+ * The mask's pixels are a metre and a half wide: its edge is drawn crisp where it crosses half, as the blades'.
+ */
+const carpetOn = (grass: string) =>
+  `diffuseColor.rgb = mix(diffuseColor.rgb, carpetColour, smoothstep(0.35, 0.65, ${grass}) * carpetReach.z * (1.0 - smoothstep(carpetReach.x, carpetReach.y, length(vViewPosition))));`
+
+/** No cover: the ground draws itself everywhere, and no grass grows. */
 const NO_COVER = new DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1)
 NO_COVER.needsUpdate = true
 
@@ -287,7 +302,7 @@ export class WorldTiles {
     const style = options.style ?? GROUND_STYLE
     this.grass = new WorldGrass(
       {
-        grassAt: (lon, lat) => this.grassAt(lon, lat),
+        grassMask: (tile) => this.grassMask(tile),
         groundHeight: (lon, lat, minZoom) => this.groundHeight(lon, lat, minZoom),
         place: (mesh, frame) => this.place(mesh as Mesh, frame),
       },
@@ -530,7 +545,9 @@ export class WorldTiles {
     // where a flight is going (see lookAhead), and the buildings and streets round the spot below. Moving
     // fast, the finest tiles wait: they'd be stale by the time they came.
     const under = lonLatFromEcef(cameraEcef)
-    const altitude = Math.max(under.height - (this.groundHeight(under.lon, under.lat) ?? this.anchor.height), 20)
+    // Over the ground, for streaming no less than 20 m (the grass wants the real thing).
+    const above = Math.max(under.height - (this.groundHeight(under.lon, under.lat) ?? this.anchor.height), 0)
+    const altitude = Math.max(above, 20)
     const fast = Math.hypot(this.velocity[0], this.velocity[1], this.velocity[2]) > FAST * altitude
     if (this.clock % 2 === 0 || motion.destination) this.ahead = this.lookAhead(camera, pixelsPerMetre, altitude, motion.destination ?? null)
     const want = [...selection.want]
@@ -586,7 +603,7 @@ export class WorldTiles {
     }
     prefetch(this.buildings, 'buildings', [...aheadKeys(BUILDING_ZOOM), ...(altitude < AROUND_BUILDINGS ? squaresAround(under.lon, under.lat, 1) : [])])
     prefetch(this.streets, 'streets', [...aheadKeys(STREET_ZOOM), ...(altitude < AROUND_STREETS ? nearestSquares(under.lon, under.lat) : [])])
-    this.grass.update(cameraEcef, camera.position, altitude, now)
+    this.grass.update(cameraEcef, camera.position, above, now)
     if (this.renderer && this.scene) {
       // The grass's roots go on the surfaces really there: ground, fills and beds, not buildings.
       const hide: Object3D[] = [this.grass.group]
@@ -768,7 +785,9 @@ export class WorldTiles {
     const texture = new Texture(result.image)
     texture.flipY = false
     texture.colorSpace = SRGBColorSpace
-    texture.anisotropy = 8
+    // Seen low and flat, the ground's picture is squeezed many times over along the view: as many samples as
+    // the GPU will take (three holds it to the GPU's most).
+    texture.anisotropy = 16
     texture.minFilter = LinearMipmapLinearFilter
     texture.generateMipmaps = true
     texture.needsUpdate = true
@@ -842,8 +861,7 @@ attribute vec3 morph;
 uniform float morphParentTexel;
 uniform float morphShown;
 uniform float morphPixelsPerMetre;
-uniform float morphMaxError;
-varying float vMorphFine;`,
+uniform float morphMaxError;`,
         )
         .replace(
           '#include <begin_vertex>',
@@ -853,47 +871,52 @@ varying float vMorphFine;`,
   float parentError = morphParentTexel * morphPixelsPerMetre / max(length(seen.xyz), 1.0);
   float fine = min(clamp((parentError - morphMaxError) / (morphMaxError * ${MORPH_RANGE.toFixed(2)}), 0.0, 1.0), morphShown);
   transformed += morph * (1.0 - fine);
-  vMorphFine = fine;
 }`,
         )
+      Object.assign(shader.uniforms, this.grass.carpet)
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
           `#include <common>
+${CARPET_PARS}
 uniform float coverOn;
 uniform sampler2D coverMap;
 uniform vec3 coverXf;
-varying float vMorphFine;`,
+uniform float morphShown;`,
         )
         .replace(
           '#include <map_fragment>',
           `#ifdef USE_MAP
+  vec2 covered = texture2D(coverMap, vMapUv * coverXf.x + coverXf.yz).rg;
   // Under the streets, their paving and the block fills, the ground doesn't draw itself: ours stands there.
-  if (coverOn > 0.5 && texture2D(coverMap, vMapUv * coverXf.x + coverXf.yz).r > 0.5) discard;
-  // Where the tile still has its parent's shape, its picture reads a coarser mip of its own map: what the
-  // parent showed there, without holding the parent's texture (which may since be gone).
-  vec4 sampledDiffuseColor = texture2D(map, vMapUv, (1.0 - vMorphFine) * 2.0);
+  if (coverOn > 0.5 && covered.r > 0.5) discard;
+  // A tile that has just taken over shows its parent's picture at first (one mip coarser of its own: the
+  // parent's texels are twice the size), sharpening as it slides into its own shape. Only then: a tile far
+  // enough out to take its parent's shape is drawn where the parent's texels would be fine on screen anyway,
+  // and blurring it there smears the ground seen low and flat.
+  vec4 sampledDiffuseColor = texture2D(map, vMapUv, 1.0 - morphShown);
   diffuseColor *= sampledDiffuseColor;
+  ${carpetOn('covered.g')}
 #endif`,
         )
     }
   }
 
-  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: ImageBitmap | null; grass: Uint8Array | null }): void {
+  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: Uint8Array | null; grass: Uint8Array | null }): void {
     entry.state = 'ready'
     entry.grass = result.grass
     if (result.cover) {
-      const texture = new Texture(result.cover)
-      texture.flipY = false
+      const texture = new DataTexture(result.cover, GRASS_MASK, GRASS_MASK, RGFormat, UnsignedByteType)
       texture.generateMipmaps = false
       texture.minFilter = LinearFilter
+      texture.magFilter = LinearFilter
       texture.needsUpdate = true
       entry.cover = texture
       // The ground tiles under this cover stop drawing themselves there.
       for (const ground of this.ground.values()) this.coverGround(ground)
     }
     if (!result.mesh) return
-    const { material, fade } = this.fadeMaterial(this.streetMaterial)
+    const { material, fade } = this.fadeMaterial(this.streetMaterial, { tile: entry.tile, mask: entry.cover ?? NO_COVER })
     const mesh = new Mesh(geometryOf(result.mesh, 'color'), material)
     mesh.matrixAutoUpdate = false
     mesh.receiveShadow = true
@@ -992,7 +1015,8 @@ varying float vMorphFine;`,
       }
       cover.dispose()
     }
-    const bytes = meshBytes(mesh) + ((entry as BuildingEntry).grass?.byteLength ?? 0)
+    const coverData = (cover as DataTexture | undefined)?.image?.data as Uint8Array | undefined
+    const bytes = meshBytes(mesh) + ((entry as BuildingEntry).grass?.byteLength ?? 0) + (coverData?.byteLength ?? 0)
     if (bytes <= WARM_BYTES / 6) {
       freeGpu(mesh)
       entry.state = 'warm'
@@ -1095,13 +1119,17 @@ varying float vMorphFine;`,
   /**
    * A copy of a shared material that dissolves in (an ordered dither, so it
    * stays opaque: no sorting, no blending), driven by its `fade` (0 to 1).
-   * All the copies share one shader program.
+   * Copies of a kind share one shader program. With `carpet` (a street tile
+   * and its ground mask), its green fills turn grass-green round the
+   * camera, under the blades (see WorldGrass.carpet).
    */
-  private fadeMaterial(base: MeshStandardMaterial): { material: MeshStandardMaterial; fade: { value: number } } {
+  private fadeMaterial(base: MeshStandardMaterial, carpet?: { tile: TileId; mask: Texture }): { material: MeshStandardMaterial; fade: { value: number } } {
     const material = base.clone()
     material.userData = {}
     const fade = { value: 0 }
-    material.customProgramCacheKey = () => 'world-fade-in'
+    material.customProgramCacheKey = () => (carpet ? 'world-fade-in-carpet' : 'world-fade-in')
+    const mask = { value: carpet?.mask ?? NO_COVER }
+    const metres = { value: carpet ? tileWidth(carpet.tile) : 1 }
     material.onBeforeCompile = (shader) => {
       shader.uniforms.fadeIn = fade
       shader.fragmentShader = shader.fragmentShader
@@ -1113,11 +1141,30 @@ float fadeBayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.7
 float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`,
         )
         .replace('void main() {', 'void main() {\n\tif (fadeBayer4(gl_FragCoord.xy) >= fadeIn) discard;')
+      if (!carpet) return
+      Object.assign(shader.uniforms, this.grass.carpet, { carpetMask: mask, carpetMetres: metres })
+      // The tile's frame is centred on it, x east and z south, the mask's rows running from the north.
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\nuniform float carpetMetres;\nvarying vec2 vCarpetUv;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\nvCarpetUv = position.xz / carpetMetres + 0.5;`)
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${CARPET_PARS}\nuniform sampler2D carpetMask;\nvarying vec2 vCarpetUv;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n${carpetOn('texture2D(carpetMask, vCarpetUv).g')}`)
     }
     return { material, fade }
   }
 
   // Questions about what's shown
+
+  /**
+   * Where grass grows over a zoom-14 tile (see WorldGrass and GRASS_MASK): 0 none, 1 on the ground, 2 on a
+   * raised green fill; null where nothing grows there, undefined while its streets aren't loaded.
+   */
+  grassMask(tile: TileId): Uint8Array | null | undefined {
+    const entry = this.streets.get(tileKey(tile))
+    if (!entry || (entry.state !== 'ready' && entry.state !== 'warm')) return undefined
+    return entry.grass ?? null
+  }
 
   /**
    * The height of the ground at a point on the globe (above sea level), from
@@ -1126,25 +1173,6 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
    * out coarser tiles (their hills are too rough to keep a camera off the
    * ground by). Cheap: no rays, no triangles.
    */
-  /**
-   * Where grass grows at a point (see WorldGrass): 0 none, 1 on the ground,
-   * 2 on a raised green fill; null while the streets there aren't loaded.
-   */
-  grassAt(lon: number, lat: number): number | null {
-    const n = 2 ** BUILDING_ZOOM
-    const φ = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
-    const fx = ((lon + 180) / 360) * n
-    const fy = ((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n
-    const x = Math.floor(fx)
-    const y = Math.floor(fy)
-    const entry = this.streets.get(`${BUILDING_ZOOM}/${x}/${y}`)
-    if (!entry || (entry.state !== 'ready' && entry.state !== 'warm')) return null
-    if (!entry.grass) return 0
-    const px = Math.min(GRASS_MASK - 1, Math.floor((fx - x) * GRASS_MASK))
-    const py = Math.min(GRASS_MASK - 1, Math.floor((fy - y) * GRASS_MASK))
-    return entry.grass[py * GRASS_MASK + px]!
-  }
-
   groundHeight(lon: number, lat: number, minZoom = 0): number | null {
     const φ = Math.max(-85.05, Math.min(85.05, lat)) * (Math.PI / 180)
     const fx = (lon + 180) / 360
