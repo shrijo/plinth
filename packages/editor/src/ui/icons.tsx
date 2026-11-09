@@ -3,7 +3,7 @@ import type { SVGProps } from 'react'
 /**
  * Every icon is drawn the same way: on a 20 px square, in 1.5 px lines with
  * round ends and corners, in the colour of the text around it. The CSS sets
- * the size (20 px in the notch, 16 px beside text).
+ * the size (20 px in the dock, 16 px beside text).
  */
 function Icon({ className, ...props }: SVGProps<SVGSVGElement>) {
   return (

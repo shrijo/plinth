@@ -43,8 +43,11 @@ select {
   outline: none;
 }
 
+/* A city or the world: the bar along the top (editor.css's .pe-navbar), the view filling the rest. */
 .app {
   position: relative;
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
 }
 
@@ -66,48 +69,13 @@ select {
   margin: 0;
 }
 
-/* The city fills the window; the bar floats over it, on the margin. */
-
+/* Under the bar, never behind it: the bar covers the top of the screen, so the view needn't keep clear of it. */
 .app-main {
-  position: absolute;
-  inset: 0;
-}
+  --pe-safe-top: 0px;
 
-.app-main .plinth-editor {
-  --pe-top-inset: calc(var(--pe-bar) + var(--pe-gutter));
-}
-
-.app-header {
-  display: flex;
-  align-items: center;
-  gap: var(--pe-gutter);
-}
-
-.app-header-floating {
-  position: absolute;
-  top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px));
-  right: var(--pe-margin);
-  left: var(--pe-margin);
-  z-index: var(--pe-z-shell);
-  pointer-events: none;
-}
-
-.app-header-floating > * {
-  pointer-events: auto;
-}
-
-/* Where you are: back to the cities, then this one's name. */
-.app-pill {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  height: var(--pe-bar);
-  box-sizing: border-box;
-  padding: 0 var(--pe-space-05);
-  border: var(--pe-rule);
-  border-radius: var(--pe-radius);
-  background: var(--pe-surface);
-  box-shadow: var(--pe-shadow);
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 .app-logo {
@@ -117,14 +85,18 @@ select {
   height: var(--pe-logo);
 }
 
+/* Where you are, at the start of the bar: back to the cities (the logo on the margin, as in the gallery), then this one's name. */
 .app-back {
   display: flex;
   flex: none;
   align-items: center;
+  justify-content: center;
   gap: var(--pe-space-1);
+  box-sizing: border-box;
+  min-width: var(--pe-control);
   height: var(--pe-control);
-  max-height: 100%;
-  padding: 0 var(--pe-space-1) 0 var(--pe-space-05);
+  margin-left: calc(-1 * var(--pe-space-1));
+  padding: 0 var(--pe-space-1);
   border: 0;
   border-radius: var(--pe-radius);
   background: none;
@@ -211,13 +183,6 @@ select {
   background: var(--pe-danger);
 }
 
-.app-actions {
-  display: flex;
-  flex: none;
-  gap: var(--pe-gutter);
-  margin-left: auto;
-}
-
 /* Buttons: secondary by default (white, a hairline round it), primary in the accent. */
 .app-button {
   display: inline-flex;
@@ -245,11 +210,6 @@ select {
 .app-button:active:not(:disabled),
 .app-button[aria-expanded='true'] {
   background: var(--pe-surface-pressed);
-}
-
-.app-header-floating .app-button {
-  border-color: var(--pe-line);
-  box-shadow: var(--pe-shadow);
 }
 
 .app-button-primary {
@@ -293,13 +253,19 @@ select {
   box-sizing: border-box;
   min-width: var(--pe-menu-width);
   max-width: calc(100vw - 2 * var(--pe-margin));
-  max-height: calc(100dvh - 2 * var(--pe-margin) - var(--pe-bar) - var(--pe-gutter));
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - var(--pe-navbar) - var(--pe-hairline) - var(--pe-gutter) - var(--pe-margin));
   overflow: auto;
+  overscroll-behavior: contain;
   padding: var(--pe-space-05) 0;
   border: var(--pe-rule);
-  border-radius: var(--pe-radius);
+  border-radius: var(--pe-radius-float);
   background: var(--pe-surface);
   box-shadow: var(--pe-shadow);
+}
+
+/* A menu in the bar drops just under the bar. */
+.pe-navbar .app-menu-list {
+  top: calc(100% + var(--pe-drop));
 }
 
 .app-menu-item {
@@ -350,10 +316,10 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
-/* A word about what just happened, under the bar. */
+/* A word about what just happened, a margin under the bar (level with the panels' tops). */
 .app-toast {
   position: fixed;
-  top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px) + var(--pe-bar) + var(--pe-gutter));
+  top: calc(env(safe-area-inset-top, 0px) + var(--pe-navbar) + var(--pe-margin));
   right: 0;
   left: 0;
   z-index: var(--pe-z-toast);
@@ -362,7 +328,7 @@ select {
   max-width: calc(100% - 2 * var(--pe-margin));
   margin: 0 auto;
   padding: var(--pe-space-15) var(--pe-space-2);
-  border-radius: var(--pe-radius);
+  border-radius: var(--pe-radius-float);
   background: var(--pe-ink);
   color: var(--pe-on-ink);
   box-shadow: var(--pe-shadow);
@@ -413,17 +379,10 @@ select {
   }
 }
 
+/* The same bar as over a city (.pe-navbar), kept at the top as the cities scroll under it. */
 .gallery-header {
   position: sticky;
   top: 0;
-  z-index: var(--pe-z-shell);
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--pe-gutter);
-  padding: calc(var(--pe-margin) + env(safe-area-inset-top, 0px)) var(--pe-margin) var(--pe-margin);
-  border-bottom: var(--pe-rule);
-  background: var(--pe-surface);
 }
 
 .gallery-brand {
@@ -722,7 +681,10 @@ select {
   }
 }
 
-/* Phones: the bar keeps to the essentials; the gallery's actions go under its name. */
+/*
+ * Phones: the bar keeps to the essentials; the gallery's actions take a row
+ * of their own under its first, as the world's search does.
+ */
 @media (max-width: 700px) {
   .app-back span {
     display: none;
@@ -735,11 +697,19 @@ select {
   .gallery-header {
     position: static;
     display: grid;
+    grid-template-rows: var(--pe-navbar) auto;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       'brand new'
       'actions actions';
-    gap: var(--pe-space-2) var(--pe-gutter);
+    gap: 0 var(--pe-gutter);
+    padding-bottom: var(--pe-space-1);
+  }
+
+  /* The account's menu opens from the row's first button: along it, not off the screen. */
+  .gallery-actions .app-menu-list {
+    right: auto;
+    left: 0;
   }
 
   .gallery-brand {
@@ -823,7 +793,7 @@ select {
   width: min(var(--pe-wide), calc(100% - 2 * var(--pe-margin)));
   padding: var(--pe-space-3);
   border: var(--pe-rule);
-  border-radius: var(--pe-radius);
+  border-radius: var(--pe-radius-float);
   background: var(--pe-surface);
   box-shadow: var(--pe-shadow);
 }

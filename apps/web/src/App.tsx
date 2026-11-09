@@ -23,7 +23,7 @@ import {
   type WorldArea,
 } from '@plinth/editor'
 import { buildSite, planSite } from '@plinth/world'
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { fileSafe } from './files.ts'
 import { Gallery } from './gallery/Gallery.tsx'
 import { createProject, getProject, handOver, letGo, openProject, statsOf, updateProject, type OpenProject } from './gallery/store.ts'
@@ -108,25 +108,38 @@ function World({ initial, navigate }: { initial: Partial<GlobeView> | null; navi
     },
     [navigate],
   )
-  // The bar comes first, for reading and tabbing; it floats over the world on the margin.
+  // The world brings its own bar, with its search and View in it: where you are goes at its start.
   return (
     <div className="app">
-      <header className="app-header app-header-floating">
-        <div className="app-pill">
-          <button type="button" className="app-back" onClick={() => navigate(null)} title="All cities">
-            <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
-            <span>Cities</span>
-          </button>
-          <span className="app-divider" aria-hidden="true">
-            /
-          </span>
-          <span className="app-place">World</span>
-        </div>
-      </header>
       <main className="app-main">
-        <WorldExplorer initialView={start ?? undefined} onViewChange={keepView} onMakeSite={makeSite} />
+        <WorldExplorer
+          barStart={
+            <Trail onBack={() => navigate(null)}>
+              <span className="app-place">World</span>
+            </Trail>
+          }
+          initialView={start ?? undefined}
+          onViewChange={keepView}
+          onMakeSite={makeSite}
+        />
       </main>
     </div>
+  )
+}
+
+/** The start of the bar over a city or the world: the logo and the way back to the cities, then where you are. */
+function Trail({ onBack, children }: { onBack: () => void; children: ReactNode }) {
+  return (
+    <>
+      <button type="button" className="app-back" onClick={onBack} title="All cities">
+        <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
+        <span>Cities</span>
+      </button>
+      <span className="app-divider" aria-hidden="true">
+        /
+      </span>
+      {children}
+    </>
   )
 }
 
@@ -412,24 +425,19 @@ function Workspace({
   // The bar first, for reading and tabbing: where you are on the left, the File menu on the right.
   return (
     <div className="app">
-      <header className="app-header app-header-floating">
-        <div className="app-pill">
-          <button type="button" className="app-back" onClick={() => void backToGallery()} title="All cities">
-            <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
-            <span>Cities</span>
-          </button>
-          <span className="app-divider" aria-hidden="true">
-            /
-          </span>
-          <ProjectName name={projectName} onRename={(name) => doc.transact((tx) => tx.setMeta({ name }))} />
-          {cloud && (
-            <span className="app-sync" data-status={cloud.status} title={cloud.peers.map((p) => p.name).join(', ')}>
-              {SYNC_WORDS[cloud.status]}
-              {cloud.peers.length > 0 && ` · ${cloud.peers.length} other${cloud.peers.length === 1 ? '' : 's'} here`}
-            </span>
-          )}
+      <header className="pe-navbar">
+        <div className="pe-navbar-start">
+          <Trail onBack={() => void backToGallery()}>
+            <ProjectName name={projectName} onRename={(name) => doc.transact((tx) => tx.setMeta({ name }))} />
+            {cloud && (
+              <span className="app-sync" data-status={cloud.status} title={cloud.peers.map((p) => p.name).join(', ')}>
+                {SYNC_WORDS[cloud.status]}
+                {cloud.peers.length > 0 && ` · ${cloud.peers.length} other${cloud.peers.length === 1 ? '' : 's'} here`}
+              </span>
+            )}
+          </Trail>
         </div>
-        <div className="app-actions">
+        <div className="pe-navbar-end">
           <FileMenu
             items={[
               { label: 'New city', action: () => void newCity() },
