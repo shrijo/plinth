@@ -34,7 +34,7 @@ export function AreaFigures({ buildingId, chooser = false }: { buildingId?: Id; 
         {figures.lines.map((line) => (
           <div key={line.code} className="pe-figure" data-depth={line.depth}>
             <dt>
-              <abbr>{line.code}</abbr> {line.name}
+              <abbr>{line.code}</abbr> <span>{line.name}</span>
             </dt>
             <dd>{line.unit === 'm²' ? formatArea(line.value) : `${Math.round(line.value).toLocaleString()} m³`}</dd>
           </div>
