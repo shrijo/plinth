@@ -44,11 +44,18 @@ import {
 import { useAnalysis, useEditor, useEditorContext, useSnapshot } from '../context.ts'
 import { selectionSize, type SiteDefaults } from '../state.ts'
 import { CheckField, DeleteButton, LengthField, Readout, Stepper, TextField, type PanelFrame } from './fields.tsx'
-import { TrashIcon } from './icons.tsx'
+import { RotateLeftIcon, RotateRightIcon, TrashIcon } from './icons.tsx'
 import { AreaFigures } from './AreaFigures.tsx'
 import { RoofFields } from './RoofFields.tsx'
 
 const MAX_LANES = 12
+
+/** The turns a building's panel offers, in degrees (positive: anticlockwise), two by two. */
+const ROTATIONS = [90, -90, 15, -15]
+
+function turnLabel(degrees: number): string {
+  return `Turn ${Math.abs(degrees)}° ${degrees > 0 ? 'anticlockwise' : 'clockwise'}`
+}
 
 /** The middle of the bounding box of a level's points. */
 function groundCentre(snapshot: Snapshot, levelId: Id | undefined): { x: number; y: number } | null {
@@ -183,32 +190,32 @@ function BuildingShellProperties({ buildingId }: { buildingId: Id }) {
         }
       />
       <Readout label="Total height" value={formatLength(totalHeight)} />
-      <div className="pe-row">
-        <LengthField label="X" value={centre?.x ?? 0} allowNegative allowZero onCommit={(x) => moveTo({ x, y: centre?.y ?? 0 })} />
-        <LengthField label="Y" value={centre?.y ?? 0} allowNegative allowZero onCommit={(y) => moveTo({ x: centre?.x ?? 0, y })} />
-      </div>
+      <LengthField label="X" value={centre?.x ?? 0} allowNegative allowZero onCommit={(x) => moveTo({ x, y: centre?.y ?? 0 })} />
+      <LengthField label="Y" value={centre?.y ?? 0} allowNegative allowZero onCommit={(y) => moveTo({ x: centre?.x ?? 0, y })} />
       <div className="pe-field">
         <span className="pe-field-label">Rotate</span>
-        <div className="pe-row">
-          <button type="button" className="pe-button" onClick={() => rotateBuildingBy(ctx, buildingId, 90)}>
-            ↺ 90°
-          </button>
-          <button type="button" className="pe-button" onClick={() => rotateBuildingBy(ctx, buildingId, 15)}>
-            ↺ 15°
-          </button>
-          <button type="button" className="pe-button" onClick={() => rotateBuildingBy(ctx, buildingId, -15)}>
-            ↻ 15°
-          </button>
-          <button type="button" className="pe-button" onClick={() => rotateBuildingBy(ctx, buildingId, -90)}>
-            ↻ 90°
-          </button>
+        <div className="pe-pair">
+          {ROTATIONS.map((degrees) => (
+            <button
+              key={degrees}
+              type="button"
+              className="pe-button"
+              title={turnLabel(degrees)}
+              aria-label={turnLabel(degrees)}
+              onClick={() => rotateBuildingBy(ctx, buildingId, degrees)}
+            >
+              {degrees > 0 ? <RotateLeftIcon /> : <RotateRightIcon />}
+              <span>{Math.abs(degrees)}°</span>
+            </button>
+          ))}
         </div>
       </div>
       <SetOnTerrain buildingId={buildingId} />
       <RoofFields buildingId={buildingId} />
       <AreaFigures buildingId={buildingId} />
       <button type="button" className="pe-danger" onClick={() => removeBuilding(ctx, buildingId)}>
-        <TrashIcon /> Delete building
+        <TrashIcon />
+        <span>Delete building</span>
       </button>
     </>
   )
@@ -270,20 +277,22 @@ function StreetFields({ props, onChange }: { props: StreetProps; onChange: (prop
     <>
       <label className="pe-field">
         <span className="pe-field-label">Type</span>
-        <select
-          className="pe-input"
-          value={kind}
-          onChange={(e) => {
-            const next = e.target.value as StreetKind
-            onChange({ ...STREET_TYPES[next].props, oneway: props.oneway ?? false })
-          }}
-        >
-          {STREET_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {STREET_TYPES[k].name}
-            </option>
-          ))}
-        </select>
+        <span className="pe-select">
+          <select
+            className="pe-input"
+            value={kind}
+            onChange={(e) => {
+              const next = e.target.value as StreetKind
+              onChange({ ...STREET_TYPES[next].props, oneway: props.oneway ?? false })
+            }}
+          >
+            {STREET_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {STREET_TYPES[k].name}
+              </option>
+            ))}
+          </select>
+        </span>
       </label>
       <CheckField label="One way (in the drawn direction)" checked={!!props.oneway} onChange={(oneway) => onChange({ oneway })} />
       {isSharedStreet(props) ? (
@@ -413,10 +422,8 @@ function SpotHeightProperties({ spot }: { spot: SpotHeight }) {
     <>
       <LengthField label="Height" value={spot.z} allowNegative allowZero onCommit={(z) => ctx.doc.transact((tx) => setSpotHeight(tx, spot.id, z))} />
       {ground !== 0 && <Readout label="Above the site's zero" value={formatLength(spot.z - ground)} />}
-      <div className="pe-row">
-        <Readout label="X" value={formatLength(spot.x)} />
-        <Readout label="Y" value={formatLength(spot.y)} />
-      </div>
+      <Readout label="X" value={formatLength(spot.x)} />
+      <Readout label="Y" value={formatLength(spot.y)} />
       <DeleteButton label="Delete spot height" />
     </>
   )

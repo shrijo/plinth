@@ -102,7 +102,15 @@ export interface PlanInput {
   heightAt: (lon: number, lat: number) => number
   /** The water's surface where there's water (the ground there lies a little under it). */
   waterAt?: (lon: number, lat: number) => number | null
+  /** The water's outlines (longitudes and latitudes), for the ground to meet the water along them (see shoreSpots). */
+  shores?: readonly (readonly { lon: number; lat: number }[])[]
 }
+
+/** Under water the ground lies this far below the surface (metres), as the world's does. */
+const WATER_DEPTH = 1.5
+/** Shore spots stand this far either side of the water's edge (metres); the dry ones at least this high over the water. */
+const SHORE_GAP = 0.6
+const BANK = 0.3
 
 /** Spot heights on a grid over the square, closer on small sites. */
 function spotsFor(input: PlanInput, frame: Frame): SitePlan['spots'] {
@@ -117,7 +125,57 @@ function spotsFor(input: PlanInput, frame: Frame): SitePlan['spots'] {
       const ground = input.heightAt(place.lon, place.lat)
       const water = input.waterAt?.(place.lon, place.lat) ?? null
       // Under water the ground lies below the surface, as the world's does.
-      spots.push({ x: round(x), y: round(y), z: round(water === null ? ground : Math.min(ground, water - 1.5)) })
+      spots.push({ x: round(x), y: round(y), z: round(water === null ? ground : Math.min(ground, water - WATER_DEPTH)) })
+    }
+  }
+  return [...spots, ...shoreSpots(input, frame, step)]
+}
+
+/**
+ * Spot heights along the water's edge, a pair across it every few metres:
+ * one just outside, on the bank (never below the water), one just inside,
+ * under it. Through the grid alone the ground meets the water up to a grid
+ * step off its mapped edge; with them, the water's edge is where the map
+ * has it, and a quay stands up steeply from it.
+ */
+function shoreSpots(input: PlanInput, frame: Frame, step: number): SitePlan['spots'] {
+  const waterAt = input.waterAt
+  if (!input.shores || !waterAt) return []
+  const half = input.size / 2
+  const spacing = Math.min(Math.max(step / 3, 2), 6)
+  const spots: SitePlan['spots'] = []
+  for (const shore of input.shores) {
+    const points = shore.map((p) => {
+      const [x, y] = lonLatToFrame(frame, p.lon, p.lat, 0)
+      return { x, y }
+    })
+    for (let i = 0; i + 1 < points.length; i++) {
+      const a = points[i]!
+      const b = points[i + 1]!
+      const length = Math.hypot(b.x - a.x, b.y - a.y)
+      if (length < 1e-6) continue
+      // Across the edge (either way: which side is the water is found out below).
+      const nx = -(b.y - a.y) / length
+      const ny = (b.x - a.x) / length
+      const steps = Math.ceil(length / spacing)
+      for (let k = 0; k < steps; k++) {
+        const t = (k + 0.5) / steps
+        const x = a.x + (b.x - a.x) * t
+        const y = a.y + (b.y - a.y) * t
+        if (Math.abs(x) > half - SHORE_GAP || Math.abs(y) > half - SHORE_GAP) continue
+        const sides = [1, -1].map((s) => {
+          const at = { x: x + nx * s * SHORE_GAP, y: y + ny * s * SHORE_GAP }
+          const place = frameToLonLat(frame, at.x, at.y)
+          return { ...at, ground: input.heightAt(place.lon, place.lat), water: waterAt(place.lon, place.lat) }
+        })
+        const wet = sides.find((s) => s.water !== null)
+        const dry = sides.find((s) => s.water === null)
+        // Water on both sides (where the map's tiles cut a lake) or on neither: no shore here.
+        if (!wet || !dry) continue
+        const level = wet.water!
+        spots.push({ x: round(wet.x), y: round(wet.y), z: round(Math.min(wet.ground, level - WATER_DEPTH)) })
+        spots.push({ x: round(dry.x), y: round(dry.y), z: round(Math.max(dry.ground, level + BANK)) })
+      }
     }
   }
   return spots
