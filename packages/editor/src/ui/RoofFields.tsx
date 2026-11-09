@@ -47,10 +47,8 @@ export function RoofFields({ buildingId }: { buildingId: Id }) {
       {pitched ? (
         <>
           <NumberField label="Pitch" value={roof.pitch} unit="°" min={1} max={75} onCommit={(pitch) => update({ pitch })} />
-          <div className="pe-row">
-            <LengthField label="Overhang" value={roof.overhang} allowZero onCommit={(overhang) => update({ overhang })} />
-            <LengthField label="Thickness" value={roof.thickness} onCommit={(thickness) => update({ thickness })} />
-          </div>
+          <LengthField label="Overhang" value={roof.overhang} allowZero onCommit={(overhang) => update({ overhang })} />
+          <LengthField label="Thickness" value={roof.thickness} onCommit={(thickness) => update({ thickness })} />
           <button type="button" className="pe-button pe-button-wide" onClick={turn}>
             {roof.kind === 'shed' ? 'Turn the slope' : 'Turn the ridge'} 90°
           </button>
@@ -61,7 +59,7 @@ export function RoofFields({ buildingId }: { buildingId: Id }) {
           )}
         </>
       ) : (
-        <div className="pe-row">
+        <>
           <LengthField label="Parapet" value={roof.parapet} allowZero onCommit={(parapet) => update({ parapet })} />
           <LengthField
             label="Overhang"
@@ -72,10 +70,9 @@ export function RoofFields({ buildingId }: { buildingId: Id }) {
               setBuildingRoof(ctx, buildingId, next.parapet > 0 || overhang > 0 ? next : null)
             }}
           />
-        </div>
+        </>
       )}
     </>
   )
 }
-
 

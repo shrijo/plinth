@@ -163,13 +163,15 @@ function OpeningProperties({ opening }: { opening: Opening }) {
       )}
       <label className="pe-field">
         <span className="pe-field-label">Type</span>
-        <select className="pe-input" value={type.id} onChange={(e) => update({ typeId: e.target.value })}>
-          {openingTypesOfKind(opening.kind).map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
+        <span className="pe-select">
+          <select className="pe-input" value={type.id} onChange={(e) => update({ typeId: e.target.value })}>
+            {openingTypesOfKind(opening.kind).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </span>
       </label>
       <LengthField label="Width" value={opening.width} onCommit={(width) => update({ width })} />
       <LengthField label="Height" value={opening.height} onCommit={(height) => update({ height })} />
@@ -259,19 +261,21 @@ function RoomProperties({
       )}
       <label className="pe-field">
         <span className="pe-field-label">Use</span>
-        <select
-          className="pe-input"
-          value={tag?.use ?? ''}
-          disabled={copy}
-          onChange={(e) => set({ use: e.target.value as RoomUse })}
-        >
-          {!tag && <option value="">Not set</option>}
-          {ROOM_USES.map((use) => (
-            <option key={use} value={use}>
-              {ROOM_USE_NAMES[use]}
-            </option>
-          ))}
-        </select>
+        <span className="pe-select">
+          <select
+            className="pe-input"
+            value={tag?.use ?? ''}
+            disabled={copy}
+            onChange={(e) => set({ use: e.target.value as RoomUse })}
+          >
+            {!tag && <option value="">Not set</option>}
+            {ROOM_USES.map((use) => (
+              <option key={use} value={use}>
+                {ROOM_USE_NAMES[use]}
+              </option>
+            ))}
+          </select>
+        </span>
       </label>
       <Readout label="Floor area" value={formatArea(room.area)} />
       <Readout label="Perimeter" value={formatLength(room.perimeter)} />

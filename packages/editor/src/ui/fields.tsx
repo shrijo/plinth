@@ -4,14 +4,18 @@ import { deleteSelection } from '../actions.ts'
 import { useEditorContext } from '../context.ts'
 import { MinusIcon, PlusIcon, TrashIcon } from './icons.tsx'
 
-/** Form fields shared by the properties panels. */
+/**
+ * Form fields shared by the properties panels. Each is a row on the panel's
+ * two columns: the label on the left, the control (or the figure) on the right.
+ */
 
 /** Draws the panel around a title and its contents. */
 export type PanelFrame = (title: string, body: ReactNode) => ReactNode
 
+/** A figure that can't be edited here: a shorter row, the figure flush right like the area tables. */
 export function Readout({ label, value }: { label: string; value: string }) {
   return (
-    <div className="pe-field pe-field-row">
+    <div className="pe-field pe-field-readout">
       <span className="pe-field-label">{label}</span>
       <span className="pe-readout">{value}</span>
     </div>
@@ -22,7 +26,8 @@ export function DeleteButton({ label = 'Delete' }: { label?: string }) {
   const ctx = useEditorContext()
   return (
     <button type="button" className="pe-danger" onClick={() => deleteSelection(ctx)}>
-      <TrashIcon /> {label}
+      <TrashIcon />
+      <span>{label}</span>
     </button>
   )
 }

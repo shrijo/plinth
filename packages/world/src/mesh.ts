@@ -19,7 +19,7 @@ export interface MeshBuffers {
   /** Texture coordinates (ground) or colours per vertex (buildings). */
   uvs?: Float32Array
   colors?: Float32Array
-  /** Outline: pairs of points along the sharp edges (buildings). */
+  /** Outline: pairs of points along the sharp edges (buildings), or the shores (water). */
   edges?: Float32Array
 }
 
@@ -270,11 +270,42 @@ export function waterMesh(tile: TileId, ground: Ground): (MeshBuffers & { level:
   const positions: number[] = []
   const normals: number[] = []
   const indices: number[] = []
+  const shores: number[] = []
   const scratch = new Float32Array(3)
   let total = 0
+  /** Where a point (source tile units) is, a few centimetres over the water's surface. */
+  const shorePoint = (u: number, v: number) => {
+    const lon = ((source.x + u) / n) * 360 - 180
+    const lat = tileLat(source.y + v, source.z)
+    place(frame, ecefFromLonLat(lon, lat, ground.surface(lon, lat) + SHORE_LIFT), scratch, 0)
+    return [scratch[0]!, scratch[1]!, scratch[2]!] as const
+  }
+  // On the tile's edges a shape is only cut: no shore there.
+  const onEdge = (u: number, v: number) => {
+    const e = (rect.maxX - rect.minX) * 1e-6
+    return Math.abs(u - rect.minX) < e || Math.abs(u - rect.maxX) < e || Math.abs(v - rect.minY) < e || Math.abs(v - rect.maxY) < e
+  }
   for (const shape of ground.water) {
     const clipped = clipShape(shape, rect)
     if (!clipped) continue
+    // The shores: every edge of the shape inside the tile, in steps short enough to follow the surface.
+    for (const ring of [clipped.outer, ...clipped.holes]) {
+      const count = ring.length / 2
+      for (let i = 0; i < count; i++) {
+        const u0 = ring[i * 2]!
+        const v0 = ring[i * 2 + 1]!
+        const u1 = ring[((i + 1) % count) * 2]!
+        const v1 = ring[((i + 1) % count) * 2 + 1]!
+        if (onEdge(u0, v0) && onEdge(u1, v1) && (Math.abs(u0 - u1) < 1e-9 || Math.abs(v0 - v1) < 1e-9)) continue
+        const steps = Math.max(1, Math.ceil(Math.hypot(u1 - u0, v1 - v0) / longest))
+        let from = shorePoint(u0, v0)
+        for (let k = 1; k <= steps; k++) {
+          const to = shorePoint(u0 + ((u1 - u0) * k) / steps, v0 + ((v1 - v0) * k) / steps)
+          shores.push(...from, ...to)
+          from = to
+        }
+      }
+    }
     const flat: number[] = []
     const holes: number[] = []
     for (const [r, ring] of [clipped.outer, ...clipped.holes].entries()) {
@@ -348,9 +379,13 @@ export function waterMesh(tile: TileId, ground: Ground): (MeshBuffers & { level:
     positions: Float32Array.from(positions),
     normals: Float32Array.from(normals),
     indices: Uint32Array.from(indices),
+    ...(shores.length > 0 ? { edges: Float32Array.from(shores) } : {}),
     level: total / (positions.length / 3),
   }
 }
+
+/** Shore lines lie this far over the water's surface (metres): over the banks' top (see makeGround), so they show. */
+const SHORE_LIFT = 0.3
 
 /** The way up at a point, in a frame's three.js axes. */
 function upIn(frame: Frame, lon: number, lat: number): Vec3 {

@@ -108,11 +108,9 @@ function World({ initial, navigate }: { initial: Partial<GlobeView> | null; navi
     },
     [navigate],
   )
+  // The bar comes first, for reading and tabbing; it floats over the world on the margin.
   return (
     <div className="app">
-      <main className="app-main">
-        <WorldExplorer initialView={start ?? undefined} onViewChange={keepView} onMakeSite={makeSite} />
-      </main>
       <header className="app-header app-header-floating">
         <div className="app-pill">
           <button type="button" className="app-back" onClick={() => navigate(null)} title="All cities">
@@ -125,6 +123,9 @@ function World({ initial, navigate }: { initial: Partial<GlobeView> | null; navi
           <span className="app-place">World</span>
         </div>
       </header>
+      <main className="app-main">
+        <WorldExplorer initialView={start ?? undefined} onViewChange={keepView} onMakeSite={makeSite} />
+      </main>
     </div>
   )
 }
@@ -408,11 +409,9 @@ function Workspace({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [saveFile, openFile])
 
+  // The bar first, for reading and tabbing: where you are on the left, the File menu on the right.
   return (
     <div className="app">
-      <main className="app-main">
-        <PlinthEditor document={doc} apiRef={editorApi} />
-      </main>
       <header className="app-header app-header-floating">
         <div className="app-pill">
           <button type="button" className="app-back" onClick={() => void backToGallery()} title="All cities">
@@ -449,6 +448,9 @@ function Workspace({
           />
         </div>
       </header>
+      <main className="app-main">
+        <PlinthEditor document={doc} apiRef={editorApi} />
+      </main>
       {toast && (
         <div className="app-toast" role="status" data-error={toast.error || undefined}>
           {toast.text}

@@ -7,18 +7,21 @@ import {
   showAllBuildings,
   showWholeBuilding,
   toggleLevelFocus,
+  toggleSnapping,
+  toggleView,
 } from '../actions.ts'
 import { useEditor, useEditorContext, useSnapshot } from '../context.ts'
 import { FIRST_HOUR, formatHour, LAST_HOUR } from '../scene/daylight.ts'
 import { LENSES } from '../state.ts'
-import { BackIcon, ChevronIcon, LevelsIcon, LinkIcon, PlusIcon, SlidersIcon } from './icons.tsx'
+import { BackIcon, ChevronIcon, LevelsIcon, LinkIcon, PlusIcon } from './icons.tsx'
 
-/** The panel at the top left: the levels of the open building (on the site, the view options live in the toolbar's notch). */
+/** The panel at the top left: the levels of the open building (the view options live in the notch). */
 export function LevelBar() {
   const site = useEditor((s) => s.mode === 'site')
   return site ? null : <BuildingLevels />
 }
 
+/** How the view looks, unfolding from View in the notch: in both editors, with the building's own options inside one. */
 export function ViewOptions({ site }: { site: boolean }) {
   const ctx = useEditorContext()
   const showAbove = useEditor((s) => s.showLevelsAbove)
@@ -30,40 +33,55 @@ export function ViewOptions({ site }: { site: boolean }) {
   const isolated = useEditor((s) => s.isolated !== null)
   const occlusion = useEditor((s) => s.ambientOcclusion)
   const world = useEditor((s) => s.showWorld)
+  const top = useEditor((s) => s.view === 'top')
+  const snapping = useEditor((s) => s.snap.enabled)
   const placed = useSnapshot().meta.origin?.kind === 'lonlat'
   return (
     <div className="pe-view-options">
-      <label className="pe-daylight">
-        <span>Sun</span>
-        <input
-          type="range"
-          min={FIRST_HOUR}
-          max={LAST_HOUR}
-          step={0.25}
-          value={hour}
-          aria-valuetext={formatHour(hour)}
-          onChange={(e) => ctx.store.setState({ timeOfDay: Number(e.target.value) })}
-        />
-        <output>{formatHour(hour)}</output>
+      <label className="pe-field">
+        <span className="pe-field-label">Sun</span>
+        <span className="pe-option-value">
+          <input
+            type="range"
+            min={FIRST_HOUR}
+            max={LAST_HOUR}
+            step={0.25}
+            value={hour}
+            aria-valuetext={formatHour(hour)}
+            onChange={(e) => ctx.store.setState({ timeOfDay: Number(e.target.value) })}
+          />
+          <output>{formatHour(hour)}</output>
+        </span>
       </label>
-      <div className="pe-lens">
-        <span>Lens</span>
-        <div className="pe-segmented" role="radiogroup" aria-label="Lens">
-          {LENSES.map((mm) => (
-            <button
-              key={mm}
-              type="button"
-              role="radio"
-              aria-checked={lens === mm}
-              title={`${mm} mm${mm === 35 ? ' (natural)' : mm < 35 ? ' (wide)' : ''}`}
-              onClick={() => ctx.store.setState({ lens: mm })}
-            >
-              {mm}
-            </button>
-          ))}
+      <div className="pe-field">
+        <span className="pe-field-label">Lens</span>
+        <div className="pe-option-value">
+          <div className="pe-segmented" role="radiogroup" aria-label="Lens">
+            {LENSES.map((mm) => (
+              <button
+                key={mm}
+                type="button"
+                role="radio"
+                aria-checked={lens === mm}
+                title={`${mm} mm${mm === 35 ? ' (natural)' : mm < 35 ? ' (wide)' : ''}`}
+                onClick={() => ctx.store.setState({ lens: mm })}
+              >
+                {mm}
+              </button>
+            ))}
+          </div>
+          <span className="pe-lens-unit">mm</span>
         </div>
-        <span className="pe-lens-unit">mm</span>
       </div>
+      {/* On the narrowest screens the notch hands these two over. */}
+      <label className="pe-check pe-narrow-only">
+        <input type="checkbox" checked={top} onChange={() => toggleView(ctx)} />
+        Top view
+      </label>
+      <label className="pe-check pe-narrow-only">
+        <input type="checkbox" checked={snapping} onChange={() => toggleSnapping(ctx)} />
+        Snapping
+      </label>
       {!site && (
         <>
           <label className="pe-check">
@@ -110,7 +128,6 @@ export function ViewOptions({ site }: { site: boolean }) {
   )
 }
 
-/** On the site: the view options, behind a button. */
 /**
  * The open building's stack of levels, top floor first, under a way back
  * to the site. Click a level to work on it; click it again (or "Whole
@@ -124,7 +141,6 @@ function BuildingLevels() {
   const whole = useEditor((s) => s.wholeBuilding)
   // Folded on phones, where it shows just the active level.
   const [open, setOpen] = useState(() => !window.matchMedia('(max-width: 700px)').matches)
-  const [viewOpen, setViewOpen] = useState(false)
   const levels = sortedLevels(snapshot, buildingId ?? undefined).reverse()
   const active = snapshot.levels[activeLevelId]
   const building = buildingId ? snapshot.buildings[buildingId] : undefined
@@ -154,18 +170,13 @@ function BuildingLevels() {
         <button
           type="button"
           className="pe-icon-button"
-          data-active={viewOpen || undefined}
-          aria-expanded={viewOpen}
-          title="View options"
-          onClick={() => setViewOpen(!viewOpen)}
+          title="Add a floor above"
+          aria-label="Add a floor above"
+          onClick={() => addLevelAbove(ctx)}
         >
-          <SlidersIcon />
-        </button>
-        <button type="button" className="pe-icon-button" title="Add a floor above" onClick={() => addLevelAbove(ctx)}>
           <PlusIcon />
         </button>
       </div>
-      {viewOpen && <ViewOptions site={false} />}
       {open && (
         <ol className="pe-levels-list">
           <li>
@@ -173,6 +184,7 @@ function BuildingLevels() {
               type="button"
               className="pe-level pe-level-whole"
               data-active={whole || undefined}
+              aria-current={whole || undefined}
               onClick={() => showWholeBuilding(ctx)}
             >
               <span className="pe-level-name">
@@ -181,25 +193,29 @@ function BuildingLevels() {
               </span>
             </button>
           </li>
-          {levels.map((level) => (
-            <li key={level.id}>
-              <button
-                type="button"
-                className="pe-level"
-                data-active={(!whole && level.id === activeLevelId) || undefined}
-                data-copy={level.masterId ? true : undefined}
-                title={!whole && level.id === activeLevelId ? 'Click again to see the whole building' : undefined}
-                onClick={() => toggleLevelFocus(ctx, level.id)}
-              >
-                <span className="pe-level-name">
-                  {level.masterId && <LinkIcon />}
-                  {level.name}
-                  {floorsOf(level) > 1 && <span className="pe-level-count">×{floorsOf(level)}</span>}
-                </span>
-                <span className="pe-level-elevation">{level.elevation.toFixed(2)} m</span>
-              </button>
-            </li>
-          ))}
+          {levels.map((level) => {
+            const current = !whole && level.id === activeLevelId
+            return (
+              <li key={level.id}>
+                <button
+                  type="button"
+                  className="pe-level"
+                  data-active={current || undefined}
+                  data-copy={level.masterId ? true : undefined}
+                  aria-current={current || undefined}
+                  title={current ? 'Click again to see the whole building' : undefined}
+                  onClick={() => toggleLevelFocus(ctx, level.id)}
+                >
+                  <span className="pe-level-name">
+                    {level.masterId && <LinkIcon />}
+                    {level.name}
+                    {floorsOf(level) > 1 && <span className="pe-level-count">×{floorsOf(level)}</span>}
+                  </span>
+                  <span className="pe-level-elevation">{level.elevation.toFixed(2)} m</span>
+                </button>
+              </li>
+            )
+          })}
         </ol>
       )}
     </section>
