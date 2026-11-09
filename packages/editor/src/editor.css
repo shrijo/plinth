@@ -1,43 +1,194 @@
 /*
- * The editor's interface floats over the world: frosted, rounded panels,
- * a tool dock at the bottom, tooltips in dark pills. A host app can set
- * --pe-font, and --pe-top-inset to keep the top panels clear of its own
- * header.
+ * Plinth's interface, in the Swiss manner: one grotesque on a strict scale,
+ * an 8 px grid, white surfaces divided by hairlines, and one accent for
+ * where you are and what you'll do next. Everything is built from the
+ * tokens below; the app around the editor uses them too.
+ *
+ * The accent marks the current tool, the current floor, the primary action
+ * and keyboard focus. Ink marks a value chosen from a set (a segment, a
+ * ticked box). Greys are only feedback: hover, pressed, open.
  */
 
+/* Tokens ------------------------------------------------------------------ */
+
+/* On the root at no specificity, so a host page can set its own. */
+:where(:root) {
+  /* Type: one grotesque, five sizes, leading on a 4 px baseline. */
+  --pe-font: 'Inter Variable', Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --pe-size-caption: 11px;
+  --pe-size-body: 13px;
+  --pe-size-title: 15px;
+  --pe-size-heading: 20px;
+  --pe-size-display: 32px;
+  --pe-leading-caption: 16px;
+  --pe-leading-body: 16px;
+  --pe-leading-text: 20px;
+  --pe-leading-title: 20px;
+  --pe-leading-heading: 24px;
+  --pe-leading-display: 40px;
+  --pe-weight-regular: 400;
+  --pe-weight-medium: 500;
+  --pe-weight-bold: 600;
+  --pe-tracking-caps: 0.06em;
+  --pe-tracking-tight: -0.01em;
+  --pe-tracking-display: -0.02em;
+  /* Fields: 16 px on touch screens, below which phones zoom in on focus. */
+  --pe-size-input: var(--pe-size-body);
+
+  /* Colour: warm greys, near-black ink, one accent. */
+  --pe-white: #ffffff;
+  --pe-grey-50: #f7f7f5;
+  --pe-grey-100: #efefec;
+  --pe-grey-200: #e3e3df;
+  --pe-grey-300: #cdcdc8;
+  --pe-grey-400: #a8a8a2;
+  --pe-grey-600: #66665f;
+  --pe-grey-900: #161615;
+  --pe-vermilion: #d4380b;
+  --pe-vermilion-dark: #b93009;
+  --pe-vermilion-darker: #9f2907;
+
+  --pe-surface: var(--pe-white);
+  --pe-surface-hover: var(--pe-grey-50);
+  --pe-surface-pressed: var(--pe-grey-100);
+  --pe-text: var(--pe-grey-900);
+  --pe-text-muted: var(--pe-grey-600);
+  /* Disabled only: below text contrast. */
+  --pe-text-faint: var(--pe-grey-400);
+  --pe-line: var(--pe-grey-200);
+  --pe-line-strong: var(--pe-grey-300);
+  --pe-ink: var(--pe-grey-900);
+  --pe-on-ink: var(--pe-white);
+  --pe-accent: var(--pe-vermilion);
+  --pe-accent-hover: var(--pe-vermilion-dark);
+  --pe-accent-pressed: var(--pe-vermilion-darker);
+  --pe-accent-wash: rgb(212 56 11 / 0.07);
+  --pe-on-accent: var(--pe-white);
+  /* Ink, not the accent: a red-orange ring round a field would read as an error. */
+  --pe-focus: var(--pe-ink);
+  --pe-danger: #b42318;
+  --pe-danger-wash: #fcf0ee;
+  --pe-success: #2b7a3f;
+  --pe-label-fill: rgb(255 255 255 / 0.9);
+  --pe-scrim: rgb(22 22 21 / 0.32);
+
+  /* Space: an 8 px unit, its half step, and a quarter for hairline details. */
+  --pe-space-025: 2px;
+  --pe-space-05: 4px;
+  --pe-space-1: 8px;
+  --pe-space-15: 12px;
+  --pe-space-2: 16px;
+  --pe-space-3: 24px;
+  --pe-space-4: 32px;
+  --pe-space-5: 40px;
+  --pe-space-6: 48px;
+  --pe-space-8: 64px;
+  /* One outer margin, one gutter between floating pieces. */
+  --pe-margin: var(--pe-space-3);
+  --pe-gutter: var(--pe-space-1);
+
+  /* Sizes: controls, bars and the notch's cells; icons; the columns of panels. */
+  --pe-control: 32px;
+  --pe-bar: 40px;
+  --pe-cell: 56px;
+  --pe-icon: 20px;
+  --pe-icon-small: 16px;
+  --pe-logo: 24px;
+  --pe-handle: 10px;
+  --pe-panel-width: 320px;
+  --pe-side-width: 240px;
+  --pe-popover-width: 288px;
+  --pe-menu-width: 256px;
+  --pe-wide: 400px;
+  --pe-dock-width: 480px;
+  --pe-label-column: 128px;
+  --pe-label-column-short: 64px;
+  --pe-field-short: 128px;
+  --pe-notch: var(--pe-cell);
+  /*
+   * Breakpoints (media queries can't read these, so they're written out):
+   * 700 px phones, 440 px too narrow for every cell of the notch; the
+   * gallery adds a column at 560, 800, 1040 and 1300 px.
+   */
+
+  /* Lines and corners: hairlines for structure, a 2 px rule for "this one". */
+  --pe-hairline: 1px;
+  --pe-stroke: 2px;
+  --pe-rule: var(--pe-hairline) solid var(--pe-line);
+  --pe-rule-strong: var(--pe-hairline) solid var(--pe-line-strong);
+  --pe-focus-ring: var(--pe-stroke) solid var(--pe-focus);
+  --pe-focus-offset: var(--pe-hairline);
+  --pe-radius: 4px;
+  --pe-radius-small: 2px;
+
+  /* Depth: one soft shadow, for what floats over the view. */
+  --pe-shadow: 0 2px 12px rgb(22 22 21 / 0.08);
+  --pe-z-panel: 10;
+  --pe-z-notch: 11;
+  --pe-z-shell: 20;
+  --pe-z-popover: 30;
+  --pe-z-toast: 40;
+  --pe-z-dialog: 50;
+
+  /* Motion: short, and none when asked for none. */
+  --pe-duration: 120ms;
+  --pe-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Phones: a narrower margin and a lower notch. */
+@media (max-width: 700px) {
+  :where(:root) {
+    --pe-margin: var(--pe-space-2);
+    --pe-notch: var(--pe-space-6);
+  }
+}
+
+/* Fingers: every target at least 40 px. */
+@media (pointer: coarse) {
+  :where(:root) {
+    --pe-control: 40px;
+    --pe-size-input: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(:root) {
+    --pe-duration: 0ms;
+  }
+}
+
+/* The editor --------------------------------------------------------------- */
+
+/*
+ * A host can set --pe-top-inset to keep the top panels clear of its own
+ * header; --pe-top and --pe-bottom are where floating panels start and stop.
+ */
 .plinth-editor {
-  --pe-surface: rgba(255, 255, 255, 0.9);
-  --pe-surface-solid: #ffffff;
-  --pe-border: rgba(31, 41, 51, 0.09);
-  --pe-text: #1f2933;
-  --pe-muted: #6b7684;
-  --pe-accent: #1f2328;
-  --pe-accent-strong: #000000;
-  --pe-accent-soft: #e8eaed;
-  --pe-accent-gradient: #1f2328;
-  --pe-input-bg: #f1f3f6;
-  --pe-chip-bg: #eef1f5;
-  --pe-danger: #b3261e;
-  --pe-ink: rgba(24, 30, 38, 0.82);
-  --pe-shadow: 0 1px 3px rgba(20, 24, 28, 0.08), 0 8px 24px rgba(20, 24, 28, 0.1);
-  --pe-radius: 14px;
-  --pe-gap: 14px;
-  --pe-top: calc(var(--pe-gap) + var(--pe-top-inset, 0px));
+  --pe-top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px) + var(--pe-top-inset, 0px));
+  --pe-bottom: calc(var(--pe-notch) + env(safe-area-inset-bottom, 0px) + var(--pe-gutter));
 
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
   color: var(--pe-text);
-  font: 400 13px/1.4 var(--pe-font, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif);
+  font: var(--pe-weight-regular) var(--pe-size-body) / var(--pe-leading-body) var(--pe-font);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 
-.plinth-editor button {
+.plinth-editor :where(button, input, select, output) {
   font: inherit;
   color: inherit;
+  letter-spacing: inherit;
+}
+
+.plinth-editor :where(h1, h2, h3, p, ol, ul, dl, dd) {
+  margin: 0;
 }
 
 .pe-canvas {
@@ -46,159 +197,966 @@
   touch-action: none;
 }
 
+.plinth-editor :focus-visible {
+  outline: var(--pe-focus-ring);
+  outline-offset: var(--pe-focus-offset);
+}
+
 .plinth-editor :focus:not(:focus-visible) {
   outline: none;
 }
 
-.pe-tool:focus-visible,
-.pe-chip:focus-visible,
-.pe-panel-header:focus-visible,
-.pe-icon-button:focus-visible,
-.pe-levels-toggle:focus-visible,
-.pe-level:focus-visible,
-.pe-room:focus-visible,
-.pe-type:focus-visible,
-.pe-button:focus-visible,
-.pe-danger:focus-visible,
-.pe-segmented button:focus-visible,
-.pe-crumb:focus-visible {
-  outline: 2px solid var(--pe-accent);
-  outline-offset: 2px;
+.pe-icon {
+  flex: none;
+  width: var(--pe-icon);
+  height: var(--pe-icon);
 }
 
-/* Frosted panels */
+/* The chevron of a panel that folds: turns over when open. */
+.pe-chevron {
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+  transition: transform var(--pe-duration) var(--pe-ease);
+}
 
+.pe-chevron[data-open] {
+  transform: rotate(180deg);
+}
+
+/* Floating surfaces: white, a hairline round, one soft shadow. */
 .pe-toolbar,
 .pe-levels,
-.pe-panel {
-  border: 1px solid rgba(255, 255, 255, 0.7);
+.pe-panel,
+.pe-popover,
+.pe-status {
   background: var(--pe-surface);
+  border: var(--pe-rule);
+  border-radius: var(--pe-radius);
   box-shadow: var(--pe-shadow);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
 }
 
-/* Tool dock */
+/* Buttons ----------------------------------------------------------------- */
 
-.pe-toolbar {
+/* Secondary by default: white, a hairline round it. */
+.pe-button,
+.pe-danger,
+.pe-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--pe-space-1);
+  min-width: 0;
+  height: var(--pe-control);
+  padding: 0 var(--pe-space-15);
+  border: var(--pe-rule-strong);
+  border-radius: var(--pe-radius);
+  background: var(--pe-surface);
+  color: var(--pe-text);
+  font-weight: var(--pe-weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--pe-duration) var(--pe-ease),
+    border-color var(--pe-duration) var(--pe-ease),
+    color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-button > span,
+.pe-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pe-button:hover:not(:disabled),
+.pe-chip:hover:not(:disabled) {
+  background: var(--pe-surface-hover);
+}
+
+.pe-button:active:not(:disabled),
+.pe-chip:active:not(:disabled),
+.pe-button[aria-pressed='true'] {
+  background: var(--pe-surface-pressed);
+}
+
+.pe-button[aria-pressed='true'] {
+  border-color: var(--pe-ink);
+}
+
+.pe-button:disabled,
+.pe-chip:disabled {
+  color: var(--pe-text-faint);
+  cursor: default;
+}
+
+.pe-button svg,
+.pe-danger svg,
+.pe-chip svg {
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+}
+
+/* The one thing to do next. */
+.pe-button-primary,
+.pe-chip-primary {
+  border-color: var(--pe-accent);
+  background: var(--pe-accent);
+  color: var(--pe-on-accent);
+}
+
+.pe-button-primary:hover:not(:disabled),
+.pe-chip-primary:hover:not(:disabled) {
+  border-color: var(--pe-accent-hover);
+  background: var(--pe-accent-hover);
+}
+
+.pe-button-primary:active:not(:disabled),
+.pe-chip-primary:active:not(:disabled) {
+  border-color: var(--pe-accent-pressed);
+  background: var(--pe-accent-pressed);
+}
+
+.pe-button-primary:disabled,
+.pe-chip-primary:disabled {
+  border-color: var(--pe-line);
+  background: var(--pe-surface-pressed);
+  color: var(--pe-text-faint);
+}
+
+.pe-button-large {
+  height: var(--pe-bar);
+  padding: 0 var(--pe-space-2);
+}
+
+.pe-button-wide {
+  width: 100%;
+}
+
+.pe-danger {
+  width: 100%;
+  color: var(--pe-danger);
+}
+
+.pe-danger:hover {
+  border-color: var(--pe-danger);
+  background: var(--pe-danger-wash);
+}
+
+/* Square, quiet: an icon on its own. */
+.pe-icon-button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--pe-control);
+  height: var(--pe-control);
+  padding: 0;
+  border: 0;
+  border-radius: var(--pe-radius);
+  background: transparent;
+  color: var(--pe-text);
+  cursor: pointer;
+  transition: background-color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-icon-button:hover:not(:disabled) {
+  background: var(--pe-surface-hover);
+}
+
+.pe-icon-button:active:not(:disabled),
+.pe-icon-button[aria-expanded='true'] {
+  background: var(--pe-surface-pressed);
+}
+
+.pe-icon-button:disabled {
+  color: var(--pe-text-faint);
+  cursor: default;
+}
+
+.pe-icon-button svg {
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+}
+
+/* Text that acts: underlined, ink, the accent on hover. */
+.pe-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pe-text);
+  font-size: var(--pe-size-caption);
+  line-height: var(--pe-leading-caption);
+  text-decoration: underline;
+  text-decoration-thickness: var(--pe-hairline);
+  text-underline-offset: var(--pe-space-025);
+  cursor: pointer;
+}
+
+.pe-link:hover {
+  color: var(--pe-accent);
+}
+
+/* Fields ------------------------------------------------------------------ */
+
+/*
+ * A label and its control, on the panel's two columns. The label keeps to
+ * the control's first line, so a control of two rows (the turns, say) still
+ * reads from the top.
+ */
+.pe-field {
+  --pe-row: var(--pe-control);
+  display: grid;
+  grid-template-columns: var(--pe-label-column) minmax(0, 1fr);
+  column-gap: var(--pe-space-1);
+  align-items: start;
+  min-height: var(--pe-row);
+}
+
+.pe-field-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  min-height: var(--pe-row);
+  color: var(--pe-text-muted);
+}
+
+/* A figure on its own: a shorter row, the figure flush right like the tables. */
+.pe-field-readout {
+  --pe-row: var(--pe-space-3);
+}
+
+.pe-badge {
+  color: var(--pe-text-muted);
+  font-size: var(--pe-size-caption);
+  line-height: var(--pe-leading-caption);
+}
+
+.pe-input-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.pe-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: var(--pe-control);
+  margin: 0;
+  padding: 0 var(--pe-space-1);
+  border: var(--pe-rule-strong);
+  border-radius: var(--pe-radius);
+  background: var(--pe-surface);
+  color: var(--pe-text);
+  font-size: var(--pe-size-input);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+  -webkit-user-select: text;
+  transition: border-color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-input-wrap .pe-input {
+  padding-right: var(--pe-space-3);
+}
+
+.pe-input::placeholder {
+  color: var(--pe-text-muted);
+  opacity: 1;
+}
+
+.pe-input:hover:not(:disabled) {
+  border-color: var(--pe-grey-400);
+}
+
+/* Focused: the hairline thickens to a 2 px ink frame (rather than a ring round it). */
+.pe-input:focus {
+  border-color: var(--pe-ink);
+}
+
+.pe-input:focus-visible {
+  outline-offset: calc(-1 * var(--pe-hairline));
+}
+
+.pe-input[aria-invalid='true'] {
+  border-color: var(--pe-danger);
+  outline-color: var(--pe-danger);
+}
+
+.pe-input:disabled {
+  background: var(--pe-surface-hover);
+  color: var(--pe-text-muted);
+}
+
+.pe-unit {
   position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
+  top: 50%;
+  right: var(--pe-space-1);
+  transform: translateY(-50%);
+  color: var(--pe-text-muted);
+  pointer-events: none;
+}
+
+/* A drop-down: the field, with a chevron drawn in the text's colour. */
+.pe-select {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.pe-select select {
+  appearance: none;
+  padding-right: var(--pe-space-3);
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.pe-select::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: var(--pe-space-1);
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+  transform: translateY(-50%);
+  background: var(--pe-text);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 6.5 8 10l3.5-3.5' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  pointer-events: none;
+}
+
+.pe-readout {
   display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: calc(100% - 2 * var(--pe-gap));
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-  border-bottom: 0;
-  border-radius: 18px 18px 0 0;
-  box-shadow: 0 -12px 32px rgba(20, 30, 45, 0.14);
+  justify-content: flex-end;
+  min-width: 0;
+  min-height: var(--pe-row);
+  font-weight: var(--pe-weight-medium);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
+/* Two by two in the control column (the turns). */
+.pe-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--pe-space-1);
+  min-width: 0;
+}
+
+.pe-pair > .pe-button {
+  gap: var(--pe-space-05);
+  padding: 0 var(--pe-space-05);
+}
+
+/* A tick box: a square that fills with ink. */
+.pe-check {
+  display: flex;
+  align-items: center;
+  gap: var(--pe-space-1);
+  min-height: var(--pe-control);
+  cursor: pointer;
+}
+
+.pe-check input {
+  display: grid;
+  flex: none;
+  place-content: center;
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+  margin: 0;
+  border: var(--pe-hairline) solid var(--pe-grey-600);
+  border-radius: var(--pe-radius-small);
+  background: var(--pe-surface);
+  appearance: none;
+  cursor: pointer;
+  transition:
+    background-color var(--pe-duration) var(--pe-ease),
+    border-color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-check input::after {
+  content: '';
+  width: calc(var(--pe-icon-small) - 2 * var(--pe-space-025));
+  height: calc(var(--pe-icon-small) - 2 * var(--pe-space-025));
+  background: var(--pe-on-ink);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.25 5 8.75l4.5-5.5' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+  opacity: 0;
+}
+
+.pe-check input:checked {
+  border-color: var(--pe-ink);
+  background: var(--pe-ink);
+}
+
+.pe-check input:checked::after {
+  opacity: 1;
+}
+
+.pe-check:hover input:not(:checked) {
+  border-color: var(--pe-ink);
+}
+
+/* A slider: a hairline track and an ink knob. */
+.plinth-editor input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  height: var(--pe-control);
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+
+.plinth-editor input[type='range']::-webkit-slider-runnable-track {
+  height: var(--pe-stroke);
+  border-radius: var(--pe-hairline);
+  background: var(--pe-line-strong);
+}
+
+.plinth-editor input[type='range']::-moz-range-track {
+  height: var(--pe-stroke);
+  border-radius: var(--pe-hairline);
+  background: var(--pe-line-strong);
+}
+
+.plinth-editor input[type='range']::-webkit-slider-thumb {
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+  margin-top: calc((var(--pe-stroke) - var(--pe-icon-small)) / 2);
+  border: var(--pe-stroke) solid var(--pe-surface);
+  border-radius: 50%;
+  background: var(--pe-ink);
+  box-shadow: 0 0 0 var(--pe-hairline) var(--pe-ink);
+  appearance: none;
+}
+
+.plinth-editor input[type='range']::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+  border: var(--pe-stroke) solid var(--pe-surface);
+  border-radius: 50%;
+  background: var(--pe-ink);
+  box-shadow: 0 0 0 var(--pe-hairline) var(--pe-ink);
+}
+
+.plinth-editor input[type='range']:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* Segments: one of a few, the chosen one in ink. */
+.pe-segmented {
+  display: flex;
+  min-width: 0;
+  height: var(--pe-control);
+  border: var(--pe-rule-strong);
+  border-radius: var(--pe-radius);
+  background: var(--pe-surface);
+}
+
+.pe-segmented button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 var(--pe-space-05);
+  border: 0;
+  border-left: var(--pe-rule-strong);
+  background: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--pe-duration) var(--pe-ease),
+    color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-segmented button:first-child {
+  border-left: 0;
+  border-radius: calc(var(--pe-radius) - var(--pe-hairline)) 0 0 calc(var(--pe-radius) - var(--pe-hairline));
+}
+
+.pe-segmented button:last-child {
+  border-radius: 0 calc(var(--pe-radius) - var(--pe-hairline)) calc(var(--pe-radius) - var(--pe-hairline)) 0;
+}
+
+.pe-segmented button:hover {
+  background: var(--pe-surface-hover);
+}
+
+.pe-segmented button[aria-checked='true'] {
+  background: var(--pe-ink);
+  color: var(--pe-on-ink);
+}
+
+.pe-segmented button:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+/* A whole number between a minus and a plus. */
+.pe-stepper {
+  display: grid;
+  grid-template-columns: var(--pe-control) minmax(0, 1fr) var(--pe-control);
+  height: var(--pe-control);
+  border: var(--pe-rule-strong);
+  border-radius: var(--pe-radius);
+  box-sizing: border-box;
+}
+
+.pe-stepper .pe-icon-button {
+  width: auto;
+  height: 100%;
+  border-radius: 0;
+}
+
+.pe-stepper .pe-icon-button:first-child {
+  border-right: var(--pe-rule-strong);
+  border-radius: calc(var(--pe-radius) - var(--pe-hairline)) 0 0 calc(var(--pe-radius) - var(--pe-hairline));
+}
+
+.pe-stepper .pe-icon-button:last-child {
+  border-left: var(--pe-rule-strong);
+  border-radius: 0 calc(var(--pe-radius) - var(--pe-hairline)) calc(var(--pe-radius) - var(--pe-hairline)) 0;
+}
+
+.pe-stepper-value {
+  align-self: center;
+  font-weight: var(--pe-weight-medium);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* A heading in a panel: small capitals under a rule across the panel. */
+.pe-section-title {
+  margin: var(--pe-space-1) calc(-1 * var(--pe-space-2)) 0;
+  padding: var(--pe-space-2) var(--pe-space-2) 0;
+  border-top: var(--pe-rule);
+  color: var(--pe-text-muted);
+  font-size: var(--pe-size-caption);
+  font-weight: var(--pe-weight-bold);
+  line-height: var(--pe-leading-caption);
+  letter-spacing: var(--pe-tracking-caps);
+  text-transform: uppercase;
+  font-feature-settings: 'case';
+}
+
+.pe-note {
+  color: var(--pe-text-muted);
+  font-size: var(--pe-size-caption);
+  line-height: var(--pe-leading-caption);
+}
+
+.pe-callout {
+  display: flex;
+  gap: var(--pe-space-1);
+  padding: var(--pe-space-1) var(--pe-space-15);
+  border-left: var(--pe-stroke) solid var(--pe-ink);
+  background: var(--pe-surface-hover);
+}
+
+.pe-callout svg {
+  flex: none;
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+}
+
+.pe-callout strong {
+  font-weight: var(--pe-weight-bold);
+}
+
+.pe-row {
+  display: flex;
+  gap: var(--pe-space-1);
+}
+
+.pe-row > .pe-button {
+  flex: 1 1 0;
+  padding: 0 var(--pe-space-1);
+}
+
+/* Lists of rows: a name on the left, a figure on the right. */
+.pe-room-list,
+.pe-type-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(-1 * var(--pe-space-2));
+  padding: 0;
+  list-style: none;
+}
+
+.pe-room,
+.pe-type {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pe-space-1);
+  width: 100%;
+  min-height: var(--pe-control);
+  padding: 0 var(--pe-space-2);
+  border: 0;
+  background: none;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--pe-duration) var(--pe-ease),
+    color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-room > span:last-child,
+.pe-type-size {
+  flex: none;
+  color: var(--pe-text-muted);
+}
+
+.pe-room:hover,
+.pe-type:hover {
+  background: var(--pe-surface-hover);
+}
+
+.pe-type[aria-checked='true'] {
+  background: var(--pe-ink);
+  color: var(--pe-on-ink);
+}
+
+.pe-type[aria-checked='true'] .pe-type-size {
+  color: var(--pe-on-ink);
+}
+
+.pe-type-list .pe-note {
+  padding: var(--pe-space-1) var(--pe-space-2) 0;
+}
+
+/* A street's sides: left and right under their heads. */
+.pe-sides {
+  display: grid;
+  grid-template-columns: var(--pe-label-column) minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--pe-space-1);
+  align-items: center;
+}
+
+.pe-sides-head {
+  padding-left: calc(var(--pe-space-1) + var(--pe-hairline));
+  color: var(--pe-text-muted);
+  font-size: var(--pe-size-caption);
+  font-weight: var(--pe-weight-bold);
+  line-height: var(--pe-leading-caption);
+  letter-spacing: var(--pe-tracking-caps);
+  text-transform: uppercase;
+}
+
+.pe-sides .pe-field {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pe-sides .pe-field-label:empty {
+  display: none;
+}
+
+/* Area figures: a table, the figures flush right. */
+.pe-figures {
+  display: flex;
+  flex-direction: column;
+}
+
+.pe-figure {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--pe-space-1);
+  align-items: baseline;
+  padding: var(--pe-space-05) 0;
+  border-top: var(--pe-rule);
+}
+
+.pe-figure:first-child {
+  border-top: 0;
+}
+
+.pe-figure dt {
+  display: flex;
+  gap: var(--pe-space-1);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.pe-figure abbr {
+  flex: none;
+  width: var(--pe-space-5);
+  font-weight: var(--pe-weight-bold);
+  text-decoration: none;
+}
+
+.pe-figure dt > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pe-figure[data-depth='1'] dt {
+  padding-left: var(--pe-space-1);
+}
+
+.pe-figure[data-depth='2'] dt {
+  padding-left: var(--pe-space-2);
+}
+
+.pe-figure[data-depth='3'] dt {
+  padding-left: var(--pe-space-3);
+}
+
+.pe-figure[data-depth='3'] {
+  color: var(--pe-text-muted);
+}
+
+.pe-figure dd {
+  font-weight: var(--pe-weight-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The notch: every editor control, on the bottom edge ---------------------- */
+
+.pe-notch {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--pe-z-notch);
+  width: max-content;
+  max-width: calc(100% - 2 * var(--pe-margin));
+  margin-inline: auto;
+}
+
+.pe-toolbar {
+  display: flex;
+  box-sizing: border-box;
+  height: calc(var(--pe-notch) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-bottom: 0;
+  border-radius: var(--pe-radius) var(--pe-radius) 0 0;
+}
+
+/* A cell of the grid: the icon over its name. */
 .pe-tool {
+  position: relative;
   display: flex;
   flex: none;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  min-width: 58px;
-  height: 56px;
-  padding: 0 6px;
+  gap: var(--pe-space-05);
+  width: var(--pe-cell);
+  min-width: 0;
+  padding: 0;
   border: 0;
-  border-radius: 12px;
   background: transparent;
   color: var(--pe-text);
   cursor: pointer;
   transition:
-    background 120ms ease,
-    transform 120ms ease,
-    box-shadow 120ms ease;
+    background-color var(--pe-duration) var(--pe-ease),
+    color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-tool:first-child {
+  border-top-left-radius: calc(var(--pe-radius) - var(--pe-hairline));
+}
+
+.pe-tool:last-child {
+  border-top-right-radius: calc(var(--pe-radius) - var(--pe-hairline));
 }
 
 .pe-tool svg {
-  width: 22px;
-  height: 22px;
-}
-
-.pe-tool:hover:not(:disabled) {
-  background: var(--pe-chip-bg);
-}
-
-.pe-tool:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.pe-tool[data-active] {
-  background: var(--pe-accent-gradient);
-  color: #fff;
-  box-shadow: none;
-}
-
-.pe-tool[data-active]:hover {
-  background: var(--pe-accent-gradient);
-}
-
-.pe-tool[data-on] {
-  background: var(--pe-accent-soft);
-  color: var(--pe-accent-strong);
-}
-
-.pe-tool:disabled {
-  opacity: 0.35;
-  cursor: default;
+  width: var(--pe-icon);
+  height: var(--pe-icon);
 }
 
 .pe-tool-label {
-  font-size: 10.5px;
-  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--pe-size-caption);
+  font-weight: var(--pe-weight-medium);
+  line-height: var(--pe-leading-caption);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
+.pe-tool:hover:not(:disabled) {
+  background: var(--pe-surface-hover);
+}
+
+.pe-tool:active:not(:disabled) {
+  background: var(--pe-surface-pressed);
+}
+
+/* The tool in use: in the accent, a rule along the notch's edge above it. */
+.pe-tool[data-active] {
+  color: var(--pe-accent);
+}
+
+.pe-tool[data-active]::before {
+  content: '';
+  position: absolute;
+  top: calc(-1 * var(--pe-hairline));
+  right: 0;
+  left: 0;
+  height: var(--pe-stroke);
+  background: var(--pe-accent);
+}
+
+/* A switch that's on, or a menu that's open: pressed in. */
+.pe-tool[data-on] {
+  background: var(--pe-surface-pressed);
+}
+
+.pe-tool:disabled {
+  color: var(--pe-text-faint);
+  cursor: default;
+}
+
+.pe-tool:focus-visible {
+  z-index: 1;
+  outline-offset: calc(-1 * var(--pe-stroke));
+}
+
+/* Between groups: a rule from edge to edge of the notch. */
 .pe-toolbar-divider {
   flex: none;
-  width: 1px;
-  height: 34px;
-  margin: 0 4px;
-  background: var(--pe-border);
+  width: var(--pe-hairline);
+  background: var(--pe-line);
 }
 
-/* Buildings and levels, top left */
+/* The view options unfold above the notch, flush with its right edge. */
+.pe-popover {
+  box-sizing: border-box;
+  width: var(--pe-popover-width);
+  max-width: 100%;
+  padding: var(--pe-space-1) var(--pe-space-2);
+}
+
+.pe-notch > .pe-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--pe-gutter));
+  max-height: calc(100dvh - var(--pe-top) - var(--pe-bottom));
+  overflow: auto;
+}
+
+.pe-view-options {
+  --pe-label-column: var(--pe-label-column-short);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pe-space-05);
+}
+
+.pe-option-value {
+  display: flex;
+  align-items: center;
+  gap: var(--pe-space-1);
+  min-width: 0;
+}
+
+.pe-option-value output,
+.pe-lens-unit {
+  flex: none;
+  min-width: var(--pe-space-5);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pe-lens-unit {
+  min-width: 0;
+  color: var(--pe-text-muted);
+}
+
+.pe-view-options .pe-segmented {
+  flex: 1;
+}
+
+/* Rows that only narrow screens need (the notch hands them over). */
+.pe-narrow-only {
+  display: none !important;
+}
+
+/* The open building and its floors, top left -------------------------------- */
 
 .pe-levels {
   position: absolute;
   top: var(--pe-top);
-  left: var(--pe-gap);
-  width: 236px;
-  max-height: calc(100% - var(--pe-top) - 120px);
+  left: var(--pe-margin);
+  z-index: var(--pe-z-panel);
+  box-sizing: border-box;
+  width: var(--pe-side-width);
+  max-width: calc(100% - 2 * var(--pe-margin));
+  max-height: calc(100% - var(--pe-top) - var(--pe-bottom));
   overflow: auto;
-  border-radius: var(--pe-radius);
+  overscroll-behavior: contain;
   scrollbar-width: thin;
+  scrollbar-color: var(--pe-line-strong) transparent;
 }
 
-/* The view options unfold from the notch, above the View button. */
-.pe-toolbar-pop {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
-  width: 280px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+.pe-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--pe-space-05);
+  height: var(--pe-bar);
+  padding: 0 var(--pe-space-2) 0 var(--pe-space-05);
+  border-bottom: var(--pe-rule);
+}
+
+.pe-crumb {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--pe-space-05);
+  height: var(--pe-control);
+  padding: 0 var(--pe-space-1) 0 var(--pe-space-05);
+  border: 0;
   border-radius: var(--pe-radius);
-  background: var(--pe-surface);
-  box-shadow: var(--pe-shadow);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  background: none;
+  font-weight: var(--pe-weight-medium);
+  cursor: pointer;
+  transition: background-color var(--pe-duration) var(--pe-ease);
 }
 
-.pe-toolbar-pop .pe-view-options {
-  margin: 8px;
+.pe-crumb:hover {
+  background: var(--pe-surface-hover);
+}
+
+.pe-crumb svg {
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+}
+
+.pe-crumb-current {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--pe-weight-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pe-crumb-current::before {
+  content: '/';
+  margin-right: var(--pe-space-1);
+  color: var(--pe-text-faint);
+  font-weight: var(--pe-weight-regular);
 }
 
 .pe-levels-header {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 8px 8px 6px 6px;
+  gap: var(--pe-space-05);
+  height: var(--pe-bar);
+  padding: 0 var(--pe-space-05);
+}
+
+.pe-levels[data-open] .pe-levels-header {
+  border-bottom: var(--pe-rule);
 }
 
 .pe-levels-toggle {
@@ -206,114 +1164,75 @@
   flex: 1;
   align-items: center;
   justify-content: space-between;
+  gap: var(--pe-space-1);
   min-width: 0;
-  height: 34px;
-  padding: 0 8px 0 10px;
+  height: var(--pe-control);
+  padding: 0 var(--pe-space-1) 0 var(--pe-space-15);
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--pe-radius);
   background: none;
-  font-size: 15px;
-  font-weight: 600;
+  text-align: left;
   cursor: pointer;
+  transition: background-color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-levels-toggle:hover {
+  background: var(--pe-surface-hover);
 }
 
 .pe-levels-title {
   overflow: hidden;
+  font-weight: var(--pe-weight-bold);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.pe-icon-button {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.pe-icon-button:hover:not(:disabled),
-.pe-levels-toggle:hover {
-  background: var(--pe-chip-bg);
-}
-
-.pe-icon-button[data-active] {
-  background: var(--pe-accent-soft);
-  color: var(--pe-accent-strong);
-}
-
-.pe-icon-button:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.pe-icon-button svg {
-  width: 18px;
-  height: 18px;
-}
-
 .pe-levels-list {
-  margin: 0;
-  padding: 0 8px 8px;
+  padding: var(--pe-space-05) 0;
   list-style: none;
 }
 
+/* A floor: its name, then its height flush right. The current one in the accent. */
 .pe-level {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--pe-space-1);
   width: 100%;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: var(--pe-control);
+  padding: 0 var(--pe-space-2);
   border: 0;
-  border-radius: 12px;
   background: none;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--pe-duration) var(--pe-ease),
+    color var(--pe-duration) var(--pe-ease);
 }
 
 .pe-level:hover {
-  background: var(--pe-chip-bg);
+  background: var(--pe-surface-hover);
 }
 
 .pe-level[data-active] {
-  background: var(--pe-accent-gradient);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: none;
+  color: var(--pe-accent);
 }
 
-.pe-level[data-active] .pe-level-count {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--pe-chip-bg);
-  color: var(--pe-muted);
-  font-size: 11px;
-  font-style: normal;
-}
-
-.pe-level-elevation {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.pe-level-whole {
-  margin-bottom: 2px;
-}
-
-.pe-level[data-copy] .pe-level-name {
-  color: var(--pe-muted);
-  font-style: italic;
+.pe-level[data-active]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--pe-stroke);
+  background: var(--pe-accent);
 }
 
 .pe-level-name {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--pe-space-1);
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -321,206 +1240,48 @@
 }
 
 .pe-level-name svg {
-  flex: none;
-  width: 15px;
-  height: 15px;
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
+}
+
+.pe-level[data-copy]:not([data-active]) .pe-level-name {
+  color: var(--pe-text-muted);
+}
+
+.pe-level-count {
+  color: var(--pe-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pe-level[data-active] .pe-level-count {
+  color: inherit;
 }
 
 .pe-level-elevation {
   flex: none;
-  color: var(--pe-muted);
-  font-size: 11.5px;
-  font-weight: 600;
+  color: var(--pe-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-.pe-level-row {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.pe-level-row .pe-level {
-  flex: 1;
-  min-width: 0;
-}
-
-.pe-levels-empty {
-  padding: 6px 12px 10px;
-  color: var(--pe-muted);
-}
-
-.pe-filter {
-  display: block;
-  box-sizing: border-box;
-  width: calc(100% - 16px);
-  height: 34px;
-  margin: 0 8px 8px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--pe-input-bg);
+.pe-level[data-active] .pe-level-elevation {
   color: inherit;
-  font: inherit;
 }
 
-.pe-filter:focus {
-  outline: 2px solid var(--pe-accent);
-  outline-offset: -2px;
-}
-
-.pe-crumbs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 10px 0 6px;
-  color: var(--pe-muted);
-}
-
-.pe-crumb {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 28px;
-  padding: 0 10px 0 4px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--pe-accent-soft);
-  color: var(--pe-accent-strong) !important;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.pe-crumb:hover {
-  background: #dcdfe3;
-}
-
-.pe-crumb svg {
-  width: 16px;
-  height: 16px;
-}
-
-.pe-crumb-current {
-  overflow: hidden;
-  color: var(--pe-text);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pe-crumb-current::before {
-  content: '/';
-  margin-right: 6px;
-  color: var(--pe-muted);
-  font-weight: 400;
-}
-
-/* View options */
-
-.pe-view-options {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 0 8px 8px;
-  padding: 12px;
-  border-radius: 14px;
-  background: var(--pe-chip-bg);
-}
-
-.pe-lens {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pe-lens > span:first-child {
-  min-width: 38px;
-  color: var(--pe-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.pe-daylight {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.pe-daylight > span {
-  min-width: 38px;
-  color: var(--pe-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.pe-daylight input {
-  flex: 1;
-  min-width: 0;
-  height: 20px;
-  margin: 0;
-  accent-color: var(--pe-accent);
-  cursor: pointer;
-}
-
-.pe-daylight output {
-  min-width: 36px;
-  font-size: 12.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.pe-lens-unit {
-  color: var(--pe-muted);
-  font-size: 12px;
-}
-
-.pe-segmented {
-  display: flex;
-  padding: 3px;
-  border-radius: 12px;
-  background: #fff;
-}
-
-.pe-segmented button {
-  min-width: 32px;
-  height: 26px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 9px;
-  background: none;
-  font-size: 12.5px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.pe-segmented-wide {
-  background: var(--pe-chip-bg);
-}
-
-.pe-segmented-wide button {
-  flex: 1;
-}
-
-.pe-segmented button[aria-checked='true'] {
-  background: var(--pe-accent-gradient);
-  color: #fff;
-  box-shadow: none;
-}
-
-/* Properties, top right */
+/* Properties, top right ----------------------------------------------------- */
 
 .pe-panel {
   position: absolute;
   top: var(--pe-top);
-  right: var(--pe-gap);
-  width: 284px;
-  max-height: calc(100% - var(--pe-top) - 120px);
+  right: var(--pe-margin);
+  z-index: var(--pe-z-panel);
+  box-sizing: border-box;
+  width: var(--pe-panel-width);
+  max-width: calc(100% - 2 * var(--pe-margin));
+  max-height: calc(100% - var(--pe-top) - var(--pe-bottom));
   overflow: auto;
-  border-radius: var(--pe-radius);
+  overscroll-behavior: contain;
   scrollbar-width: thin;
+  scrollbar-color: var(--pe-line-strong) transparent;
   user-select: text;
   -webkit-user-select: text;
 }
@@ -532,494 +1293,116 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--pe-space-1);
   width: 100%;
-  padding: 14px 14px 12px 16px;
+  height: var(--pe-space-6);
+  padding: 0 var(--pe-space-15) 0 var(--pe-space-2);
   border: 0;
-  background: linear-gradient(var(--pe-surface-solid), rgba(255, 255, 255, 0.92));
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
+  border-radius: var(--pe-radius) var(--pe-radius) 0 0;
+  background: var(--pe-surface);
+  font-size: var(--pe-size-title);
+  font-weight: var(--pe-weight-bold);
+  line-height: var(--pe-leading-title);
   text-align: left;
+  cursor: pointer;
+  transition: background-color var(--pe-duration) var(--pe-ease);
+}
+
+.pe-panel:not([data-open]) .pe-panel-header {
+  border-radius: var(--pe-radius);
+}
+
+.pe-panel[data-open] .pe-panel-header {
+  box-shadow: 0 var(--pe-hairline) 0 var(--pe-line);
+}
+
+.pe-panel-header:hover {
+  background: var(--pe-surface-hover);
+}
+
+.pe-panel-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pe-panel-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 0 16px 16px;
+  gap: var(--pe-space-1);
+  padding: var(--pe-space-2);
 }
 
-.pe-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.pe-panel-body > .pe-section-title:first-child {
+  margin-top: calc(-1 * var(--pe-space-1));
+  border-top: 0;
 }
 
-.pe-field-row {
-  flex-direction: row;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.pe-field-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--pe-muted);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.pe-badge {
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--pe-chip-bg);
-  font-size: 10.5px;
-  font-weight: 500;
-}
-
-.pe-link {
-  margin-left: auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--pe-accent-strong) !important;
-  font-size: 11.5px !important;
-  font-weight: 500 !important;
-  cursor: pointer;
-}
-
-.pe-input-wrap {
-  position: relative;
-  display: flex;
-}
-
-.pe-input,
-.pe-length input {
-  box-sizing: border-box;
-  width: 100%;
-  height: 36px;
-  padding: 0 30px 0 12px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--pe-input-bg);
-  color: var(--pe-text);
-  font: inherit;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
-.pe-input:hover,
-.pe-length input:hover {
-  background: #e9edf2;
-}
-
-.pe-input:focus,
-.pe-length input:focus {
-  outline: 2px solid var(--pe-accent);
-  outline-offset: -2px;
-  background: #fff;
-}
-
-.pe-input[aria-invalid='true'],
-.pe-length input[aria-invalid='true'] {
-  outline: 2px solid var(--pe-danger);
-  outline-offset: -2px;
-}
-
-.pe-unit {
-  position: absolute;
-  top: 50%;
-  right: 12px;
-  transform: translateY(-50%);
-  color: var(--pe-muted);
-  pointer-events: none;
-}
-
-.pe-readout {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.pe-figures {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  font-size: 12.5px;
-}
-
-.pe-figure {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 3px 0;
-}
-
-.pe-figure[data-depth='1'] {
-  padding-left: 12px;
-}
-
-.pe-figure[data-depth='2'] {
-  padding-left: 24px;
-}
-
-.pe-figure[data-depth='3'] {
-  padding-left: 36px;
-  color: var(--pe-muted);
-}
-
-.pe-figure dt {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pe-figure abbr {
-  display: inline-block;
-  min-width: 40px;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.pe-figure dd {
-  margin: 0;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.pe-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.pe-check input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--pe-accent);
-}
-
-.pe-input-text {
-  padding-right: 12px;
-}
-
-select.pe-input {
-  padding-right: 10px;
-}
-
-.pe-section-title {
-  margin: 6px 0 -4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--pe-border);
-  color: var(--pe-text);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--pe-muted);
-}
-
-.pe-note {
-  margin: 0;
-  color: var(--pe-muted);
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.pe-callout {
-  display: flex;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--pe-chip-bg);
-  font-size: 12.5px;
-}
-
-.pe-callout svg {
-  flex: none;
-  width: 16px;
-  height: 16px;
-}
-
-.pe-row {
-  display: flex;
-  gap: 6px;
-}
-
-.pe-button {
-  flex: 1;
-  height: 36px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--pe-chip-bg);
-  font-weight: 500 !important;
-  cursor: pointer;
-  transition: transform 100ms ease;
-}
-
-.pe-button:hover {
-  background: #e4e8ee;
-}
-
-.pe-button:active {
-  transform: translateY(1px);
-}
-
-.pe-row .pe-button {
-  min-width: 0;
-  padding: 0 6px;
-  white-space: nowrap;
-}
-
-.pe-button-wide {
-  flex: none;
-  width: 100%;
-}
-
-.pe-button-primary {
-  height: 42px;
-  background: var(--pe-accent-gradient);
-  color: #fff !important;
-  font-size: 14px !important;
-  font-weight: 600 !important;
-  box-shadow: none;
-}
-
-.pe-button-primary:hover {
-  background: var(--pe-accent-gradient);
-  filter: brightness(1.05);
-}
-
-.pe-danger {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 36px;
-  margin-top: 2px;
-  border: 0;
-  border-radius: 12px;
-  background: #fdecea;
-  color: var(--pe-danger) !important;
-  font-weight: 500 !important;
-  cursor: pointer;
-}
-
-.pe-danger:hover {
-  background: #fbdcd7;
-}
-
-.pe-stepper {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: max-content;
-  padding: 3px;
-  border-radius: 12px;
-  background: var(--pe-input-bg);
-}
-
-.pe-stepper .pe-icon-button {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(20, 30, 45, 0.1);
-}
-
-.pe-stepper-value {
-  min-width: 32px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.pe-room-list,
-.pe-type-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.pe-room,
-.pe-type {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  min-height: 36px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 12px;
-  background: none;
-  text-align: left;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.pe-room:hover,
-.pe-type:hover {
-  background: var(--pe-chip-bg);
-}
-
-.pe-type[aria-checked='true'] {
-  background: var(--pe-accent-soft);
-  color: var(--pe-accent-strong);
-  font-weight: 600;
-}
-
-.pe-type-size {
-  color: var(--pe-muted);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.pe-type-list .pe-note {
-  margin-top: 8px;
-}
-
-.pe-sides {
-  display: grid;
-  grid-template-columns: auto 1fr 1fr;
-  align-items: center;
-  gap: 6px 8px;
-}
-
-.pe-sides-head {
-  color: var(--pe-muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  text-align: center;
-  text-transform: uppercase;
-}
-
-.pe-sides .pe-field-label:empty {
-  display: none;
-}
-
-.pe-sides .pe-field {
-  min-width: 0;
-}
-
-/* Hint above the dock: a dark tooltip pill */
+/* The bar over the notch: a name, a message, a way out ---------------------- */
 
 .pe-status {
   position: absolute;
-  left: 50%;
-  bottom: calc(var(--pe-gap) + 82px + env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
+  right: 0;
+  bottom: var(--pe-bottom);
+  left: 0;
+  z-index: var(--pe-z-panel);
   display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: calc(100% - 32px);
-  min-height: 38px;
-  padding: 4px 4px 4px 16px;
-  border-radius: 999px;
-  background: var(--pe-ink);
-  color: #fff;
-  box-shadow: 0 8px 24px rgba(20, 30, 45, 0.25);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  gap: var(--pe-space-1);
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100% - 2 * var(--pe-margin));
+  min-height: var(--pe-bar);
+  margin: 0 auto;
+  padding: var(--pe-space-05) var(--pe-space-05) var(--pe-space-05) var(--pe-space-2);
 }
 
 .pe-hint {
+  min-width: 0;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 12.5px;
-  font-weight: 600;
+  font-weight: var(--pe-weight-medium);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .pe-status:has(.pe-hint:only-child) {
-  padding-right: 16px;
+  padding-right: var(--pe-space-2);
 }
 
-/* The name of the building under the pointer: a quiet label, not a message. */
+/* The name of the building under the pointer: a label, not a message. */
 .pe-status[data-quiet] {
-  min-height: 34px;
-  background: var(--pe-surface);
-  box-shadow: var(--pe-shadow);
+  min-height: var(--pe-control);
+  padding: 0 var(--pe-space-15);
   pointer-events: none;
 }
 
-.pe-status[data-quiet] .pe-hint {
-  color: var(--pe-text);
-  font-size: 13px;
-}
-
 .pe-chip {
-  display: inline-flex;
   flex: none;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff !important;
-  font-weight: 500 !important;
-  cursor: pointer;
-}
-
-.pe-chip:hover {
-  background: rgba(255, 255, 255, 0.26);
 }
 
 .pe-chip kbd {
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.18);
+  padding: 0 var(--pe-space-05);
+  border: var(--pe-hairline) solid currentColor;
+  border-radius: var(--pe-radius-small);
   font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.pe-chip svg {
-  width: 16px;
-  height: 16px;
-}
-
-.pe-chip-primary {
-  background: var(--pe-accent-gradient);
-}
-
-.pe-chip-primary:hover {
-  background: var(--pe-accent-gradient);
-  filter: brightness(1.06);
-}
-
-.pe-chip:disabled {
-  opacity: 0.45;
-  cursor: default;
+  font-size: var(--pe-size-caption);
+  line-height: calc(var(--pe-leading-caption) - 2 * var(--pe-hairline));
 }
 
 .pe-length {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: 500;
+  gap: var(--pe-space-1);
+  color: var(--pe-text-muted);
 }
 
-.pe-length input {
-  width: 130px;
-  padding-right: 12px;
+.pe-length .pe-input {
+  width: var(--pe-field-short);
+  color: var(--pe-text);
 }
 
-/* Labels in the 3D view, positioned by LabelProjector */
+/* Labels in the 3D view, moved to their points by the LabelProjector -------- */
 
 .pe-labels {
   position: absolute;
@@ -1036,36 +1419,67 @@ select.pe-input {
   will-change: transform;
 }
 
-/* Resize handles on the selected window or door. */
+/* A dimension while drawing: white figures on an ink label. */
+.pe-dimension {
+  padding: var(--pe-space-025) var(--pe-space-1);
+  border-radius: var(--pe-radius-small);
+  background: var(--pe-ink);
+  color: var(--pe-on-ink);
+  font: var(--pe-weight-medium) var(--pe-size-caption) / var(--pe-leading-caption) var(--pe-font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A room's name and area, written on its floor. */
+.pe-room-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--pe-space-025) var(--pe-space-1);
+  border-radius: var(--pe-radius-small);
+  background: var(--pe-label-fill);
+  color: var(--pe-text);
+  font: var(--pe-weight-medium) var(--pe-size-body) / var(--pe-leading-body) var(--pe-font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pe-room-label span {
+  color: var(--pe-text-muted);
+  font-size: var(--pe-size-caption);
+  font-weight: var(--pe-weight-regular);
+  line-height: var(--pe-leading-caption);
+}
+
+/* Resize handles on the selected window or door, like the points in the view. */
 .pe-handle {
   position: relative;
   display: block;
-  width: 10px;
-  height: 10px;
-  border: 2.5px solid var(--pe-accent);
+  box-sizing: border-box;
+  width: var(--pe-handle);
+  height: var(--pe-handle);
+  border: var(--pe-stroke) solid var(--pe-ink);
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(20, 30, 45, 0.3);
+  background: var(--pe-surface);
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
+  transition: background-color var(--pe-duration) var(--pe-ease);
 }
 
 .pe-handle[data-corner] {
-  width: 12px;
-  height: 12px;
-  border-radius: 4px;
+  border-radius: var(--pe-radius-small);
 }
 
 .pe-handle:hover {
-  background: var(--pe-accent);
+  background: var(--pe-ink);
 }
 
 /* A bigger target than the dot itself, for fingers. */
 .pe-handle::after {
   content: '';
   position: absolute;
-  inset: -10px;
+  inset: calc(-1 * var(--pe-handle));
 }
 
 /*
@@ -1075,47 +1489,49 @@ select.pe-input {
 .pe-junction button {
   position: relative;
   display: grid;
+  box-sizing: border-box;
   place-items: center;
-  width: 10px;
-  height: 10px;
+  width: var(--pe-handle);
+  height: var(--pe-handle);
   padding: 0;
-  border: 2.5px solid #4a5563;
+  border: var(--pe-stroke) solid var(--pe-grey-600);
   border-radius: 50%;
-  background: #fff;
-  color: var(--pe-accent-strong);
+  background: var(--pe-surface);
+  color: var(--pe-ink);
   cursor: pointer;
   pointer-events: auto;
   transition:
-    width 120ms ease,
-    height 120ms ease,
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+    width var(--pe-duration) var(--pe-ease),
+    height var(--pe-duration) var(--pe-ease),
+    border-color var(--pe-duration) var(--pe-ease);
 }
 
 .pe-junction button[data-joined] {
-  border-color: var(--pe-accent);
+  border-color: var(--pe-ink);
 }
 
 .pe-junction button svg {
-  width: 14px;
-  height: 14px;
+  width: var(--pe-icon-small);
+  height: var(--pe-icon-small);
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--pe-duration) var(--pe-ease);
 }
 
 /* A bigger target than the dot, so it's easy to find. */
 .pe-junction button::after {
   content: '';
   position: absolute;
-  inset: -10px;
+  inset: calc(-1 * var(--pe-handle));
 }
 
 .pe-junction button:hover,
 .pe-junction button:focus-visible {
-  width: 28px;
-  height: 28px;
-  border-color: var(--pe-accent);
-  box-shadow: 0 3px 10px rgba(20, 30, 45, 0.25);
+  width: var(--pe-control);
+  height: var(--pe-control);
+  border-width: var(--pe-hairline);
+  border-color: var(--pe-ink);
+  border-radius: var(--pe-radius);
+  box-shadow: var(--pe-shadow);
 }
 
 .pe-junction button:hover svg,
@@ -1123,104 +1539,90 @@ select.pe-input {
   opacity: 1;
 }
 
-.pe-room-label {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 3px 9px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 2px 6px rgba(20, 30, 45, 0.14);
-  color: var(--pe-text);
-  font: 600 12px/1.25 var(--pe-font, system-ui, sans-serif);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.pe-room-label span {
-  color: var(--pe-muted);
-  font-weight: 500;
-}
-
-
-.pe-dimension {
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: var(--pe-ink);
-  color: #fff;
-  font: 600 12px/1 var(--pe-font, system-ui, sans-serif);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(20, 30, 45, 0.2);
-}
-
-/* Phones: the dock stays at the bottom, panels become sheets. */
+/* Narrow screens: the notch spans the margins, panels become sheets --------- */
 
 @media (max-width: 700px) {
-  .plinth-editor {
-    --pe-gap: 8px;
-  }
-
-  .pe-toolbar {
-    bottom: calc(var(--pe-gap) + env(safe-area-inset-bottom));
-    overflow-x: auto;
-    border-radius: 20px;
+  .pe-notch {
+    width: auto;
   }
 
   .pe-tool {
-    min-width: 46px;
-    height: 46px;
-    border-radius: 14px;
+    flex: 1 1 0;
+    width: auto;
   }
 
   .pe-tool-label {
     display: none;
   }
 
-  .pe-toolbar-divider {
-    height: 26px;
-    margin: 0 2px;
-  }
-
-  .pe-levels {
-    width: 210px;
-    max-height: 50%;
+  .pe-notch > .pe-popover {
+    width: min(var(--pe-popover-width), 100%);
   }
 
   .pe-status {
-    top: calc(var(--pe-top) + 52px);
+    top: calc(var(--pe-top) + var(--pe-gutter));
     bottom: auto;
     flex-wrap: wrap;
     justify-content: center;
-    width: max-content;
-    max-width: calc(100% - 16px);
-    border-radius: 16px;
-    padding: 8px 12px;
+    padding: var(--pe-space-05);
   }
 
-  /* Below the breadcrumb and level header of the building editor. */
+  /* Below the building's breadcrumb and its floors. */
   .plinth-editor[data-mode='building'] .pe-status {
-    top: calc(var(--pe-top) + 88px);
+    top: calc(var(--pe-top) + 2 * var(--pe-bar) + var(--pe-hairline) * 3 + var(--pe-gutter));
   }
 
-  .pe-hint {
+  .pe-status .pe-hint {
+    flex: 1 1 100%;
+    padding: var(--pe-space-05) var(--pe-space-1);
     white-space: normal;
     text-align: center;
   }
 
-  .pe-panel {
-    top: auto;
-    right: var(--pe-gap);
-    bottom: calc(76px + env(safe-area-inset-bottom));
-    left: var(--pe-gap);
-    width: auto;
-    max-height: 45%;
+  .pe-status[data-quiet] .pe-hint {
+    padding: 0;
   }
 
-  /* 16px stops iOS from zooming into focused inputs. */
-  .pe-input,
-  .pe-length input,
-  .pe-filter {
-    font-size: 16px;
+  .pe-panel {
+    top: auto;
+    right: var(--pe-margin);
+    bottom: var(--pe-bottom);
+    left: var(--pe-margin);
+    width: auto;
+    max-width: none;
+    max-height: 50%;
+  }
+
+  /* A sheet unfolds upwards: its chevron says so. */
+  .pe-panel .pe-chevron {
+    transform: rotate(180deg);
+  }
+
+  .pe-panel .pe-chevron[data-open] {
+    transform: none;
+  }
+}
+
+/* Too narrow for every control at a finger's width: Top and Snap move into View. */
+@media (max-width: 440px) {
+  .pe-tool[data-narrow='hide'] {
+    display: none;
+  }
+
+  .pe-narrow-only {
+    display: flex !important;
+  }
+
+  .pe-field.pe-narrow-only {
+    display: grid !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plinth-editor *,
+  .plinth-editor *::before,
+  .plinth-editor *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

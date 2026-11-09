@@ -127,10 +127,11 @@ export function PlinthEditor({ document: doc, className, style, apiRef }: Plinth
         >
           <Scene />
         </Canvas>
+        {/* Over the view, in reading order: the building's floors top left, the properties top right, the notch on the bottom edge. */}
         <Labels />
-        <Toolbar />
         <LevelBar />
         <PropertiesPanel />
+        <Toolbar />
         <StatusBar />
       </div>
     </EditorContext.Provider>

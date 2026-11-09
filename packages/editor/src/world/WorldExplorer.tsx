@@ -21,7 +21,7 @@ import { PALETTES } from '../scene/materials.ts'
 import { Sun } from '../scene/sun.ts'
 import { CLOUD_SKIES, readViewPreferences, writeViewPreferences, type CloudSky } from '../state.ts'
 import { CloudsEffect, SKIES, windAt } from './clouds.ts'
-import { ChevronIcon, SlidersIcon } from '../ui/icons.tsx'
+import { ChevronIcon, SearchIcon, SlidersIcon } from '../ui/icons.tsx'
 import { DEFAULT_VIEW, GlobeControls, poseOf, type GlobeView } from './globeControls.ts'
 import { WorldTiles } from './WorldTiles.ts'
 import { MAIN_VIEW_LAYER } from './water.ts'
@@ -214,57 +214,62 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
           controlsRef.current?.flyTo({ lon: place.lon, lat: place.lat, range, heading: 0, pitch: range < 20000 ? 0.75 : 0 })
         }}
       />
-      <div className="pw-dock">
-        {choosing === null ? (
-          <button
-            type="button"
-            className="pw-primary"
-            onClick={startChoosing}
-            disabled={!close}
-            title={close ? 'Mark out a square of the ground to make a site from' : 'Come closer to the ground first'}
-          >
-            Make a site here
-          </button>
-        ) : (
-          <div className="pw-panel" role="group" aria-label="Site area">
-            <label className="pw-size">
-              <span>Square</span>
-              <input
-                type="range"
-                min={MIN_SIZE}
-                max={MAX_SIZE}
-                step={50}
-                value={choosing}
-                disabled={busy}
-                onChange={(e) => {
-                  const size = Number(e.target.value)
-                  setChoosing(size)
-                  // Keep the whole square in sight.
-                  const controls = controlsRef.current
-                  if (controls && controls.view.range < controls.rangeToFit(size, 0.8)) controls.view.range = controls.rangeToFit(size, 0.8)
-                }}
-              />
-              <output>{choosing} m</output>
-            </label>
-            <div className="pw-actions">
-              <button type="button" className="pw-secondary" onClick={() => setChoosing(null)} disabled={busy}>
-                Cancel
-              </button>
-              <button type="button" className="pw-primary" onClick={() => void make()} disabled={busy}>
-                {busy ? 'Making the site…' : 'Make site'}
-              </button>
+      {/* The bottom edge: the notch in the middle, the map's credit to its right (above it on a phone). */}
+      <div className="pw-bottom">
+        <div className="pw-dock" data-choosing={choosing !== null || undefined}>
+          {choosing === null ? (
+            <button
+              type="button"
+              className="pe-button pe-button-primary pe-button-large"
+              onClick={startChoosing}
+              disabled={!close}
+              title={close ? 'Mark out a square of the ground to make a site from' : 'Come closer to the ground first'}
+            >
+              Make a site here
+            </button>
+          ) : (
+            <div className="pw-panel" role="group" aria-label="Site area">
+              <label className="pe-field pw-size">
+                <span className="pe-field-label">Square</span>
+                <span className="pe-option-value">
+                  <input
+                    type="range"
+                    min={MIN_SIZE}
+                    max={MAX_SIZE}
+                    step={50}
+                    value={choosing}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const size = Number(e.target.value)
+                      setChoosing(size)
+                      // Keep the whole square in sight.
+                      const controls = controlsRef.current
+                      if (controls && controls.view.range < controls.rangeToFit(size, 0.8)) controls.view.range = controls.rangeToFit(size, 0.8)
+                    }}
+                  />
+                  <output>{choosing} m</output>
+                </span>
+              </label>
+              <p className="pw-hint" role={busy ? 'status' : undefined} data-error={error ? true : undefined}>
+                {error ??
+                  (busy ? progress : null) ??
+                  'Streets, buildings and the lie of the land in the square become a site you can edit. Move the map to place it.'}
+              </p>
+              <div className="pw-actions">
+                <button type="button" className="pe-button pe-button-large" onClick={() => setChoosing(null)} disabled={busy}>
+                  Cancel
+                </button>
+                <button type="button" className="pe-button pe-button-primary pe-button-large" onClick={() => void make()} disabled={busy}>
+                  {busy ? 'Making the site…' : 'Make site'}
+                </button>
+              </div>
             </div>
-            <p className="pw-hint" role={busy ? 'status' : undefined} data-error={error ? true : undefined}>
-              {error ??
-                (busy ? progress : null) ??
-                'Streets, buildings and the lie of the land in the square become a site you can edit. Move the map to place it.'}
-            </p>
-          </div>
-        )}
-      </div>
-      <div className="pw-credit">
-        {ATTRIBUTION}
-        {look.clouds === 'live' && ` · ${WEATHER_ATTRIBUTION}`}
+          )}
+        </div>
+        <div className="pw-credit">
+          {ATTRIBUTION}
+          {look.clouds === 'live' && ` · ${WEATHER_ATTRIBUTION}`}
+        </div>
       </div>
     </div>
   )
@@ -284,70 +289,76 @@ function ViewPanel({
 }) {
   const [open, setOpen] = useState(false)
   return (
-    <section className="pe-levels pw-view" aria-label="View">
-      <div className="pe-levels-header">
-        <button
-          type="button"
-          className="pe-levels-toggle"
-          aria-expanded={open}
-          title={open ? 'Hide view options' : 'View options'}
-          onClick={() => setOpen(!open)}
-        >
-          <SlidersIcon />
-          <span className="pe-levels-title">View</span>
-          <ChevronIcon open={open} />
-        </button>
-      </div>
+    <section className="pw-view" aria-label="View">
+      <button
+        type="button"
+        className="pe-button pe-button-large pw-view-toggle"
+        aria-expanded={open}
+        title={open ? 'Hide view options' : 'View options'}
+        onClick={() => setOpen(!open)}
+      >
+        <SlidersIcon />
+        <span>View</span>
+        <ChevronIcon open={open} />
+      </button>
       {open && (
-        <div className="pe-view-options">
-          <label className="pe-daylight">
-            <span>Sun</span>
-            <input
-              type="range"
-              min={FIRST_HOUR}
-              max={LAST_HOUR}
-              step={0.25}
-              value={look.hour}
-              aria-valuetext={formatHour(look.hour)}
-              onChange={(e) => onChange({ hour: Number(e.target.value) })}
-            />
-            <output>{formatHour(look.hour)}</output>
-          </label>
-          <label className="pe-check" title="Soft shading in corners, at the foot of walls and down streets">
-            <input type="checkbox" checked={look.occlusion} onChange={(e) => onChange({ occlusion: e.target.checked })} />
-            Soft shading
-          </label>
-          <label className="pe-check">
-            <input type="checkbox" checked={look.outlines} onChange={(e) => onChange({ outlines: e.target.checked })} />
-            Outlines
-          </label>
-          <label className="pw-clouds">
-            <span>Clouds</span>
-            <select value={look.clouds} onChange={(e) => onChange({ clouds: e.target.value as CloudSky })}>
-              {CLOUD_SKIES.map((sky) => (
-                <option key={sky} value={sky}>
-                  {SKY_NAMES[sky]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {look.clouds !== 'off' && (
-            <label className="pe-daylight" title="How much of the cloud is shown">
-              <span>Amount</span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                // Squared, so the low amounts (where most of the difference is) get most of the slider.
-                value={Math.sqrt(look.amount)}
-                aria-valuetext={`${Math.round(look.amount * 100)}%`}
-                onChange={(e) => onChange({ amount: Number(e.target.value) ** 2 })}
-              />
-              <output>{look.amount < 0.1 ? (look.amount * 100).toFixed(1) : Math.round(look.amount * 100)}%</output>
+        <div className="pe-popover">
+          <div className="pe-view-options">
+            <label className="pe-field">
+              <span className="pe-field-label">Sun</span>
+              <span className="pe-option-value">
+                <input
+                  type="range"
+                  min={FIRST_HOUR}
+                  max={LAST_HOUR}
+                  step={0.25}
+                  value={look.hour}
+                  aria-valuetext={formatHour(look.hour)}
+                  onChange={(e) => onChange({ hour: Number(e.target.value) })}
+                />
+                <output>{formatHour(look.hour)}</output>
+              </span>
             </label>
-          )}
-          {weather && <WeatherNote weather={weather} controlsRef={controlsRef} />}
+            <label className="pe-check" title="Soft shading in corners, at the foot of walls and down streets">
+              <input type="checkbox" checked={look.occlusion} onChange={(e) => onChange({ occlusion: e.target.checked })} />
+              Soft shading
+            </label>
+            <label className="pe-check">
+              <input type="checkbox" checked={look.outlines} onChange={(e) => onChange({ outlines: e.target.checked })} />
+              Outlines
+            </label>
+            <label className="pe-field">
+              <span className="pe-field-label">Clouds</span>
+              <span className="pe-select">
+                <select className="pe-input" value={look.clouds} onChange={(e) => onChange({ clouds: e.target.value as CloudSky })}>
+                  {CLOUD_SKIES.map((sky) => (
+                    <option key={sky} value={sky}>
+                      {SKY_NAMES[sky]}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </label>
+            {look.clouds !== 'off' && (
+              <label className="pe-field" title="How much of the cloud is shown">
+                <span className="pe-field-label">Amount</span>
+                <span className="pe-option-value">
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    // Squared, so the low amounts (where most of the difference is) get most of the slider.
+                    value={Math.sqrt(look.amount)}
+                    aria-valuetext={`${Math.round(look.amount * 100)}%`}
+                    onChange={(e) => onChange({ amount: Number(e.target.value) ** 2 })}
+                  />
+                  <output>{look.amount < 0.1 ? (look.amount * 100).toFixed(1) : Math.round(look.amount * 100)}%</output>
+                </span>
+              </label>
+            )}
+            {weather && <WeatherNote weather={weather} controlsRef={controlsRef} />}
+          </div>
         </div>
       )}
     </section>
@@ -461,13 +472,16 @@ function Search({ onPlace }: { onPlace: (place: Place) => void }) {
   return (
     <div className="pw-search">
       <form
+        role="search"
         onSubmit={(e) => {
           e.preventDefault()
           void search()
         }}
       >
+        <SearchIcon />
         <input
           type="search"
+          className="pe-input"
           placeholder="Search for a place or address"
           aria-label="Search for a place"
           value={query}

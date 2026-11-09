@@ -96,10 +96,12 @@ export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
 
   return (
     <div className="gallery">
-      <header className="app-header">
-        <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
-        <h1 className="gallery-title">Plinth</h1>
-        <div className="app-actions">
+      <header className="gallery-header">
+        <div className="gallery-brand">
+          <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
+          <h1 className="gallery-title">Plinth</h1>
+        </div>
+        <div className="gallery-actions">
           <AccountButton session={session} />
           <button type="button" className="app-button" onClick={() => void importFile()} disabled={!!busy}>
             Open file…
@@ -107,10 +109,10 @@ export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
           <button type="button" className="app-button" onClick={onExplore} disabled={!!busy} title="Make a site from a real place">
             Explore the world
           </button>
-          <button type="button" className="app-button app-button-primary" onClick={() => void newCity()} disabled={!!busy}>
-            New city
-          </button>
         </div>
+        <button type="button" className="app-button app-button-primary gallery-new" onClick={() => void newCity()} disabled={!!busy}>
+          New city
+        </button>
       </header>
       <main className="gallery-main">
         {error && (
@@ -183,8 +185,8 @@ export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
           <h2 id="gallery-examples" className="gallery-heading">
             Examples
           </h2>
-          <div className="gallery-example">
-            <div>
+          <ul className="gallery-examples">
+            <li className="gallery-example">
               <h3>{EXAMPLE_CITY_NAME}</h3>
               <p>
                 A harbour city of about 160 buildings: towers on podiums downtown, courtyard blocks, terraced houses
@@ -192,24 +194,22 @@ export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
                 their rooms drawn inside. Streets with bike lanes, parking and zebra crossings, and a diagonal road
                 through a park.
               </p>
-            </div>
-            <button type="button" className="app-button" onClick={() => void fromExample('harbour')} disabled={!!busy}>
-              Make a copy
-            </button>
-          </div>
-          <div className="gallery-example">
-            <div>
+              <button type="button" className="app-button" onClick={() => void fromExample('harbour')} disabled={!!busy}>
+                Make a copy
+              </button>
+            </li>
+            <li className="gallery-example">
               <h3>{METROPOLIS_NAME}</h3>
               <p>
                 A stress test the size of Manhattan: a grid of 12 avenues and 200 cross streets, about 21 km by 3 km,
                 a large park, and some 44,000 buildings rising to towers of up to 90 floors downtown and in midtown.
                 Takes a few seconds to build and wants a desktop computer.
               </p>
-            </div>
-            <button type="button" className="app-button" onClick={() => void fromExample('metropolis')} disabled={!!busy}>
-              Make a copy
-            </button>
-          </div>
+              <button type="button" className="app-button" onClick={() => void fromExample('metropolis')} disabled={!!busy}>
+                Make a copy
+              </button>
+            </li>
+          </ul>
         </section>
       </main>
       {inviting?.cloudId && <InviteDialog cloudId={inviting.cloudId} name={inviting.name} onClose={() => setInviting(null)} />}
@@ -252,30 +252,71 @@ function ProjectCard({ project, canShare, onShare, onInvite, onOpen, onRename, o
         {thumbnail ? <img src={thumbnail} alt="" /> : <span className="gallery-thumb-empty">No preview yet</span>}
       </button>
       <div className="gallery-card-body">
-        {renaming ? (
-          <input
-            className="gallery-rename"
-            defaultValue={project.name}
-            aria-label="City name"
-            autoFocus
-            onBlur={(e) => {
-              const name = e.target.value.trim()
-              setRenaming(false)
-              if (name && name !== project.name) onRename(name)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') e.currentTarget.blur()
-              if (e.key === 'Escape') {
-                e.currentTarget.value = project.name
-                e.currentTarget.blur()
-              }
-            }}
-          />
-        ) : (
-          <button type="button" className="gallery-name" onClick={onOpen}>
-            {project.name}
-          </button>
-        )}
+        <div className="gallery-card-head">
+          {renaming ? (
+            <input
+              className="gallery-rename"
+              defaultValue={project.name}
+              aria-label="City name"
+              autoFocus
+              onBlur={(e) => {
+                const name = e.target.value.trim()
+                setRenaming(false)
+                if (name && name !== project.name) onRename(name)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') {
+                  e.currentTarget.value = project.name
+                  e.currentTarget.blur()
+                }
+              }}
+            />
+          ) : (
+            <button type="button" className="gallery-name" onClick={onOpen}>
+              {project.name}
+            </button>
+          )}
+          <div className="gallery-card-menu" ref={menuRef}>
+            <button
+              type="button"
+              className="gallery-more"
+              aria-label={`More for ${project.name}`}
+              aria-haspopup="menu"
+              aria-expanded={menu}
+              onClick={() => setMenu(!menu)}
+            >
+              <MoreIcon />
+            </button>
+            {menu && (
+              <div className="app-menu-list" role="menu">
+                {[
+                  ['Open', onOpen],
+                  ['Rename', () => setRenaming(true)],
+                  ['Duplicate', onDuplicate],
+                  ['Save as file…', onDownload],
+                  ...(canShare ? [project.cloudId ? ['Invite people…', onInvite] : ['Share in the cloud', onShare]] : []),
+                  ['Delete', onDelete],
+                ].map(([label, action]) => (
+                  <button
+                    key={label as string}
+                    type="button"
+                    role="menuitem"
+                    className="app-menu-item"
+                    data-danger={label === 'Delete' || undefined}
+                    data-divider={label === 'Delete' || undefined}
+                    onClick={() => {
+                      setMenu(false)
+                      ;(action as () => void)()
+                    }}
+                  >
+                    {label as string}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
         <p className="gallery-meta">
           {stats
             ? `${stats.buildings} ${stats.buildings === 1 ? 'building' : 'buildings'} · ${stats.streets} streets · ${Math.round(stats.floorArea).toLocaleString()} m²`
@@ -286,45 +327,18 @@ function ProjectCard({ project, canShare, onShare, onInvite, onOpen, onRename, o
           {project.cloudId && <span className="gallery-badge">Shared</span>}
         </p>
       </div>
-      <div className="gallery-card-menu" ref={menuRef}>
-        <button
-          type="button"
-          className="gallery-more"
-          aria-label={`More for ${project.name}`}
-          aria-haspopup="menu"
-          aria-expanded={menu}
-          onClick={() => setMenu(!menu)}
-        >
-          ⋯
-        </button>
-        {menu && (
-          <div className="app-menu-list" role="menu">
-            {[
-              ['Open', onOpen],
-              ['Rename', () => setRenaming(true)],
-              ['Duplicate', onDuplicate],
-              ['Save as file…', onDownload],
-              ...(canShare ? [project.cloudId ? ['Invite people…', onInvite] : ['Share in the cloud', onShare]] : []),
-              ['Delete', onDelete],
-            ].map(([label, action]) => (
-              <button
-                key={label as string}
-                type="button"
-                role="menuitem"
-                className="app-menu-item"
-                data-danger={label === 'Delete' || undefined}
-                onClick={() => {
-                  setMenu(false)
-                  ;(action as () => void)()
-                }}
-              >
-                {label as string}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
     </li>
+  )
+}
+
+/** Three dots, drawn like the editor's icons: more for this city. */
+function MoreIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false">
+      <circle cx="4.5" cy="10" r="1.25" />
+      <circle cx="10" cy="10" r="1.25" />
+      <circle cx="15.5" cy="10" r="1.25" />
+    </svg>
   )
 }
 
