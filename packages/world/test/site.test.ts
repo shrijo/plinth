@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { PlinthDocument, analyzeSite, floorsOf, sortedLevels, terrainOf } from '@plinth/core'
+import { PlinthDocument, analyzeSite, floorsOf, sortedLevels, terrainOf, terrainSampler, terrainThrough } from '@plinth/core'
 import { readTile } from '../src/features.ts'
 import { buildSite, piecesWithoutHoles, planFromOsm, planFromTiles, squareAround, streetFromTags, tagNumber } from '../src/site.ts'
 import { joinRings, readOverpass, type OsmData } from '../src/osm.ts'
@@ -97,6 +97,25 @@ describe('planning a site from OpenStreetMap', () => {
 })
 
 describe('a site from OpenStreetMap with surveyed surfaces (area:highway)', () => {
+  it('meets the water at its mapped edge: a bank just outside, the bed just inside', () => {
+    // A lake south of y = 7 m (between the grid's spots, 12.5 m apart), its surface at 400 m; the land at 402 m.
+    const level = 400
+    const waterAt = (_lon: number, lat: number) => ((lat - LAT) * 111320 < 7 ? level : null)
+    const shore = [lonLat(-300, 7), lonLat(300, 7)].map(([lon, lat]) => ({ lon, lat }))
+    const input = { name: 'Test', lon: LON, lat: LAT, size: 300, heightAt: () => level + 2, waterAt }
+    const ground = (shores?: (typeof shore)[]) => {
+      const plan = planFromOsm({ ...input, shores }, { buildings: [], streets: [] })
+      return terrainSampler(terrainThrough(plan.spots.map((spot, i) => ({ id: String(i), ...spot })))!)
+    }
+    // Through the grid alone, the ground is still above the water a metre inside its edge.
+    expect(ground()({ x: 0, y: 6 })!).toBeGreaterThan(level)
+    // With the shore's spots, a metre outside it's the bank, a metre inside the bed.
+    const shaped = ground([shore])
+    expect(shaped({ x: 0, y: 8 })!).toBeGreaterThan(level)
+    expect(shaped({ x: 0, y: 6 })!).toBeLessThan(level)
+    expect(shaped({ x: 60, y: 6 })!).toBeLessThan(level)
+  })
+
   it('fits the street between the measured kerbs, and zebras marked crossings at junctions', () => {
     const data: OsmData = {
       buildings: [],

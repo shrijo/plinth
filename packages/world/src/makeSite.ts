@@ -39,6 +39,7 @@ export async function planSite(
     // The street bed: the site's streets are draped over its terrain, and meet the world's streets at its edge.
     heightAt: (lon: number, lat: number) => groundAt(lon, lat).level(lon, lat),
     waterAt: (lon: number, lat: number) => groundAt(lon, lat).waterAt(lon, lat),
+    shores: shoresOf(mapTiles, bounds),
   }
   onProgress?.('Fetching buildings and streets from OpenStreetMap…')
   try {
@@ -49,6 +50,32 @@ export async function planSite(
   }
   onProgress?.('OpenStreetMap is busy: using map tiles instead…')
   return planFromTiles(input, mapTiles)
+}
+
+/** The outlines of the water in map tiles, near some bounds, as longitudes and latitudes. */
+function shoresOf(tiles: readonly TileFeatures[], bounds: { west: number; east: number; south: number; north: number }): { lon: number; lat: number }[][] {
+  const shores: { lon: number; lat: number }[][] = []
+  for (const data of tiles) {
+    const n = 2 ** data.tile.z
+    for (const area of data.areas) {
+      if (area.kind !== 'water') continue
+      for (const ring of [area.shape.outer, ...area.shape.holes]) {
+        const points: { lon: number; lat: number }[] = []
+        for (let i = 0; i + 1 < ring.length; i += 2) {
+          const lon = ((data.tile.x + ring[i]!) / n) * 360 - 180
+          const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (data.tile.y + ring[i + 1]!)) / n))) * 180) / Math.PI
+          points.push({ lon, lat })
+        }
+        if (points.length < 2) continue
+        // Closed, and only if it comes near (a long straight shore can cross the bounds with no point in them).
+        points.push(points[0]!)
+        const lons = points.map((p) => p.lon)
+        const lats = points.map((p) => p.lat)
+        if (Math.max(...lons) >= bounds.west && Math.min(...lons) <= bounds.east && Math.max(...lats) >= bounds.south && Math.min(...lats) <= bounds.north) shores.push(points)
+      }
+    }
+  }
+  return shores
 }
 
 /** What a place is called (its street and town), or its coordinates. */

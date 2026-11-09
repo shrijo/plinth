@@ -242,7 +242,8 @@ export class WorldTiles {
   private readonly streetMaterial: MeshStandardMaterial
   private readonly workers: Worker[] = []
   private readonly pending = new Map<number, { worker: Worker; entry: GroundEntry | BuildingEntry }>()
-  private readonly asked = new Map<number, (image: ImageBitmap | null) => void>()
+  /** Questions to the workers (see areaImage), by job: given what came back, or null. */
+  private readonly asked = new Map<number, (response: WorkerResponse | null) => void>()
   private readonly arrived: (() => void)[] = []
   private readonly buildingMaterial: MeshStandardMaterial
   private readonly edgeMaterial = new LineBasicMaterial({ color: '#3a3d41' })
@@ -381,7 +382,7 @@ export class WorldTiles {
   private warmUp(camera: Camera): void {
     const renderer = this.renderer
     const scene = this.scene
-    if (this.warming || !renderer || !scene || !this.materialHooks) return
+    if (this.warming || !renderer || !scene) return
     this.warming = true
     // Asked of the GPU once, now, while it's idle: asked first as a picture goes up, with shaders compiling, the
     // answer waits for all of them.
@@ -814,7 +815,13 @@ export class WorldTiles {
     if (!mask || this.disposed) return Promise.resolve(null)
     const id = this.nextJob++
     return new Promise((resolve) => {
-      this.asked.set(id, resolve)
+      this.asked.set(id, (response) => {
+        if (response?.ok && response.type === 'area') {
+          if (this.disposed) response.result.close()
+          else return resolve(response.result)
+        }
+        resolve(null)
+      })
       this.workers[0]!.postMessage({ id, type: 'area', mask, size, style: this.options.style ?? GROUND_STYLE } satisfies WorkerRequest)
     })
   }
@@ -823,11 +830,7 @@ export class WorldTiles {
     const asked = this.asked.get(response.id)
     if (asked) {
       this.asked.delete(response.id)
-      if (response.ok && response.type === 'area' && !this.disposed) asked(response.result)
-      else {
-        if (response.ok && response.type === 'area') response.result.close()
-        asked(null)
-      }
+      asked(response)
       return
     }
     const job = this.pending.get(response.id)
@@ -931,6 +934,15 @@ export class WorldTiles {
       water.userData.water = true
       water.userData.level = result.water.level
       water.raycast = () => {}
+      if (result.water.edges && result.water.edges.length > 0) {
+        // Its shores, drawn in where the water is shown as in a diagram (see WorldWater.setDiagram).
+        const shoreGeometry = new BufferGeometry()
+        shoreGeometry.setAttribute('position', new BufferAttribute(result.water.edges, 3))
+        const shores = new LineSegments(shoreGeometry, this.water.shoreMaterial)
+        shores.raycast = () => {}
+        shores.layers.set(MAIN_VIEW_LAYER)
+        water.add(shores)
+      }
       mesh.add(water)
     }
     this.place(mesh, entry.frame)
@@ -1344,8 +1356,7 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
 
   /** Takes a mesh off the GPU and lets go of what's its own: its material (and picture) unless shared. */
   private disposeMesh(mesh: Mesh): void {
-    mesh.geometry.dispose()
-    for (const child of mesh.children) (child as Mesh).geometry?.dispose()
+    mesh.traverse((o) => (o as Mesh).geometry?.dispose())
     const material = mesh.material as MeshStandardMaterial
     if (material.userData.shared) return
     this.materialHooks?.release(material)
@@ -1440,8 +1451,11 @@ function meshBytes(mesh: Mesh): number {
     for (const attribute of Object.values(geometry.attributes)) bytes += (attribute.array as ArrayBufferView).byteLength
     if (geometry.index) bytes += (geometry.index.array as ArrayBufferView).byteLength
   }
-  count(mesh.geometry)
-  for (const child of mesh.children) if ((child as Mesh).geometry) count((child as Mesh).geometry)
+  // Its own buffers and its children's (water, and the water's shores; outlines).
+  mesh.traverse((o) => {
+    const geometry = (o as Mesh).geometry
+    if (geometry) count(geometry)
+  })
   const image = (mesh.material as MeshStandardMaterial).map?.image as { width?: number; height?: number } | undefined
   if (image?.width && image.height) bytes += image.width * image.height * 4
   return bytes
@@ -1449,8 +1463,7 @@ function meshBytes(mesh: Mesh): number {
 
 /** Off the GPU, keeping the data: drawn again, it goes back up. */
 function freeGpu(mesh: Mesh): void {
-  mesh.geometry.dispose()
-  for (const child of mesh.children) (child as Mesh).geometry?.dispose()
+  mesh.traverse((o) => (o as Mesh).geometry?.dispose())
   ;(mesh.material as MeshStandardMaterial).map?.dispose()
 }
 

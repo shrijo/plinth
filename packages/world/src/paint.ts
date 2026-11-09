@@ -247,10 +247,12 @@ export function paintAreas(
   tiles: readonly TileFeatures[],
   place: (tile: TileId) => [a: number, b: number, c: number, d: number, e: number, f: number],
   style: GroundStyle,
+  /** Kinds drawn some other way, left out (and transparent). */
+  leaveOut: ReadonlySet<string> = new Set(),
 ): void {
   for (const kind of AREA_ORDER) {
     // Plain land kinds stay transparent: the site's ground shows through.
-    if (kind === 'residential' || kind === 'commercial' || kind === 'industrial' || kind === 'farmland') continue
+    if (kind === 'residential' || kind === 'commercial' || kind === 'industrial' || kind === 'farmland' || leaveOut.has(kind)) continue
     context.fillStyle = style.areas[kind]
     for (const data of tiles) {
       const shapes = data.areas.filter((a) => a.kind === kind)

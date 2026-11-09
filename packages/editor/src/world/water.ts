@@ -1,6 +1,7 @@
 import {
   Color,
   HalfFloatType,
+  LineBasicMaterial,
   Matrix4,
   PerspectiveCamera,
   Plane,
@@ -24,6 +25,9 @@ import {
  * shader (no textures), brighter at glancing angles (Fresnel) and glinting
  * where the sun catches it. The colours stay in the model's pale greys,
  * with a hint of blue.
+ *
+ * Or drawn as in a diagram (see setDiagram): one flat colour with its
+ * shores drawn in, no waves and no reflection, as the site editor shows it.
  */
 
 const vertexShader = /* glsl */ `
@@ -56,6 +60,8 @@ const fragmentShader = /* glsl */ `
   uniform vec3 deep;
   uniform vec3 sky;
   uniform vec2 offset;
+  uniform float diagram;
+  uniform vec3 diagramColour;
   varying vec4 vMirror;
   varying vec3 vWorld;
 
@@ -102,6 +108,8 @@ const fragmentShader = /* glsl */ `
 
   void main() {
     #include <logdepthbuf_fragment>
+    vec3 colour = diagramColour;
+    if (diagram < 0.5) {
     vec2 p = vWorld.xz + offset;
     vec3 toEye = cameraPosition - vWorld;
     float distance = length(toEye);
@@ -136,11 +144,12 @@ const fragmentShader = /* glsl */ `
       reflected += texture2D(reflection, clamp(uv + vec2(0.0, smear * 2.2), 0.001, 0.999)).rgb * 0.1;
       reflected += texture2D(reflection, clamp(uv - vec2(0.0, smear * 2.2), 0.001, 0.999)).rgb * 0.1;
     }
-    vec3 colour = mix(deep, reflected, clamp(fresnel * 0.8 + 0.18, 0.0, 1.0));
+    colour = mix(deep, reflected, clamp(fresnel * 0.8 + 0.18, 0.0, 1.0));
     // The sun: a soft sheen, and a glint where the water's ruffled.
     vec3 halfway = normalize(sunDirection + view);
     float h = max(dot(n, halfway), 0.0);
     colour += sunColor * (pow(h, 900.0) * 1.2 * rough + pow(h, 60.0) * 0.04);
+    }
     gl_FragColor = vec4(colour, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -168,8 +177,15 @@ const clip = new Vector4()
  */
 export const MAIN_VIEW_LAYER = 1
 
+/** Water as in a diagram: its surface, and its shores. */
+const DIAGRAM_FILL = '#b2c7d6'
+const DIAGRAM_SHORE = '#7d99ae'
+
 export class WorldWater {
   readonly material: ShaderMaterial
+  /** The shore lines (see setDiagram): drawn only in the diagram. */
+  readonly shoreMaterial = new LineBasicMaterial({ color: DIAGRAM_SHORE, visible: false })
+  private diagram = false
   private readonly target = new WebGLRenderTarget(1, 1, { type: HalfFloatType })
   private readonly mirror = new PerspectiveCamera()
   private readonly plane = new Plane()
@@ -189,6 +205,8 @@ export class WorldWater {
           deep: { value: new Color(deep) },
           sky: { value: new Color(sky) },
           offset: { value: [0, 0] },
+          diagram: { value: 0 },
+          diagramColour: { value: new Color(DIAGRAM_FILL) },
         },
       ]),
       vertexShader,
@@ -209,6 +227,13 @@ export class WorldWater {
     ;(this.material.uniforms.sky!.value as Color).copy(colour)
   }
 
+  /** Drawn as in a diagram (one flat colour, shores drawn in, nothing mirrored), or as water. */
+  setDiagram(on: boolean): void {
+    this.diagram = on
+    this.material.uniforms.diagram!.value = on ? 1 : 0
+    this.shoreMaterial.visible = on
+  }
+
   /**
    * Draws the reflection for a water level (y in the scene), or switches it
    * off (null: no water near, or the camera under it). `offset` keeps the
@@ -219,7 +244,7 @@ export class WorldWater {
     uniforms.time!.value = (performance.now() - this.start) / 1000
     uniforms.offset!.value = offset
     camera.getWorldPosition(eye)
-    if (level === null || eye.y < level + 0.5 || COARSE) {
+    if (level === null || eye.y < level + 0.5 || COARSE || this.diagram) {
       uniforms.mirrored!.value = 0
       return
     }
@@ -280,5 +305,6 @@ export class WorldWater {
   dispose(): void {
     this.target.dispose()
     this.material.dispose()
+    this.shoreMaterial.dispose()
   }
 }

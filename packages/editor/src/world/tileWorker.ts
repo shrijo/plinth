@@ -215,6 +215,8 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
       return [ex[0] - o[0], ex[1] - o[1], ey[0] - o[0], ey[1] - o[1], o[0], o[1]]
     },
     request.style,
+    // The water's drawn by the world itself, at its level (as a diagram in a site: see WorldWater.setDiagram).
+    new Set(['water']),
   )
   return { id: request.id, ok: true, type: 'area', result: canvas.transferToImageBitmap() }
 }

@@ -5,6 +5,7 @@ import { fetchHeights, sampleHeight, tilesCovering, type TileId } from '@plinth/
 import { terrainMesh, terrainOf, type Vec2 } from '@plinth/core'
 import { useEditor, useSnapshot } from '../context.ts'
 import { WorldTiles } from '../world/WorldTiles.ts'
+import { MAIN_VIEW_LAYER } from '../world/water.ts'
 import { useBufferGeometry } from './geometry.ts'
 import { daylight } from './daylight.ts'
 import { PALETTES } from './materials.ts'
@@ -76,18 +77,23 @@ function World({ lon, lat, height, area }: { lon: number; lat: number; height: n
   }, [lon, lat, height, areaKey])
 
   useEffect(() => {
-    const { gl, scene } = get()
+    const { gl, scene, camera } = get()
     const before = gl.localClippingEnabled
     gl.localClippingEnabled = true
     scene.add(world.group)
+    // The world's streets and grass are drawn by the main view only (not in reflections): see MAIN_VIEW_LAYER.
+    const layered = camera.layers.isEnabled(MAIN_VIEW_LAYER)
+    camera.layers.enable(MAIN_VIEW_LAYER)
     return () => {
       scene.remove(world.group)
       world.dispose()
       gl.localClippingEnabled = before
+      if (!layered) camera.layers.disable(MAIN_VIEW_LAYER)
     }
   }, [world, get])
 
-  // The editor's look: outlines, and the sun on the water.
+  // The editor's look: outlines, and the water as in a diagram (one flat colour, its shores drawn in).
+  useEffect(() => world.water.setDiagram(true), [world])
   const outlines = useEditor((s) => s.showOutlines)
   const hour = useEditor((s) => s.timeOfDay)
   const style = useEditor((s) => s.style)
@@ -103,7 +109,7 @@ function World({ lon, lat, height, area }: { lon: number; lat: number; height: n
     world.update(camera, size.height)
     world.reflect(gl, scene, camera)
   })
-  return area ? <AreaWater world={world} area={area} /> : null
+  return area ? <AreaGreens world={world} area={area} /> : null
 }
 
 const areaMaterial = new MeshStandardMaterial({
@@ -117,11 +123,11 @@ const areaMaterial = new MeshStandardMaterial({
 })
 
 /**
- * The water and green of the real world over the site's own terrain, in
- * its world area: the site's terrain stays editable, and a lake on the
- * site still looks like one.
+ * The parks and greenery of the real world over the site's own terrain, in
+ * its world area: the site's terrain stays editable. (Its water is the
+ * world's own, at its level, which the site's ground lies under.)
  */
-function AreaWater({ world, area }: { world: WorldTiles; area: Vec2[] }) {
+function AreaGreens({ world, area }: { world: WorldTiles; area: Vec2[] }) {
   const snapshot = useSnapshot()
   const terrain = terrainOf(snapshot)
   const base = snapshot.meta.ground ?? 0
