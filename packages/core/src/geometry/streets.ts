@@ -1,7 +1,7 @@
 import { add, dist, dot, lerp, normalize, perpLeft, scale, sub, type Vec2 } from '../math.ts'
 import { isSharedStreet, type Id, type Snapshot, type Street } from '../model.ts'
 import { frameAt, offsetPolyline, polylineLength, sampleCurve, slicePolyline } from './curves.ts'
-import { buildJunction, CURB_RADIUS, type JunctionEnd } from './junctions.ts'
+import { buildJunction, CURB_RADIUS, type Junction, type JunctionEnd } from './junctions.ts'
 import { difference, toRing, union, type MultiPolygon } from './regions.ts'
 
 /**
@@ -139,6 +139,13 @@ interface Way {
 
 /** A bend sharper than this (degrees off straight on) is a junction, not a bend. */
 const MAX_BEND = 55
+/**
+ * Junctions whose corners leave less of the street between them than this (metres) make one knot: at most
+ * this many of them, this far apart (metres), so a dense old town doesn't become one.
+ */
+const KNOT_LEFT = 8
+const KNOT_NODES = 8
+const KNOT_SPAN = 60
 /** A change of cross-section tapers over this many times the largest shift of an edge (metres per metre), within limits. */
 const TAPER_RATE = 5
 const MIN_TAPER = 2
@@ -417,26 +424,114 @@ function build(snapshot: Snapshot): StreetGeometry {
     }
   })
   const isJunction = (nodeId: Id) => !bends.has(nodeId) && (endsAt.get(nodeId)?.length ?? 0) >= 2
+  /** A way's end at a junction, as the junction sees it: looking out along it. */
+  const endOf = (index: number, atStart: boolean): JunctionEnd => {
+    const way = ways[index]!
+    // The way's cross-section where it leaves the junction (its first or last street's), as seen looking out.
+    const section = crossSection(atStart ? way.sections[0]! : way.sections[way.sections.length - 1]!)
+    const otherEnd = atStart ? way.end : way.start
+    return {
+      line: atStart ? way.line : [...way.line].reverse(),
+      road: atStart ? { left: section.roadLeft, right: section.roadRight } : { left: section.roadRight, right: section.roadLeft },
+      outer: atStart ? { left: section.outerLeft, right: section.outerRight } : { left: section.outerRight, right: section.outerLeft },
+      limit: polylineLength(way.line) * (isJunction(otherEnd) ? 0.5 : 0.95),
+    }
+  }
+  // Corners sized like real kerbs: from the narrowest road that meets there (its sidewalks don't make the turn
+  // wider), tighter for a lane than for an avenue, so the network stays crisp.
+  const kerb = (ends: readonly JunctionEnd[]) => {
+    const narrowest = Math.min(...ends.map((e) => Math.min(e.road.left, e.road.right)))
+    return Math.min(Math.max(narrowest * 0.9, 1.5), CURB_RADIUS)
+  }
   const setbacks = new Map<string, number>()
+  const setback = (way: number, atStart: boolean) => `${way}:${atStart ? 'start' : 'end'}`
+  const junctions = new Map<Id, { node: Vec2; meeting: { way: number; atStart: boolean }[]; junction: Junction }>()
   for (const [nodeId, meeting] of endsAt) {
     const node = snapshot.streetNodes[nodeId]
     if (!node || !isJunction(nodeId)) continue
-    const ends: JunctionEnd[] = meeting.map(({ way: index, atStart }) => {
+    const ends = meeting.map(({ way, atStart }) => endOf(way, atStart))
+    const junction = buildJunction(node, ends, kerb(ends))
+    junctions.set(nodeId, { node, meeting, junction })
+    meeting.forEach(({ way, atStart }, i) => setbacks.set(setback(way, atStart), junction.setbacks[i]!))
+  }
+
+  // Knots: junctions so close together that little of the street between them is left (as where divided roads
+  // cross, or a few streets meet in a square). Drawn one by one their corners overlap in fans, with slivers of
+  // street between them; as one piece (the junctions and the streets between them, merged: road first, the
+  // sidewalks where there's no road) every kerb stays where it was, without the seams and crumbs.
+  const parent = new Map<Id, Id>()
+  const find = (id: Id): Id => {
+    let root = id
+    while (parent.has(root)) root = parent.get(root)!
+    return root
+  }
+  const members = new Map<Id, Id[]>()
+  const inside = new Set<number>()
+  const span = (ids: readonly Id[]) => {
+    const points = ids.map((id) => junctions.get(id)!.node)
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys))
+  }
+  ways.forEach((way, index) => {
+    if (way.start === way.end || !junctions.has(way.start) || !junctions.has(way.end)) return
+    const length = way.stops[way.stops.length - 1]!
+    const left = length - (setbacks.get(setback(index, true)) ?? 0) - (setbacks.get(setback(index, false)) ?? 0)
+    if (left >= KNOT_LEFT) return
+    const a = find(way.start)
+    const b = find(way.end)
+    if (a !== b) {
+      const together = [...(members.get(a) ?? [a]), ...(members.get(b) ?? [b])]
+      if (together.length > KNOT_NODES || span(together) > KNOT_SPAN) return
+      parent.set(b, a)
+      members.set(a, together)
+      members.delete(b)
+    }
+    inside.add(index)
+  })
+  const knotted = new Set<Id>()
+  for (const nodes of members.values()) {
+    if (nodes.length < 2) continue
+    const here = new Set(nodes)
+    const own = [...inside].filter((index) => here.has(ways[index]!.start))
+    const shared = nodes.every((id) => junctions.get(id)!.meeting.every(({ way }) => ways[way]!.shared))
+    // The streets between the junctions: their road and sidewalks along their whole length (the junctions'
+    // own surfaces overlap their ends, and are merged with them).
+    const roads: MultiPolygon[] = []
+    const walks: MultiPolygon[] = []
+    for (const index of own) {
       const way = ways[index]!
-      // The way's cross-section where it leaves the junction (its first or last street's), as seen looking out.
-      const section = crossSection(atStart ? way.sections[0]! : way.sections[way.sections.length - 1]!)
-      const otherEnd = atStart ? way.end : way.start
-      return {
-        line: atStart ? way.line : [...way.line].reverse(),
-        road: atStart ? { left: section.roadLeft, right: section.roadRight } : { left: section.roadRight, right: section.roadLeft },
-        outer: atStart ? { left: section.outerLeft, right: section.outerRight } : { left: section.outerRight, right: section.outerLeft },
-        limit: polylineLength(way.line) * (isJunction(otherEnd) ? 0.5 : 0.95),
-      }
+      const widths = way.sections.map(crossSection)
+      const roadLeft = Math.max(...widths.map((w) => w.roadLeft))
+      const roadRight = Math.max(...widths.map((w) => w.roadRight))
+      roads.push(ring(band(way.line, -roadRight, roadLeft)))
+      walks.push(ring(band(way.line, roadLeft, Math.max(...widths.map((w) => w.outerLeft)))))
+      walks.push(ring(band(way.line, -Math.max(...widths.map((w) => w.outerRight)), -roadRight)))
+    }
+    for (const id of nodes) {
+      const { junction } = junctions.get(id)!
+      roads.push(ring(junction.road))
+      walks.push(...junction.sidewalks.map(ring))
+    }
+    const road = union(...roads)
+    const sidewalks = difference(union(...walks), road)
+    for (const id of nodes) knotted.add(id)
+    const centre = scale(nodes.map((id) => junctions.get(id)!.node).reduce((sum, p) => add(sum, p), { x: 0, y: 0 }), 1 / nodes.length)
+    pieces.push({
+      key: `junction:${nodes.join('+')}`,
+      road: shared ? union(road, sidewalks) : road,
+      bike: [],
+      parking: [],
+      sidewalks: shared ? [] : sidewalks,
+      markings: [],
+      crosswalks: [],
+      centre,
+      shared,
     })
-    // Corners sized like real kerbs: from the narrowest road that meets here (its sidewalks don't make the
-    // turn wider), tighter for a lane than for an avenue, so the network stays crisp.
-    const narrowest = Math.min(...ends.map((e) => Math.min(e.road.left, e.road.right)))
-    const junction = buildJunction(node, ends, Math.min(Math.max(narrowest * 0.9, 1.5), CURB_RADIUS))
+  }
+  // The other junctions, each on its own.
+  for (const [nodeId, { node, meeting, junction }] of junctions) {
+    if (knotted.has(nodeId)) continue
     const shared = meeting.every(({ way }) => ways[way]!.shared)
     pieces.push({
       key: `junction:${nodeId}`,
@@ -449,10 +544,11 @@ function build(snapshot: Snapshot): StreetGeometry {
       centre: { x: node.x, y: node.y },
       shared,
     })
-    meeting.forEach(({ way, atStart }, i) => setbacks.set(`${way}:${atStart ? 'start' : 'end'}`, junction.setbacks[i]!))
   }
 
   ways.forEach((way, index) => {
+    // A street inside a knot is paved as part of it.
+    if (inside.has(index)) return
     const line = way.line
     const length = way.stops[way.stops.length - 1]!
     const startTrim = setbacks.get(`${index}:start`) ?? 0
