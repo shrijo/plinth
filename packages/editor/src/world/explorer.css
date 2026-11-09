@@ -1,12 +1,29 @@
 /*
- * The world explorer: the globe full screen. The top row holds the bar (the
- * host's), the search and View, all on the margin; the bottom edge holds the
- * notch, from which the site square is chosen, and the map's credit beside it.
- * Built from the editor's tokens (editor.css).
+ * The world explorer: the bar along the top, the globe under it. The bar
+ * holds the host's start (where you are), the search in the middle and View
+ * at the end, whose options drop just under it. The dock floats over the
+ * bottom edge with "Make a site here", which opens into the square to make a
+ * site from; the map's credit sits beside it (above it on a phone). Built
+ * from the editor's tokens (editor.css).
  */
 
+/* Two rows: the bar, then the globe and everything over it, all in the second. */
 .pw-explorer {
+  /* The bar takes the safe area at the top: nothing under it need keep clear of it. */
+  --pe-safe-top: 0px;
+
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   background: var(--pe-grey-100);
+}
+
+/* Placed in the second row, their absolute positions are taken from it. */
+.pw-explorer > .pe-canvas,
+.pw-overlay,
+.pw-bottom {
+  grid-row: 2;
+  grid-column: 1;
 }
 
 /* The square being marked out: the current choice, so in the accent. */
@@ -26,31 +43,27 @@
   stroke-linejoin: miter;
 }
 
-/* View, top right: one button, its options unfolding under it. */
-.pw-view {
-  position: absolute;
-  top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px));
-  right: var(--pe-margin);
-  z-index: var(--pe-z-popover);
+/* The bar: three columns, the search centred in the middle one. */
+.pw-navbar {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, var(--pe-wide)) minmax(max-content, 1fr);
 }
 
-.pw-view-toggle {
-  border-color: var(--pe-line);
-  box-shadow: var(--pe-shadow);
-}
-
+/* View, at the end of the bar: its options drop just under the bar, flush with its margin. */
 .pw-view-toggle[aria-expanded='true'] {
   background: var(--pe-surface-pressed);
 }
 
 .pw-view .pe-popover {
   position: absolute;
-  top: calc(100% + var(--pe-gutter));
-  right: 0;
-  width: min(var(--pe-popover-width), calc(100vw - 2 * var(--pe-margin)));
+  top: calc(100% + var(--pe-hairline) + var(--pe-gutter));
+  right: calc(var(--pe-margin) + env(safe-area-inset-right, 0px));
+  z-index: var(--pe-z-popover);
+  width: min(var(--pe-popover-width), calc(100% - 2 * var(--pe-margin)));
   max-width: none;
-  max-height: calc(100dvh - 2 * var(--pe-margin) - var(--pe-bar) - var(--pe-gutter));
+  max-height: calc(100dvh - 100% - var(--pe-hairline) - var(--pe-gutter) - var(--pe-bottom));
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .pw-note {
@@ -60,15 +73,10 @@
   line-height: var(--pe-leading-caption);
 }
 
-/* Search: in the top row between the bar and View, or under them when narrow. */
+/* Search: a field as tall as the bar's buttons; the places found drop just under the bar. */
 .pw-search {
-  position: absolute;
-  top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px));
-  right: 0;
-  left: 0;
-  z-index: var(--pe-z-panel);
-  width: min(var(--pe-wide), calc(100% - 2 * var(--pe-margin)));
-  margin: 0 auto;
+  position: relative;
+  min-width: 0;
 }
 
 .pw-search form {
@@ -89,16 +97,6 @@
 .pw-search .pe-input {
   height: var(--pe-bar);
   padding: 0 var(--pe-space-5);
-  border-color: var(--pe-line);
-  box-shadow: var(--pe-shadow);
-}
-
-.pw-search .pe-input:hover {
-  border-color: var(--pe-line-strong);
-}
-
-.pw-search .pe-input:focus {
-  border-color: var(--pe-ink);
 }
 
 .pw-search input::-webkit-search-cancel-button {
@@ -126,12 +124,17 @@
 }
 
 .pw-results {
+  position: absolute;
+  top: calc(100% + var(--pe-drop));
+  right: 0;
+  left: 0;
   max-height: 50vh;
-  margin: var(--pe-gutter) 0 0;
+  margin: 0;
   padding: var(--pe-space-05) 0;
   overflow: auto;
+  overscroll-behavior: contain;
   border: var(--pe-rule);
-  border-radius: var(--pe-radius);
+  border-radius: var(--pe-radius-float);
   background: var(--pe-surface);
   box-shadow: var(--pe-shadow);
   list-style: none;
@@ -174,43 +177,61 @@
   padding: var(--pe-space-15) var(--pe-space-2);
 }
 
-/* The bottom edge: the notch in the middle column, the credit at the right. */
+/* The bottom: the dock in the middle column, the credit at the right, both on the margin. */
 .pw-bottom {
   position: absolute;
   right: 0;
-  bottom: 0;
+  bottom: calc(var(--pe-margin) + env(safe-area-inset-bottom, 0px));
   left: 0;
-  z-index: var(--pe-z-notch);
+  z-index: var(--pe-z-dock);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: end;
   gap: var(--pe-gutter);
-  padding: 0 var(--pe-margin);
+  padding: 0 calc(var(--pe-margin) + env(safe-area-inset-right, 0px)) 0 calc(var(--pe-margin) + env(safe-area-inset-left, 0px));
   pointer-events: none;
 }
 
+/* The dock, as in the editor: floating, its button inset like the editor's cells. */
 .pw-dock {
   grid-column: 2;
   box-sizing: border-box;
-  padding: var(--pe-space-1) var(--pe-space-1) calc(var(--pe-space-1) + env(safe-area-inset-bottom, 0px));
+  padding: calc(var(--pe-dock-inset) - var(--pe-hairline));
   border: var(--pe-rule);
-  border-bottom: 0;
-  border-radius: var(--pe-radius) var(--pe-radius) 0 0;
+  border-radius: var(--pe-radius-float);
   background: var(--pe-surface);
   box-shadow: var(--pe-shadow);
   pointer-events: auto;
 }
 
-.pw-dock[data-choosing] {
-  width: min(var(--pe-dock-width), calc(100vw - 2 * var(--pe-margin)));
-  padding: var(--pe-space-2) var(--pe-space-2) calc(var(--pe-space-2) + env(safe-area-inset-bottom, 0px));
+/* As tall as the editor's cells, so the two docks are the same height. */
+.pw-dock > .pe-button {
+  height: calc(var(--pe-dock) - 2 * var(--pe-dock-inset));
 }
 
+/* Choosing the square: the dock opens into a panel. */
+.pw-dock[data-choosing] {
+  width: min(var(--pe-dock-width), calc(100vw - 2 * var(--pe-margin)));
+  padding: calc(var(--pe-space-2) - var(--pe-hairline));
+}
+
+/*
+ * The chooser keeps low, clear of the square over the middle of the view:
+ * what it does on top, then the size and the actions in one row.
+ */
 .pw-panel {
   --pe-label-column: var(--pe-label-column-short);
-  display: flex;
-  flex-direction: column;
-  gap: var(--pe-space-1);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'hint hint'
+    'size actions';
+  align-items: center;
+  gap: var(--pe-space-1) var(--pe-space-2);
+}
+
+.pw-size {
+  grid-area: size;
 }
 
 .pw-size output {
@@ -218,6 +239,7 @@
 }
 
 .pw-hint {
+  grid-area: hint;
   margin: 0;
   color: var(--pe-text-muted);
   line-height: var(--pe-leading-body);
@@ -229,16 +251,15 @@
 
 .pw-actions {
   display: flex;
+  grid-area: actions;
   justify-content: flex-end;
   gap: var(--pe-gutter);
-  margin-top: var(--pe-space-1);
 }
 
-/* The map's credit: small, flush right on the margin, never under the notch. */
+/* The map's credit: small, flush right on the margin, never under the dock. */
 .pw-credit {
   grid-column: 3;
   justify-self: end;
-  margin-bottom: calc(var(--pe-space-1) + env(safe-area-inset-bottom, 0px));
   padding: 0 var(--pe-space-05);
   border-radius: var(--pe-radius-small);
   background: var(--pe-label-fill);
@@ -248,20 +269,40 @@
   text-align: right;
 }
 
-/* Search under the top row once the row is too narrow for it. */
-@media (max-width: 820px) {
-  .pw-search {
-    top: var(--pe-top);
-    width: auto;
-    margin: 0 var(--pe-margin);
-  }
-}
-
-/* Phones: the notch spans the margins; the credit sits just above it. */
+/*
+ * Phones: the search takes a row of its own in the bar, View's options span
+ * the margins; the dock spans them too, the credit just above it.
+ */
 @media (max-width: 700px) {
+  .pw-navbar {
+    grid-template-rows: var(--pe-navbar) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'start end'
+      'search search';
+    row-gap: 0;
+    padding-bottom: var(--pe-space-1);
+  }
+
+  .pw-navbar > .pe-navbar-start {
+    grid-area: start;
+  }
+
+  .pw-navbar > .pw-search {
+    grid-area: search;
+  }
+
+  .pw-navbar > .pe-navbar-end {
+    grid-area: end;
+  }
+
+  .pw-view .pe-popover {
+    left: calc(var(--pe-margin) + env(safe-area-inset-left, 0px));
+    width: auto;
+  }
+
   .pw-bottom {
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--pe-space-05);
   }
 
   .pw-dock,
@@ -278,7 +319,16 @@
   .pw-credit {
     grid-column: 1;
     grid-row: 1;
-    margin-bottom: 0;
+  }
+
+  /* Too narrow for a row of all three: the size, what it does, then the actions across. */
+  .pw-panel {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pw-actions {
+    margin-top: var(--pe-space-1);
   }
 
   .pw-actions > .pe-button {

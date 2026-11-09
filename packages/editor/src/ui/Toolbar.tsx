@@ -43,10 +43,10 @@ const BUILDING_TOOLS: ToolEntry[] = [
 ]
 
 /**
- * The notch on the bottom edge: every editor control in one row of cells —
- * the tools, undo and redo, then how the view looks (Top, Snap, and View,
- * whose options unfold above it). On the narrowest screens Top and Snap
- * hand over to View's options, so every cell keeps a finger's width.
+ * The dock floating over the bottom edge: every editor control in one row
+ * of cells — the tools, undo and redo, then how the view looks (Top, Snap,
+ * and View, whose options unfold above it). On the narrowest screens Top and
+ * Snap hand over to View's options, so every cell keeps a finger's width.
  */
 export function Toolbar() {
   const ctx = useEditorContext()
@@ -58,7 +58,7 @@ export function Toolbar() {
   const [viewOpen, setViewOpen] = useState(false)
 
   return (
-    <div className="pe-notch">
+    <div className="pe-dock">
       {viewOpen && (
         <div className="pe-popover" role="group" aria-label="View options">
           <ViewOptions site={site} />
@@ -130,7 +130,7 @@ function ToolButton({
   active?: boolean
   /** For a switch: whether it's on. */
   on?: boolean
-  /** Left out of the notch on the narrowest screens (View's options have it there). */
+  /** Left out of the dock on the narrowest screens (View's options have it there). */
   narrow?: 'hide'
   disabled?: boolean
   onClick: () => void

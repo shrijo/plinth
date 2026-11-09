@@ -87,10 +87,15 @@
   --pe-margin: var(--pe-space-3);
   --pe-gutter: var(--pe-space-1);
 
-  /* Sizes: controls, bars and the notch's cells; icons; the columns of panels. */
+  /* Sizes: controls, bars and the dock's cells; icons; the columns of panels. */
   --pe-control: 32px;
   --pe-bar: 40px;
   --pe-cell: 56px;
+  /* The bar along the top edge and the dock floating over the bottom one: one height. */
+  --pe-navbar: var(--pe-cell);
+  --pe-dock: var(--pe-cell);
+  /* From the dock's edge to the cells and buttons in it. */
+  --pe-dock-inset: var(--pe-space-05);
   --pe-icon: 20px;
   --pe-icon-small: 16px;
   --pe-logo: 24px;
@@ -104,10 +109,9 @@
   --pe-label-column: 128px;
   --pe-label-column-short: 64px;
   --pe-field-short: 128px;
-  --pe-notch: var(--pe-cell);
   /*
    * Breakpoints (media queries can't read these, so they're written out):
-   * 700 px phones, 440 px too narrow for every cell of the notch; the
+   * 700 px phones, 440 px too narrow for every cell of the dock; the
    * gallery adds a column at 560, 800, 1040 and 1300 px.
    */
 
@@ -120,11 +124,13 @@
   --pe-focus-offset: var(--pe-hairline);
   --pe-radius: 4px;
   --pe-radius-small: 2px;
+  /* Whatever floats over the view: a control's corner plus the dock's inset, so the corners nest. */
+  --pe-radius-float: calc(var(--pe-radius) + var(--pe-dock-inset));
 
   /* Depth: one soft shadow, for what floats over the view. */
   --pe-shadow: 0 2px 12px rgb(22 22 21 / 0.08);
   --pe-z-panel: 10;
-  --pe-z-notch: 11;
+  --pe-z-dock: 11;
   --pe-z-shell: 20;
   --pe-z-popover: 30;
   --pe-z-toast: 40;
@@ -135,11 +141,11 @@
   --pe-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* Phones: a narrower margin and a lower notch. */
+/* Phones: a narrower margin and a lower dock. */
 @media (max-width: 700px) {
   :where(:root) {
     --pe-margin: var(--pe-space-2);
-    --pe-notch: var(--pe-space-6);
+    --pe-dock: var(--pe-space-6);
   }
 }
 
@@ -160,12 +166,14 @@
 /* The editor --------------------------------------------------------------- */
 
 /*
- * A host can set --pe-top-inset to keep the top panels clear of its own
- * header; --pe-top and --pe-bottom are where floating panels start and stop.
+ * --pe-top and --pe-bottom are where floating panels start and stop: a
+ * margin under the top edge, a gutter over the dock. A host whose own bar
+ * covers the top of the screen sets --pe-safe-top to 0; one whose header
+ * lies over the editor sets --pe-top-inset to keep the panels clear of it.
  */
 .plinth-editor {
-  --pe-top: calc(var(--pe-margin) + env(safe-area-inset-top, 0px) + var(--pe-top-inset, 0px));
-  --pe-bottom: calc(var(--pe-notch) + env(safe-area-inset-bottom, 0px) + var(--pe-gutter));
+  --pe-top: calc(var(--pe-margin) + var(--pe-safe-top, env(safe-area-inset-top, 0px)) + var(--pe-top-inset, 0px));
+  --pe-bottom: calc(var(--pe-margin) + env(safe-area-inset-bottom, 0px) + var(--pe-dock) + var(--pe-gutter));
 
   position: relative;
   width: 100%;
@@ -223,7 +231,7 @@
   transform: rotate(180deg);
 }
 
-/* Floating surfaces: white, a hairline round, one soft shadow. */
+/* Floating surfaces: white, a hairline round, the floating corner, one soft shadow. */
 .pe-toolbar,
 .pe-levels,
 .pe-panel,
@@ -231,8 +239,46 @@
 .pe-status {
   background: var(--pe-surface);
   border: var(--pe-rule);
-  border-radius: var(--pe-radius);
+  border-radius: var(--pe-radius-float);
   box-shadow: var(--pe-shadow);
+}
+
+/*
+ * The bar along the top edge, full width: white, a hairline under it (drawn
+ * outside, so the bar keeps to the grid), what it's about at the start and
+ * its menus at the end. Used over the editor, the world and the gallery
+ * alike. Its menus hang --pe-drop under their buttons: just under the bar.
+ */
+.pe-navbar {
+  --pe-drop: calc((var(--pe-navbar) - var(--pe-bar)) / 2 + var(--pe-hairline) + var(--pe-gutter));
+
+  position: relative;
+  z-index: var(--pe-z-shell);
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--pe-gutter);
+  box-sizing: border-box;
+  min-height: calc(var(--pe-navbar) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) calc(var(--pe-margin) + env(safe-area-inset-right, 0px)) 0
+    calc(var(--pe-margin) + env(safe-area-inset-left, 0px));
+  background: var(--pe-surface);
+  box-shadow: 0 var(--pe-hairline) 0 var(--pe-line);
+}
+
+.pe-navbar-start {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+}
+
+.pe-navbar-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--pe-gutter);
+  margin-left: auto;
 }
 
 /* Buttons ----------------------------------------------------------------- */
@@ -919,29 +965,46 @@
   white-space: nowrap;
 }
 
-/* The notch: every editor control, on the bottom edge ---------------------- */
+/* The dock: every editor control, floating over the bottom edge ------------ */
 
-.pe-notch {
+/*
+ * A column from the top of the view down to the bottom margin, centred and
+ * as wide as the toolbar: the toolbar at its foot, View's options above it
+ * (so they can never grow past the top). Only its contents take the pointer.
+ */
+.pe-dock {
   position: absolute;
+  top: var(--pe-top);
   right: 0;
-  bottom: 0;
+  bottom: calc(var(--pe-margin) + env(safe-area-inset-bottom, 0px));
   left: 0;
-  z-index: var(--pe-z-notch);
+  z-index: var(--pe-z-dock);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: var(--pe-gutter);
   width: max-content;
   max-width: calc(100% - 2 * var(--pe-margin));
   margin-inline: auto;
+  pointer-events: none;
 }
 
+.pe-dock > * {
+  pointer-events: auto;
+}
+
+/* One row of cells, each inset from the dock's edge by --pe-dock-inset. */
 .pe-toolbar {
   display: flex;
+  flex: none;
   box-sizing: border-box;
-  height: calc(var(--pe-notch) + env(safe-area-inset-bottom, 0px));
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  border-bottom: 0;
-  border-radius: var(--pe-radius) var(--pe-radius) 0 0;
+  max-width: 100%;
+  height: var(--pe-dock);
+  padding: calc(var(--pe-dock-inset) - var(--pe-hairline));
 }
 
-/* A cell of the grid: the icon over its name. */
+/* A cell: the icon over its name. */
 .pe-tool {
   position: relative;
   display: flex;
@@ -954,20 +1017,15 @@
   min-width: 0;
   padding: 0;
   border: 0;
+  border-radius: var(--pe-radius);
   background: transparent;
+  /* A hairline of the dock's white round each cell, so two pressed side by side still read as two. */
+  box-shadow: inset 0 0 0 var(--pe-hairline) var(--pe-surface);
   color: var(--pe-text);
   cursor: pointer;
   transition:
     background-color var(--pe-duration) var(--pe-ease),
     color var(--pe-duration) var(--pe-ease);
-}
-
-.pe-tool:first-child {
-  border-top-left-radius: calc(var(--pe-radius) - var(--pe-hairline));
-}
-
-.pe-tool:last-child {
-  border-top-right-radius: calc(var(--pe-radius) - var(--pe-hairline));
 }
 
 .pe-tool svg {
@@ -993,7 +1051,7 @@
   background: var(--pe-surface-pressed);
 }
 
-/* The tool in use: in the accent, a rule along the notch's edge above it. */
+/* The tool in use: in the accent, a rule along the foot of its cell. */
 .pe-tool[data-active] {
   color: var(--pe-accent);
 }
@@ -1001,9 +1059,9 @@
 .pe-tool[data-active]::before {
   content: '';
   position: absolute;
-  top: calc(-1 * var(--pe-hairline));
-  right: 0;
-  left: 0;
+  right: var(--pe-radius);
+  bottom: 0;
+  left: var(--pe-radius);
   height: var(--pe-stroke);
   background: var(--pe-accent);
 }
@@ -1023,14 +1081,15 @@
   outline-offset: calc(-1 * var(--pe-stroke));
 }
 
-/* Between groups: a rule from edge to edge of the notch. */
+/* Between groups: a short rule, clear of the cells' edges. */
 .pe-toolbar-divider {
   flex: none;
   width: var(--pe-hairline);
+  margin: var(--pe-space-1) var(--pe-space-05);
   background: var(--pe-line);
 }
 
-/* The view options unfold above the notch, flush with its right edge. */
+/* The view options unfold above the toolbar, flush with its right edge. */
 .pe-popover {
   box-sizing: border-box;
   width: var(--pe-popover-width);
@@ -1038,12 +1097,11 @@
   padding: var(--pe-space-1) var(--pe-space-2);
 }
 
-.pe-notch > .pe-popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + var(--pe-gutter));
-  max-height: calc(100dvh - var(--pe-top) - var(--pe-bottom));
+.pe-dock > .pe-popover {
+  flex: 0 1 auto;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .pe-view-options {
@@ -1077,7 +1135,7 @@
   flex: 1;
 }
 
-/* Rows that only narrow screens need (the notch hands them over). */
+/* Rows that only narrow screens need (the dock hands them over). */
 .pe-narrow-only {
   display: none !important;
 }
@@ -1298,7 +1356,7 @@
   height: var(--pe-space-6);
   padding: 0 var(--pe-space-15) 0 var(--pe-space-2);
   border: 0;
-  border-radius: var(--pe-radius) var(--pe-radius) 0 0;
+  border-radius: calc(var(--pe-radius-float) - var(--pe-hairline)) calc(var(--pe-radius-float) - var(--pe-hairline)) 0 0;
   background: var(--pe-surface);
   font-size: var(--pe-size-title);
   font-weight: var(--pe-weight-bold);
@@ -1309,7 +1367,7 @@
 }
 
 .pe-panel:not([data-open]) .pe-panel-header {
-  border-radius: var(--pe-radius);
+  border-radius: calc(var(--pe-radius-float) - var(--pe-hairline));
 }
 
 .pe-panel[data-open] .pe-panel-header {
@@ -1339,7 +1397,7 @@
   border-top: 0;
 }
 
-/* The bar over the notch: a name, a message, a way out ---------------------- */
+/* The bar over the dock: a name, a message, a way out ----------------------- */
 
 .pe-status {
   position: absolute;
@@ -1539,11 +1597,18 @@
   opacity: 1;
 }
 
-/* Narrow screens: the notch spans the margins, panels become sheets --------- */
+/* Narrow screens: the dock spans the margins, panels become sheets ---------- */
 
 @media (max-width: 700px) {
-  .pe-notch {
+  .pe-dock {
+    right: calc(var(--pe-margin) + env(safe-area-inset-right, 0px));
+    left: calc(var(--pe-margin) + env(safe-area-inset-left, 0px));
     width: auto;
+    max-width: none;
+  }
+
+  .pe-toolbar {
+    align-self: stretch;
   }
 
   .pe-tool {
@@ -1555,7 +1620,7 @@
     display: none;
   }
 
-  .pe-notch > .pe-popover {
+  .pe-dock > .pe-popover {
     width: min(var(--pe-popover-width), 100%);
   }
 

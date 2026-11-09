@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { EffectComposer, N8AO, ToneMapping } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { BackSide, Color, Fog, NeutralToneMapping, PerspectiveCamera, ShaderMaterial, SphereGeometry, Vector3, type Mesh } from 'three'
 import {
   ATTRIBUTION,
@@ -46,6 +46,8 @@ export interface WorldArea {
 }
 
 export interface WorldExplorerProps {
+  /** The start of the bar along the top, before the search: the host's logo and where you are, say. */
+  barStart?: ReactNode
   initialView?: Partial<GlobeView>
   /** Told of the view now and then (for keeping it in the address). */
   onViewChange?: (view: GlobeView) => void
@@ -106,7 +108,7 @@ const MIN_SIZE = 100
 const MAX_SIZE = 1000
 const DEFAULT_SIZE = 300
 
-export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldExplorerProps) {
+export function WorldExplorer({ barStart, initialView, onViewChange, onMakeSite }: WorldExplorerProps) {
   const controlsRef = useRef<GlobeControls | null>(null)
   const outline = useRef<SVGPolygonElement>(null)
   const [choosing, setChoosing] = useState<number | null>(null)
@@ -174,6 +176,21 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
 
   return (
     <div className="plinth-editor pw-explorer">
+      {/* The bar first, for reading and tabbing: the host's start, the search in the middle, View at the end. */}
+      <header className="pe-navbar pw-navbar">
+        <div className="pe-navbar-start">{barStart}</div>
+        <Search
+          onPlace={(place) => {
+            setName(place.name)
+            // Close enough to see the place whole, tilted a little once near the ground.
+            const range = Math.min(Math.max(place.size * 2.2, 600), 2.2e7)
+            controlsRef.current?.flyTo({ lon: place.lon, lat: place.lat, range, heading: 0, pitch: range < 20000 ? 0.75 : 0 })
+          }}
+        />
+        <div className="pe-navbar-end">
+          <ViewPanel look={look} onChange={changeLook} weather={look.clouds === 'live' ? weather : null} controlsRef={controlsRef} />
+        </div>
+      </header>
       <Canvas
         className="pe-canvas"
         // No antialiasing of the canvas's own: the effects draw the scene into their own (multisampled) buffers.
@@ -200,21 +217,12 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
         {/* Always drawn through the effects (even with both off), so the scene's shaders never change with them. */}
         <Effects controlsRef={controlsRef} occlusion={look.occlusion} clouds={look.clouds === 'off' ? null : clouds} />
       </Canvas>
-      <ViewPanel look={look} onChange={changeLook} weather={look.clouds === 'live' ? weather : null} controlsRef={controlsRef} />
       {choosing !== null && (
         <svg className="pw-overlay" aria-hidden="true">
           <polygon ref={outline} className="pw-square" />
         </svg>
       )}
-      <Search
-        onPlace={(place) => {
-          setName(place.name)
-          // Close enough to see the place whole, tilted a little once near the ground.
-          const range = Math.min(Math.max(place.size * 2.2, 600), 2.2e7)
-          controlsRef.current?.flyTo({ lon: place.lon, lat: place.lat, range, heading: 0, pitch: range < 20000 ? 0.75 : 0 })
-        }}
-      />
-      {/* The bottom edge: the notch in the middle, the map's credit to its right (above it on a phone). */}
+      {/* The bottom: the dock floating in the middle, the map's credit to its right (above it on a phone). */}
       <div className="pw-bottom">
         <div className="pw-dock" data-choosing={choosing !== null || undefined}>
           {choosing === null ? (
@@ -275,7 +283,7 @@ export function WorldExplorer({ initialView, onViewChange, onMakeSite }: WorldEx
   )
 }
 
-/** The view's settings, behind a button: the time of day, soft shading, outlines. */
+/** The view's settings, behind a button at the end of the bar: the time of day, soft shading, outlines, clouds. */
 function ViewPanel({
   look,
   onChange,
