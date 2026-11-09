@@ -15,13 +15,13 @@ import { FIRST_HOUR, formatHour, LAST_HOUR } from '../scene/daylight.ts'
 import { LENSES } from '../state.ts'
 import { BackIcon, ChevronIcon, LevelsIcon, LinkIcon, PlusIcon } from './icons.tsx'
 
-/** The panel at the top left: the levels of the open building (the view options live in the notch). */
+/** The panel at the top left: the levels of the open building (the view options live in the dock). */
 export function LevelBar() {
   const site = useEditor((s) => s.mode === 'site')
   return site ? null : <BuildingLevels />
 }
 
-/** How the view looks, unfolding from View in the notch: in both editors, with the building's own options inside one. */
+/** How the view looks, unfolding from View in the dock: in both editors, with the building's own options inside one. */
 export function ViewOptions({ site }: { site: boolean }) {
   const ctx = useEditorContext()
   const showAbove = useEditor((s) => s.showLevelsAbove)
@@ -73,7 +73,7 @@ export function ViewOptions({ site }: { site: boolean }) {
           <span className="pe-lens-unit">mm</span>
         </div>
       </div>
-      {/* On the narrowest screens the notch hands these two over. */}
+      {/* On the narrowest screens the dock hands these two over. */}
       <label className="pe-check pe-narrow-only">
         <input type="checkbox" checked={top} onChange={() => toggleView(ctx)} />
         Top view

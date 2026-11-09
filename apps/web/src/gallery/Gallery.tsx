@@ -96,7 +96,7 @@ export function Gallery({ platform, onOpen, onExplore }: GalleryProps) {
 
   return (
     <div className="gallery">
-      <header className="gallery-header">
+      <header className="pe-navbar gallery-header">
         <div className="gallery-brand">
           <img className="app-logo" src="/favicon.svg" alt="" width={24} height={24} />
           <h1 className="gallery-title">Plinth</h1>

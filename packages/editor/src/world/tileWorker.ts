@@ -8,6 +8,7 @@ import {
   groundMesh,
   makeGround,
   streetMesh,
+  walkingLevel,
   waterMesh,
   insideRing,
   lonLatToFrame,
@@ -173,7 +174,8 @@ async function buildings(request: Extract<WorkerRequest, { type: 'buildings' }>,
   if (!data || (data.buildings.length === 0 && !data.roads.some((r) => r.bridge))) return { id: request.id, ok: true, type: 'buildings', result: null }
   const shaped = groundFor(request.tile, heights, data)
   const keep = request.mask ? masking(request.mask) : undefined
-  const result = buildingMesh(request.tile, data.buildings, (lon, lat) => shaped.at(lon, lat), request.colours, { keep, roads: data.roads })
+  // On the ground people walk on: the block fills' top in town (see walkingLevel).
+  const result = buildingMesh(request.tile, data.buildings, walkingLevel(shaped), request.colours, { keep, roads: data.roads })
   return { id: request.id, ok: true, type: 'buildings', result }
 }
 
