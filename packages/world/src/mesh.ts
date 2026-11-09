@@ -450,22 +450,31 @@ export function buildingMesh(
     const rings = [orient(shape.outer, true), ...shape.holes.map((h) => orient(h, false))]
     // Points on the ellipsoid and the way up there, once per corner.
     const ground: number[][] = []
-    let base = Infinity
+    let lowest = Infinity
+    let highest = -Infinity
     for (const [r, ring] of rings.entries()) {
       const points: number[] = []
       const count = ring.length / 2
-      // The ground under the outline: at up to a dozen of its corners (enough to find its lowest).
+      // The ground round the outline: at up to a dozen of its corners (enough for its lowest and highest).
       const every = r === 0 ? Math.max(1, Math.floor(count / 12)) : Infinity
       for (let i = 0; i < count; i++) {
         const lon = lonOf(ring[i * 2]!)
         const lat = latOf(ring[i * 2 + 1]!)
-        if (i % every === 0) base = Math.min(base, heightAt(lon, lat))
+        if (i % every === 0) {
+          const h = heightAt(lon, lat)
+          lowest = Math.min(lowest, h)
+          highest = Math.max(highest, h)
+        }
         points.push(lon, lat)
       }
       ground.push(points)
     }
-    if (!Number.isFinite(base)) continue
-    const bottom = building.minHeight > 0 ? base + building.minHeight : base - FOOTING
+    if (!Number.isFinite(lowest)) continue
+    // It stands on the highest ground round it, its walls reaching down past the lowest: on a slope it shows
+    // its whole height uphill and a taller face downhill, as buildings on a hillside do, and is never buried
+    // in the ground (or in the block fills round it, which on a slope rise above its lowest corner).
+    const base = highest
+    const bottom = building.minHeight > 0 ? base + building.minHeight : lowest - FOOTING
     const top = base + building.height
     // Edges along the tile's edge are where a building was cut: no outline there.
     const on = (a: number, b: number, edge: number) => Math.abs(a - edge) < 1e-9 && Math.abs(b - edge) < 1e-9

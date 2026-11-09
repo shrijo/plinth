@@ -96,6 +96,15 @@ export interface StreetsBuilt {
   paved: MultiPolygon
 }
 
+/**
+ * The height people walk at, at a point (metres above sea level): in town,
+ * the top of the block fills and paved squares (see streetMesh); elsewhere
+ * the land. Buildings stand on it (see buildingMesh).
+ */
+export function walkingLevel(ground: Ground): (lon: number, lat: number) => number {
+  return ground.town ? (lon, lat) => ground.level(lon, lat) + KERB : (lon, lat) => ground.at(lon, lat)
+}
+
 /** The streets of a tile (zoom 14 map data): see StreetsBuilt. */
 export function streetMesh(
   tile: TileId,
