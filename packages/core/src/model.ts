@@ -250,6 +250,11 @@ export interface Street {
   kind?: StreetKind
   /** Traffic one way (from a to b): no line down the middle. */
   oneway?: boolean
+  /**
+   * Carried on a bridge: drawn apart from the ground (see StreetPiece.bridge). A bridge's way ends where it
+   * lands, so the street on the ground and the deck are pieces of their own, meeting edge to edge.
+   */
+  bridge?: boolean
 }
 
 /** Street types, as OpenStreetMap's `highway=*` values. */

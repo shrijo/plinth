@@ -414,6 +414,8 @@ export interface BuildingOptions {
   keep?: (lon: number, lat: number) => boolean
   /** Roads and railways, for their bridges. */
   roads?: readonly RoadFeature[]
+  /** Which of their bridges to build (all by default). */
+  bridges?: (road: RoadFeature) => boolean
   /** Only what's inside this part of the tile (tile units); the whole tile by default. */
   rect?: Rect
 }
@@ -507,7 +509,7 @@ export function buildingMesh(
     } else writer.prism(frame, ground, bottom, top - (sunk ?? 0), building.minHeight > 0, colours, seams)
   }
   for (const road of options.roads ?? []) {
-    if (!road.bridge || road.tunnel) continue
+    if (!road.bridge || road.tunnel || (options.bridges && !options.bridges(road))) continue
     bridge(writer, frame, road, rect, lonOf, latOf, heightAt, colours)
   }
   return writer.finish()

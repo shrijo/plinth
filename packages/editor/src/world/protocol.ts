@@ -29,7 +29,13 @@ export interface GroundResult {
 
 export type WorkerResponse =
   | { id: number; ok: true; type: 'ground'; result: GroundResult }
-  | { id: number; ok: true; type: 'buildings'; result: MeshBuffers | null }
+  | {
+      id: number
+      ok: true
+      type: 'buildings'
+      /** The buildings (and bridges other than street bridges), and the street bridges as they stand in from afar. */
+      result: { mesh: MeshBuffers | null; bridges: MeshBuffers | null } | null
+    }
   | {
       id: number
       ok: true

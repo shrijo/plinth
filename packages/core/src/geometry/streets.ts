@@ -33,6 +33,13 @@ export interface StreetPiece {
   centre: Vec2
   /** One paved surface (a living street or pedestrian zone): its road is drawn as paving. */
   shared: boolean
+  /**
+   * On a bridge (see Street.bridge): a bridge's own stretch, or a junction where only bridges meet. It
+   * starts where the street on the ground ends (at the junction or bend where it lands), edge to edge.
+   */
+  bridge?: boolean
+  /** A street's stretch: its centre line, from where it starts to where it ends (none for a junction). */
+  line?: Vec2[]
 }
 
 export interface StreetGeometry {
@@ -135,6 +142,8 @@ interface Way {
   end: Id
   /** A living street or pedestrian zone: one paved surface. */
   shared: boolean
+  /** On a bridge. */
+  bridge: boolean
 }
 
 /** A bend sharper than this (degrees off straight on) is a junction, not a bend. */
@@ -306,9 +315,12 @@ function strip(
   return outlines
 }
 
-/** Whether a street can carry on into the next through a bend: both paved as one surface, or neither. */
+/**
+ * Whether a street can carry on into the next through a bend: both paved as one surface, or neither; both on
+ * a bridge, or neither (where a bridge lands, the deck and the street on the ground are pieces of their own).
+ */
 function continues(arriving: Street, leaving: Street): boolean {
-  return isSharedStreet(arriving) === isSharedStreet(leaving)
+  return isSharedStreet(arriving) === isSharedStreet(leaving) && !!arriving.bridge === !!leaving.bridge
 }
 
 function build(snapshot: Snapshot): StreetGeometry {
@@ -398,6 +410,7 @@ function build(snapshot: Snapshot): StreetGeometry {
       start: head.forward ? head.street.a : head.street.b,
       end: tail.forward ? tail.street.b : tail.street.a,
       shared: isSharedStreet(head.street),
+      bridge: !!head.street.bridge,
     })
   }
 
@@ -474,7 +487,8 @@ function build(snapshot: Snapshot): StreetGeometry {
     return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys))
   }
   ways.forEach((way, index) => {
-    if (way.start === way.end || !junctions.has(way.start) || !junctions.has(way.end)) return
+    // A bridge stays a bridge, however short: knotted, it would be paved on the ground.
+    if (way.bridge || way.start === way.end || !junctions.has(way.start) || !junctions.has(way.end)) return
     const length = way.stops[way.stops.length - 1]!
     const left = length - (setbacks.get(setback(index, true)) ?? 0) - (setbacks.get(setback(index, false)) ?? 0)
     if (left >= KNOT_LEFT) return
@@ -543,6 +557,8 @@ function build(snapshot: Snapshot): StreetGeometry {
       crosswalks: [],
       centre: { x: node.x, y: node.y },
       shared,
+      // Where a bridge lands, the junction is on the ground; where only bridges meet, it's on the deck.
+      ...(meeting.every(({ way }) => ways[way]!.bridge) ? { bridge: true } : {}),
     })
   }
 
@@ -608,6 +624,7 @@ function build(snapshot: Snapshot): StreetGeometry {
     const s0 = Math.max(0, from - OVERLAP)
     const s1 = Math.min(length, to + OVERLAP)
     const mid = frameAt(line, (from + to) / 2).p
+    const ownLine = slicePolyline(line, s0, s1)
     const piece = (road: MultiPolygon, shared: boolean): StreetPiece => ({
       key: `street:${way.walks[0]!.street.id}`,
       road,
@@ -618,6 +635,8 @@ function build(snapshot: Snapshot): StreetGeometry {
       crosswalks: [],
       centre: mid,
       shared,
+      line: ownLine,
+      ...(way.bridge ? { bridge: true } : {}),
     })
     const strips = (inner: (e: Edges) => number, outer: (e: Edges) => number): MultiPolygon =>
       strip(line, knots, s0, s1, inner, outer).flatMap(ring)

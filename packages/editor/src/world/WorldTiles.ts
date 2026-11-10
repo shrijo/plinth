@@ -315,11 +315,12 @@ export class WorldTiles {
       // Pitched roofs take a quiet shade of their own, so the roofscape reads from above.
       pitched: linear('#ddd6c9'),
     }
-    // As the editor's streets (see scene/materials.ts).
+    // As the editor's streets (see scene/materials.ts), except that bike and parking lanes are the road's own
+    // asphalt (their lines tell them apart): a street and its junctions are one surface.
     this.streetColours = {
       road: linear('#d0cec9'),
-      bike: linear('#c5c3be'),
-      parking: linear('#d8d6d1'),
+      bike: linear('#d0cec9'),
+      parking: linear('#d0cec9'),
       sidewalk: linear('#eeede8'),
       curb: linear('#dfded9'),
       marking: linear('#fdfdfc'),
@@ -613,6 +614,14 @@ export class WorldTiles {
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
     }
+    // Street bridges stand in with the buildings only while the streets (which build them) aren't shown.
+    for (const key of buildingKeys) {
+      const bridges = this.buildings.get(key)?.mesh?.children.find((c) => c.userData.bridges)
+      if (!bridges) continue
+      const streets = this.streets.get(key)?.mesh
+      const fade = streets?.userData.fade as { value: number } | undefined
+      bridges.visible = !(streets?.visible && (fade?.value ?? 1) >= 1)
+    }
 
     // New buildings and streets dissolve in, from when they're first shown. That first frame, all dissolved,
     // puts them on the GPU unseen, so the upload is never a visible hitch.
@@ -630,7 +639,7 @@ export class WorldTiles {
       const t = Math.min((now - fading.start) / FADE_IN, 1)
       fading.fade.value = t * t * (3 - 2 * t)
       if (t >= 1) {
-        for (const child of fading.mesh.children) child.visible = this.outlines
+        for (const child of fading.mesh.children) if (child.userData.outlines) child.visible = this.outlines
         this.fading.splice(i, 1)
       }
     }
@@ -867,7 +876,7 @@ export class WorldTiles {
   setOutlines(on: boolean): void {
     this.outlines = on
     for (const entry of this.buildings.values()) {
-      const lines = entry.mesh?.children[0]
+      const lines = entry.mesh?.children.find((c) => c.userData.outlines)
       if (lines) lines.visible = on
     }
   }
@@ -1084,20 +1093,31 @@ uniform float morphShown;`,
     holders.map.value = streets?.cover ?? NO_COVER
   }
 
-  private addBuildings(entry: BuildingEntry, result: MeshBuffers | null): void {
+  private addBuildings(entry: BuildingEntry, result: { mesh: MeshBuffers | null; bridges: MeshBuffers | null } | null): void {
     entry.state = 'ready'
     if (!result) return
     const { material, fade } = this.fadeMaterial(this.buildingMaterial)
-    const mesh = new Mesh(geometryOf(result, 'color'), material)
+    const mesh = new Mesh(result.mesh ? geometryOf(result.mesh, 'color') : new BufferGeometry(), material)
     this.fading.push({ mesh, fade, start: -1 })
-    if (result.edges && result.edges.length > 0) {
+    const edges = result.mesh?.edges
+    if (edges && edges.length > 0) {
       const geometry = new BufferGeometry()
-      geometry.setAttribute('position', new BufferAttribute(result.edges, 3))
+      geometry.setAttribute('position', new BufferAttribute(edges, 3))
       const lines = new LineSegments(geometry, this.edgeMaterial)
       // Shown once the building has dissolved in.
       lines.visible = false
       lines.raycast = () => {}
+      lines.userData.outlines = true
       mesh.add(lines)
+    }
+    if (result.bridges) {
+      // Street bridges, standing in from afar for the ones the streets build (shown while those aren't).
+      const bridges = new Mesh(geometryOf(result.bridges, 'color'), material)
+      bridges.userData.bridges = true
+      bridges.castShadow = true
+      bridges.receiveShadow = true
+      bridges.matrixAutoUpdate = false
+      mesh.add(bridges)
     }
     mesh.matrixAutoUpdate = false
     mesh.castShadow = true

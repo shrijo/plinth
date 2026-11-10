@@ -175,8 +175,12 @@ async function buildings(request: Extract<WorkerRequest, { type: 'buildings' }>,
   const shaped = groundFor(request.tile, heights, data)
   const keep = request.mask ? masking(request.mask) : undefined
   // On the ground people walk on: the block fills' top in town (see walkingLevel).
-  const result = buildingMesh(request.tile, data.buildings, walkingLevel(shaped), request.colours, { keep, roads: data.roads })
-  return { id: request.id, ok: true, type: 'buildings', result }
+  const at = walkingLevel(shaped)
+  const mesh = data.buildings.length > 0 ? buildingMesh(request.tile, data.buildings, at, request.colours, { keep }) : null
+  // Bridges are built with the streets (a street's bridge as the street it carries, with what's mapped
+  // alongside it: see streetMesh); from afar, where the streets aren't built, these stand in for them.
+  const bridges = data.roads.some((r) => r.bridge && !r.tunnel) ? buildingMesh(request.tile, [], at, request.colours, { roads: data.roads }) : null
+  return { id: request.id, ok: true, type: 'buildings', result: mesh || bridges ? { mesh, bridges } : null }
 }
 
 /**
@@ -449,7 +453,7 @@ function transfers(response: WorkerResponse): Transferable[] {
     const { mesh, cover, grass } = response.result
     return [...buffers(mesh), ...(cover ? [cover.buffer] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
   }
-  return buffers(response.result) as Transferable[]
+  return [...buffers(response.result?.mesh ?? null), ...buffers(response.result?.bridges ?? null)] as Transferable[]
 }
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {

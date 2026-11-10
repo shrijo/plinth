@@ -234,7 +234,8 @@ function isStreetRecord(v: unknown): v is Street {
     widths.every((k) => v[k] === undefined || isNonNegative(v[k])) &&
     (v.lanes === undefined || isNonNegative(v.lanes)) &&
     (v.kind === undefined || (STREET_KINDS as readonly unknown[]).includes(v.kind)) &&
-    (v.oneway === undefined || typeof v.oneway === 'boolean')
+    (v.oneway === undefined || typeof v.oneway === 'boolean') &&
+    (v.bridge === undefined || typeof v.bridge === 'boolean')
   )
 }
 

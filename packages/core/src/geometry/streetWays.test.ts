@@ -121,6 +121,35 @@ describe('streets as ways', () => {
     expect(piece.markings).toHaveLength(0)
   })
 
+  it('ends a way where a bridge lands: the deck is a piece of its own, edge to edge with the street', () => {
+    const doc = PlinthDocument.createEmpty()
+    doc.transact((tx) => {
+      insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 })
+      insertStreet(tx, { x: 40, y: 0 }, { x: 100, y: 4 }, { bridge: true })
+      insertStreet(tx, { x: 100, y: 4 }, { x: 140, y: 4 })
+    })
+    const pieces = streetGeometry(doc.getSnapshot()).pieces
+    const streets = pieces.filter((p) => p.key.startsWith('street'))
+    expect(streets).toHaveLength(3)
+    const decks = streets.filter((p) => p.bridge)
+    expect(decks).toHaveLength(1)
+    // The deck runs between its landings, along its own centre line.
+    const line = decks[0]!.line!
+    expect(line[0]!.x).toBeGreaterThan(39)
+    expect(line[0]!.x).toBeLessThan(45)
+    expect(line[line.length - 1]!.x).toBeGreaterThan(95)
+    expect(line[line.length - 1]!.x).toBeLessThan(101)
+    // Where it lands, the junction is on the ground; the deck carries the street's lines on.
+    expect(pieces.filter((p) => p.key.startsWith('junction')).every((p) => !p.bridge)).toBe(true)
+    expect(decks[0]!.markings.length).toBeGreaterThan(0)
+  })
+
+  it('keeps a bridge flag through the file format', () => {
+    const doc = PlinthDocument.createEmpty()
+    doc.transact((tx) => insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 }, { bridge: true }))
+    expect(Object.values(doc.getSnapshot().streets)[0]!.bridge).toBe(true)
+  })
+
   it('keeps a type and one-way through editing', () => {
     const doc = PlinthDocument.createEmpty()
     doc.transact((tx) => insertStreet(tx, { x: 0, y: 0 }, { x: 40, y: 0 }))
