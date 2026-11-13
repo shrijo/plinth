@@ -11,12 +11,16 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@kninnug/constrainautor": "4.1.0",
     "@mapbox/vector-tile": "2.0.4",
     "@plinth/core": "workspace:*",
+    "clipper-lib": "6.4.2",
+    "delaunator": "5.1.0",
     "earcut": "^3.2.4",
     "pbf": "4.0.1"
   },
   "devDependencies": {
+    "@types/clipper-lib": "6.4.0",
     "vitest": "^5.1.0"
   }
 }

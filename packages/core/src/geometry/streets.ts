@@ -33,6 +33,8 @@ export interface StreetPiece {
   centre: Vec2
   /** One paved surface (a living street or pedestrian zone): its road is drawn as paving. */
   shared: boolean
+  /** The level it's on (see Street.level), when not the ground: a junction of streets on different levels is on the ground. */
+  level?: number
 }
 
 export interface StreetGeometry {
@@ -306,9 +308,9 @@ function strip(
   return outlines
 }
 
-/** Whether a street can carry on into the next through a bend: both paved as one surface, or neither. */
+/** Whether a street can carry on into the next through a bend: both paved as one surface, or neither, and on one level. */
 function continues(arriving: Street, leaving: Street): boolean {
-  return isSharedStreet(arriving) === isSharedStreet(leaving)
+  return isSharedStreet(arriving) === isSharedStreet(leaving) && (arriving.level ?? 0) === (leaving.level ?? 0)
 }
 
 function build(snapshot: Snapshot): StreetGeometry {
@@ -475,6 +477,8 @@ function build(snapshot: Snapshot): StreetGeometry {
   }
   ways.forEach((way, index) => {
     if (way.start === way.end || !junctions.has(way.start) || !junctions.has(way.end)) return
+    // A bridge, however short, stays a piece of its own.
+    if (way.sections[0]!.level) return
     const length = way.stops[way.stops.length - 1]!
     const left = length - (setbacks.get(setback(index, true)) ?? 0) - (setbacks.get(setback(index, false)) ?? 0)
     if (left >= KNOT_LEFT) return
@@ -533,6 +537,9 @@ function build(snapshot: Snapshot): StreetGeometry {
   for (const [nodeId, { node, meeting, junction }] of junctions) {
     if (knotted.has(nodeId)) continue
     const shared = meeting.every(({ way }) => ways[way]!.shared)
+    // On a level of its own only if every street meeting there is.
+    const levels = meeting.map(({ way }) => ways[way]!.sections[0]!.level ?? 0)
+    const level = levels.every((l) => l === levels[0]) ? levels[0]! : 0
     pieces.push({
       key: `junction:${nodeId}`,
       road: shared ? ring(junction.road).concat(junction.sidewalks.flatMap(ring)) : ring(junction.road),
@@ -543,6 +550,7 @@ function build(snapshot: Snapshot): StreetGeometry {
       crosswalks: [],
       centre: { x: node.x, y: node.y },
       shared,
+      ...(level ? { level } : {}),
     })
   }
 
@@ -618,6 +626,7 @@ function build(snapshot: Snapshot): StreetGeometry {
       crosswalks: [],
       centre: mid,
       shared,
+      ...(way.sections[0]!.level ? { level: way.sections[0]!.level } : {}),
     })
     const strips = (inner: (e: Edges) => number, outer: (e: Edges) => number): MultiPolygon =>
       strip(line, knots, s0, s1, inner, outer).flatMap(ring)

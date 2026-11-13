@@ -13,6 +13,10 @@ import { DEFAULT_STREET, type Street, type StreetNode, type StreetProps, type Ve
 export interface StreetLine {
   /** Plan metres (x east, y north). */
   points: Vec2[]
+  /**
+   * Its cross-section, and its level (`props.level`: 0 or missing on the ground, above it on a bridge). Lines
+   * on different levels pass over one another: they meet only where one ends on the other.
+   */
   props: StreetProps
 }
 
@@ -121,13 +125,48 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     return index
   }
   let segments: Segment[] = []
+  /** Pairs of points that are one point. */
+  const joins: [number, number][] = []
+  // Each level's points are its own: where a bridge's line happens to have a point right over a street's, they
+  // don't meet. A bridge's ends do: they are where it lands, on whatever is there.
+  const levels = [...new Set(lines.map((line) => line.props.level ?? 0))].sort((a, b) => a - b)
+  const onLevel = new Map<number, Map<string, number>>()
+  const levelPoint = (p: Vec2, level: number) => {
+    if (level === 0 || options.apart?.(p)) return pointAt(p)
+    let map = onLevel.get(level)
+    if (!map) onLevel.set(level, (map = new Map()))
+    const key = `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
+    let index = map.get(key)
+    if (index === undefined) {
+      index = points.push({ x: p.x, y: p.y }) - 1
+      map.set(key, index)
+    }
+    return index
+  }
   for (const line of lines) {
+    const level = line.props.level ?? 0
     for (let i = 0; i + 1 < line.points.length; i++) {
-      const a = pointAt(line.points[i]!)
-      const b = pointAt(line.points[i + 1]!)
+      const a = levelPoint(line.points[i]!, level)
+      const b = levelPoint(line.points[i + 1]!, level)
       if (a !== b) segments.push({ a, b, props: line.props })
     }
   }
+  if (levels.some((level) => level !== 0)) {
+    // Landings: a bridge's end, and the point of another level at the same place (the ground first).
+    for (const line of lines) {
+      const level = line.props.level ?? 0
+      if (level === 0) continue
+      for (const p of [line.points[0]!, line.points[line.points.length - 1]!]) {
+        if (options.apart?.(p)) continue
+        const key = `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
+        const own = onLevel.get(level)?.get(key)
+        if (own === undefined) continue
+        const other = byKey.get(key) ?? levels.map((l) => (l === level ? undefined : onLevel.get(l)?.get(key))).find((i) => i !== undefined)
+        if (other !== undefined) joins.push([own, other])
+      }
+    }
+  }
+  const levelOf = (s: Segment) => s.props.level ?? 0
 
   const degrees = () => {
     const degree = new Int32Array(points.length)
@@ -137,10 +176,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     }
     return degree
   }
-  /** Pairs of points that are one point. */
-  const joins: [number, number][] = []
-
-  // Crossings: streets that cross on the level meet there. (Bridges and tunnels never get here.)
+  // Crossings: streets that cross on the level meet there. (A bridge passes over what it crosses; tunnels never get here.)
   {
     const splits = new Map<number, Split[]>()
     const grid = segmentGrid(points, segments, 0)
@@ -157,6 +193,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
           const si = segments[i]!
           const sj = segments[j]!
           if (si.a === sj.a || si.a === sj.b || si.b === sj.a || si.b === sj.b) continue
+          if (levelOf(si) !== levelOf(sj)) continue
           const hit = crossing(points[si.a]!, points[si.b]!, points[sj.a]!, points[sj.b]!)
           if (!hit) continue
           // Where they meet: an end of either if it's there, otherwise a new point on both.
@@ -185,8 +222,10 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     const splits = new Map<number, Split[]>()
     const grid = segmentGrid(points, segments, REACH)
     const at = segmentsAt(segments)
+    // A bridge's end that has landed isn't loose.
+    const landed = new Set(joins.flat())
     points.forEach((p, i) => {
-      if (degree[i] !== 1 || fixed.has(i)) return
+      if (degree[i] !== 1 || fixed.has(i) || landed.has(i)) return
       const own = segments[at.get(i)![0]!]!
       const from = points[own.a === i ? own.b : own.a]!
       const ownLength = Math.hypot(p.x - from.x, p.y - from.y) || 1
@@ -200,6 +239,8 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
         const a = points[s.a]!
         const b = points[s.b]!
         const { t, distance } = project(p, a, b)
+        // Its own level's streets; a bridge's end also lands on the ground where it ends right on a street.
+        if (levelOf(s) !== levelOf(own) && !(levelOf(own) !== 0 && levelOf(s) === 0 && distance < 1)) continue
         const q = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
         const towards = distance > 1e-6 && ((q.x - p.x) * heading.x + (q.y - p.y) * heading.y) / distance > 0.85
         const props = s.props
@@ -261,7 +302,7 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
     const span = (i: number, j: number) => Math.hypot(points[i]!.x - points[j]!.x, points[i]!.y - points[j]!.y)
     for (const s of segments) {
       const [a, b] = [s.a, s.b]
-      if (fixed.has(a) || fixed.has(b)) continue
+      if (fixed.has(a) || fixed.has(b) || levelOf(s) !== 0) continue
       for (const c of neighbours.get(a) ?? []) {
         if (c === b || fixed.has(c) || !neighbours.get(b)?.has(c)) continue
         // Junctions all three (their streets go on beyond the triangle).
@@ -339,28 +380,51 @@ export function tidyNetwork(lines: readonly StreetLine[], options: NetworkOption
       }
     })
   }
-  const degree = degrees()
+  // How many streets meet at each point (points already joined counting as one), and on which levels.
+  const degree = new Int32Array(points.length)
+  const levelsAt = new Map<number, Set<number>>()
+  for (const s of segments) {
+    for (const end of [s.a, s.b]) {
+      const root = find(end)
+      degree[root]!++
+      const set = levelsAt.get(root)
+      if (set) set.add(levelOf(s))
+      else levelsAt.set(root, new Set([levelOf(s)]))
+    }
+  }
+  const degreeOf = (i: number) => degree[find(i)]!
+  const sharesLevel = (i: number, j: number) => {
+    const a = levelsAt.get(find(i))
+    const b = levelsAt.get(find(j))
+    if (!a || !b) return false
+    for (const level of a) if (b.has(level)) return true
+    return false
+  }
   const grid = new Map<string, number[]>()
   points.forEach((p, i) => {
-    if (degree[i] === 0) return
+    if (degreeOf(i) === 0) return
     const key = `${Math.floor(p.x / merge)}:${Math.floor(p.y / merge)}`
     const list = grid.get(key)
     if (list) list.push(i)
     else grid.set(key, [i])
   })
+  // Found first, joined after: joining as it goes would change what the next point sees.
+  const near: [number, number][] = []
   points.forEach((p, i) => {
-    if (degree[i] === 2 || degree[i] === 0 || fixed.has(i)) return
+    if (degreeOf(i) === 2 || degreeOf(i) === 0 || fixed.has(i)) return
     const cx = Math.floor(p.x / merge)
     const cy = Math.floor(p.y / merge)
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
-          if (j === i || degree[j] === 2 || fixed.has(j)) continue
-          if (Math.hypot(points[j]!.x - p.x, points[j]!.y - p.y) < merge) union(i, j)
+          if (j === i || degreeOf(j) === 2 || fixed.has(j)) continue
+          // A junction on a bridge and one on the street under it stay two.
+          if (Math.hypot(points[j]!.x - p.x, points[j]!.y - p.y) < merge && sharesLevel(i, j)) near.push([i, j])
         }
       }
     }
   })
+  for (const [i, j] of near) union(i, j)
   const members = new Map<number, number[]>()
   points.forEach((_, i) => {
     const root = find(i)
@@ -1032,22 +1096,23 @@ function withoutDuplicates(points: readonly Vec2[], segments: readonly Segment[]
   const order = chains.map((_, i) => i).sort((x, y) => rank(chains[x]!) - rank(chains[y]!) || chains[x]!.length - chains[y]!.length)
   for (const c of order) {
     const chain = chains[c]!
-    // Points along it, about every 3 m.
-    const samples: Vec2[] = []
+    // Points along it, about every 3 m (each on its segment's level: a bridge over a street isn't that street twice).
+    const samples: (Vec2 & { level: number })[] = []
     for (const { k } of chain.run) {
       const s = segments[k]!
       const a = points[s.a]!
       const b = points[s.b]!
       const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 3))
-      for (let i = 0; i <= n; i++) samples.push({ x: a.x + ((b.x - a.x) * i) / n, y: a.y + ((b.y - a.y) * i) / n })
+      for (let i = 0; i <= n; i++) samples.push({ x: a.x + ((b.x - a.x) * i) / n, y: a.y + ((b.y - a.y) * i) / n, level: s.props.level ?? 0 })
     }
-    const nearest = (p: Vec2, only: number) => {
+    const nearest = (p: Vec2 & { level: number }, only: number) => {
       let best = Infinity
       let bestChain = -1
       for (const k of grid.get(cellKey(p.x, p.y)) ?? []) {
         const other = chainOf[k]!
         if (other === c || dropped[other] || (only >= 0 && other !== only)) continue
         const s = segments[k]!
+        if ((s.props.level ?? 0) !== p.level) continue
         const d = project(p, points[s.a]!, points[s.b]!).distance
         if (d < best) {
           best = d
@@ -1140,6 +1205,7 @@ function sidewalksBeside(points: readonly Vec2[], segments: readonly Segment[], 
         for (const j of grid.get(`${cx + dx}:${cy + dy}`) ?? []) {
           if (j === k) continue
           const other = segments[j]!
+          if ((other.props.level ?? 0) !== (s.props.level ?? 0)) continue
           const o = lines[j]!
           const facing = m.dx * o.dx + m.dy * o.dy
           // Sharing a point, two segments are side by side only if they leave it the same way (a V), not where

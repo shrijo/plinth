@@ -250,6 +250,13 @@ export interface Street {
   kind?: StreetKind
   /** Traffic one way (from a to b): no line down the middle. */
   oneway?: boolean
+  /**
+   * Which level it runs on where streets pass over one another, as
+   * OpenStreetMap's `layer`: 0 (or missing) on the ground, above it on a
+   * bridge. Where a street meets one on another level, each ends there:
+   * a street doesn't run on from the ground onto a bridge as one piece.
+   */
+  level?: number
 }
 
 /** Street types, as OpenStreetMap's `highway=*` values. */
