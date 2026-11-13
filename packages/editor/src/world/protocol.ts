@@ -27,15 +27,23 @@ export interface GroundResult {
   water: (MeshBuffers & { level: number }) | null
 }
 
+export interface BuildingsResult {
+  mesh: MeshBuffers | null
+  /** The tile's bridges as plain decks: shown until its streets are built in 3D, with their bridges as part of them. */
+  bridges: MeshBuffers | null
+}
+
 export type WorkerResponse =
   | { id: number; ok: true; type: 'ground'; result: GroundResult }
-  | { id: number; ok: true; type: 'buildings'; result: MeshBuffers | null }
+  | { id: number; ok: true; type: 'buildings'; result: BuildingsResult | null }
   | {
       id: number
       ok: true
       type: 'streets'
       result: {
         mesh: MeshBuffers | null
+        /** What stands clear of the ground and casts shadows on it: bridge decks with their parapets and piers. */
+        structures: MeshBuffers | null
         /**
          * What lies over the tile's ground, two bytes a pixel (GRASS_MASK square, rows from the north): how
          * much our own surfaces cover it (streets, paving and block fills: the ground leaves itself out

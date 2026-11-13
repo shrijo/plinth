@@ -412,8 +412,6 @@ export interface BuildingColours {
 export interface BuildingOptions {
   /** Leaves out buildings whose middle (longitude, latitude) this says no to. */
   keep?: (lon: number, lat: number) => boolean
-  /** Roads and railways, for their bridges. */
-  roads?: readonly RoadFeature[]
   /** Only what's inside this part of the tile (tile units); the whole tile by default. */
   rect?: Rect
 }
@@ -506,9 +504,23 @@ export function buildingMesh(
       for (const box of parapet.boxes) writer.prism(frame, [box.ring], roof - 0.05, roof + box.height, false, { ...colours, wall: plant, roof: plant })
     } else writer.prism(frame, ground, bottom, top - (sunk ?? 0), building.minHeight > 0, colours, seams)
   }
-  for (const road of options.roads ?? []) {
+  return writer.finish()
+}
+
+/**
+ * A tile's bridges as plain decks, for seeing from afar: each a slab along
+ * its road from landing to landing. Close by, the streets are built with
+ * their bridges as part of them (see streetMesh), and these give way.
+ */
+export function bridgeMesh(tile: TileId, roads: readonly RoadFeature[], heightAt: HeightAt, colours: BuildingColours): MeshBuffers | null {
+  const frame = tileFrame(tile)
+  const writer = new MeshWriter()
+  const n = 2 ** tile.z
+  const lonOf = (u: number) => ((tile.x + u) / n) * 360 - 180
+  const latOf = (v: number) => tileLat(tile.y + v, tile.z)
+  for (const road of roads) {
     if (!road.bridge || road.tunnel) continue
-    bridge(writer, frame, road, rect, lonOf, latOf, heightAt, colours)
+    bridge(writer, frame, road, UNIT, lonOf, latOf, heightAt, colours)
   }
   return writer.finish()
 }

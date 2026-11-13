@@ -27,9 +27,16 @@ export class LineField {
   private readonly cells = new Map<number, number[]>()
   private readonly reach: number
 
-  /** `reach`: how far beyond a line's half width it still counts, fading (metres). */
-  constructor(reach: number) {
+  private readonly hold: boolean
+
+  /**
+   * `reach`: how far beyond a line's half width it still counts, fading (metres). With `hold`, a point any
+   * line reaches takes the lines' height whole (a deck is level out to its edge, however wide); otherwise
+   * it fades into the fallback's with their reach.
+   */
+  constructor(reach: number, hold = false) {
     this.reach = reach
+    this.hold = hold
   }
 
   get size(): number {
@@ -87,7 +94,7 @@ export class LineField {
     if (weights === 0) return fallback(x, y)
     this.reached = Math.min(weights, 1)
     const blend = sum / weights
-    if (weights >= 1) return blend
+    if (weights >= 1 || this.hold) return blend
     const beyond = fallback(x, y)
     return beyond + (blend - beyond) * weights
   }

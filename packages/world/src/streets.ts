@@ -1,11 +1,12 @@
-import { crossSection, CURB_HEIGHT, streetGeometry, type MultiPolygon, type Snapshot, type Vec2 } from '@plinth/core'
+import { crossSection, CURB_HEIGHT, streetGeometry, type MultiPolygon, type Snapshot, type Street, type StreetPiece, type Vec2 } from '@plinth/core'
+import { CLEARANCE, solveElevation, type Passing } from './elevation.ts'
 import type { BuildingFeature, RoadFeature, RoadKind, Shape } from './features.ts'
-import { LineField, stations } from './field.ts'
+import { LineField } from './field.ts'
 import type { Ground } from './ground.ts'
 import { ecefFromLonLat, type Frame } from './geo.ts'
 import { tileFrame, tileWidth, type MeshBuffers } from './mesh.ts'
 import { looksLikeRoundabout, tidyNetwork, type StreetLine } from './network.ts'
-import { areaOf, common, merged, polygonsOf, rectangle, regionOf, rounded, without, type Region } from './plan.ts'
+import { areaOf, common, disc, grown, merged, polygonsOf, rectangle, regionOf, rounded, stroked, without, type Region } from './plan.ts'
 import { streetFromTags } from './site.ts'
 import { tileLat, type TileId } from './tiles.ts'
 import { triangulate } from './triangulate.ts'
@@ -57,6 +58,20 @@ const THIN = 0.6
 const ISLAND = 30
 /** A street's own height reaches this far beyond its road (metres), fading into the ground's. */
 const BED_REACH = 7
+/** A deck is level across out to this far beyond its roads (metres): its walkways, however far out they were mapped. */
+const DECK_REACH = 20
+/** A bridge's deck: this deep under its road (metres), with an edge beam this wide and parapets this wide and high. */
+const DECK = 0.9
+const EDGE = 0.3
+const PARAPET_WIDTH = 0.25
+const PARAPET = 1.1
+/** Where a deck stands less than this over the ground (metres), it's a solid down to it: an abutment, a ramp. */
+const SOLID = 1.5
+/** A bridge holds the road in its mouth up to itself over this far from where it lands (metres). */
+const HEAD = 14
+/** Piers stand this far apart along a bridge (metres), where its underside is at least this far over what's under it. */
+const PIER_EVERY = 24
+const PIER_FROM = 2.5
 /** A block bigger than this (square metres) with next to nothing built on it is open country: no fill, only the streets' pavements. */
 const OPEN_BLOCK = 45000
 const BUILT = 0.03
@@ -89,6 +104,8 @@ export function propsOf(road: RoadFeature, town: boolean) {
 export interface StreetsBuilt {
   /** One mesh in the tile's frame with a colour per vertex, or null when there are no streets. */
   mesh: MeshBuffers | null
+  /** What stands clear of the ground and casts shadows on it: bridge decks with their parapets and piers. */
+  structures: MeshBuffers | null
   /**
    * Everything the mesh covers (streets, paving, block fills), in plan
    * metres: where the ground needn't be drawn, since ours stands over it.
@@ -103,6 +120,8 @@ export interface StreetsBuilt {
 export interface StreetOptions {
   /** The tile's buildings: the blocks' surface is cut round those standing on the ground, so it meets each wall at its base. */
   buildings?: readonly BuildingFeature[]
+  /** Filled in with how long each stage took (ms), for looking into it. */
+  timings?: Record<string, number>
 }
 
 /**
@@ -113,6 +132,9 @@ export interface StreetOptions {
 export function walkingLevel(ground: Ground): (lon: number, lat: number) => number {
   return ground.town ? (lon, lat) => ground.level(lon, lat) + KERB : (lon, lat) => ground.at(lon, lat)
 }
+
+/** Railways that count as something to clear (a tram runs in the street, on the bridge with it). */
+const RAILWAYS = new Set(['rail', 'light_rail', 'narrow_gauge', 'preserved', ''])
 
 /** The streets of a tile (zoom 14 map data): see StreetsBuilt. */
 export function streetMesh(
@@ -128,42 +150,54 @@ export function streetMesh(
   greens: readonly Shape[] = [],
   options: StreetOptions = {},
 ): StreetsBuilt {
-  const __t: Record<string, number> = ((globalThis as Record<string, unknown>).__T as Record<string, number>) ?? {}
-  let __l = performance.now()
-  const __m = (k: string) => { const n = performance.now(); __t[k] = (__t[k] ?? 0) + Math.round(n - __l); __l = n }
+  let last = performance.now()
+  const mark = (stage: string) => {
+    if (!options.timings) return
+    const now = performance.now()
+    options.timings[stage] = (options.timings[stage] ?? 0) + now - last
+    last = now
+  }
   const metres = tileWidth(tile)
   // Plan metres: x east, y north (tile units run south), as the editor's sites.
   const toPlan = (u: number, v: number): Vec2 => ({ x: u * metres, y: -v * metres })
+  const planLine = (line: Float64Array): Vec2[] => {
+    const points: Vec2[] = []
+    for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
+    return points
+  }
   const lines: StreetLine[] = []
-  // Where streets go on as bridges or tunnels (drawn apart): their ends there stay apart, flat.
+  // Where streets go on as tunnels (not drawn): their ends there stay apart, flat.
   const apart = new Set<string>()
   const placeKey = (p: Vec2) => `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
   for (const road of roads) {
-    if (!road.tunnel && !road.bridge) continue
+    if (!road.tunnel) continue
     const line = road.line
-    const last = line.length - 2
-    for (const i of [0, last]) apart.add(placeKey(toPlan(line[i]!, line[i + 1]!)))
+    const end = line.length - 2
+    for (const i of [0, end]) apart.add(placeKey(toPlan(line[i]!, line[i + 1]!)))
   }
   // Footways on the level: where a city maps its sidewalks as ways of their own, they show where they are.
   const footways: Vec2[][] = []
+  // Bridges that aren't streets (railways, footbridges): decks of their own. And railways on the ground: bridges clear them.
+  const spanLines: Span[] = []
+  const under: Passing[] = []
   for (const road of roads) {
-    if (road.kind !== 'path' || road.tunnel || road.bridge || (road.subclass !== 'footway' && road.subclass !== 'path')) continue
-    const points: Vec2[] = []
-    for (let i = 0; i + 1 < road.line.length; i += 2) points.push(toPlan(road.line[i]!, road.line[i + 1]!))
-    footways.push(points)
-  }
-  for (const road of roads) {
-    if (road.tunnel || road.bridge) continue
+    if (road.tunnel) continue
+    if (road.kind === 'path' && !road.bridge && (road.subclass === 'footway' || road.subclass === 'path')) footways.push(planLine(road.line))
+    if (road.kind === 'rail' && !road.bridge && RAILWAYS.has(road.subclass)) under.push({ points: planLine(road.line), level: 0, half: 2.2, clearance: CLEARANCE.rail })
     const props = propsOf(road, ground.town)
-    if (!props) continue
-    const line = simplify(road.line, 0.4 / metres)
-    const points: Vec2[] = []
-    for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
+    if (!props) {
+      if (road.bridge) spanLines.push({ points: planLine(road.line), level: Math.max(road.layer, 1), kind: road.kind, width: (road.kind === 'rail' ? 6 : road.width) + 0.8 })
+      continue
+    }
+    const points = planLine(simplify(road.line, 0.4 / metres))
+    // A bridge is a street on a level of its own: it passes over what it crosses, and lands where it ends.
+    if (road.bridge) lines.push({ points, props: { ...props, level: Math.max(road.layer, 1) } })
     // A roundabout's ring: the tiles drop junction=roundabout and the one-way, single-lane running it implies.
-    if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
+    else if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
     else lines.push({ points, props })
   }
-  if (lines.length === 0 && squares.length === 0) return { mesh: null, cover: [], greenFills: [], paved: [] }
+  const spans = chained(spanLines)
+  if (lines.length === 0 && squares.length === 0 && spans.length === 0) return { mesh: null, structures: null, cover: [], greenFills: [], paved: [] }
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
   // data's edge (beyond the tile) are where it was cut, not dead ends.
   const network = tidyNetwork(lines, {
@@ -171,35 +205,60 @@ export function streetMesh(
     apart: (p) => apart.has(placeKey(p)),
     footways,
   })
-  __m('network')
+  mark('network')
   const geometry = streetGeometry({ streetNodes: network.nodes, streets: network.streets } as unknown as Snapshot)
-  __m('geometry')
+  mark('geometry')
 
   const writer = new StreetWriter(tile, metres, ground)
-  // The roads' own heights: each street level across at its bed's height, however wide it was built (the
-  // ground's beds are only as wide as each road's class says), blended where streets meet.
+  const n = 2 ** tile.z
+  const roadHalf = (street: Street) => {
+    const section = crossSection(street)
+    return Math.max(section.roadLeft, section.roadRight)
+  }
+  // How high everything runs: on its bed, or over it on a bridge and the ramps up to one.
+  const elevation = solveElevation({
+    nodes: network.nodes,
+    streets: network.streets,
+    bed: writer.bed,
+    water: (x, y) => ground.waterAt(((tile.x + x / metres) / n) * 360 - 180, tileLat(tile.y - y / metres, tile.z)),
+    half: roadHalf,
+    under,
+    spans: spans.map((span) => ({ points: span.points, level: span.level, gradient: span.kind === 'rail' ? 0.12 : 0.35 })),
+  })
+  mark('heights')
+  // The roads' own heights: each street level across at its height, however wide it was built (the ground's
+  // beds are only as wide as each road's class says), blended where streets meet. A bridge counts for the
+  // ground's roads only where it lands, so the road in its mouth is held up to it.
   const beds = new LineField(BED_REACH)
+  const decks = elevation.structures.map(() => new LineField(DECK_REACH, true))
+  const landings = new Set(elevation.structures.flatMap((structure) => structure.landings))
+  const meeting = new Map<string, Street[]>()
   for (const street of Object.values(network.streets)) {
     const a = network.nodes[street.a]
     const b = network.nodes[street.b]
     if (!a || !b) continue
     const length = Math.hypot(b.x - a.x, b.y - a.y)
     if (length < 1e-6) continue
-    const section = crossSection(street)
-    beds.add({
-      ax: a.x,
-      ay: a.y,
-      bx: b.x,
-      by: b.y,
-      half: Math.max(section.roadLeft, section.roadRight),
-      height: stations(length, 4, (along) => writer.bed(a.x + ((b.x - a.x) * along) / length, a.y + ((b.y - a.y) * along) / length)),
-    })
+    for (const end of [street.a, street.b]) {
+      const list = meeting.get(end)
+      if (list) list.push(street)
+      else meeting.set(end, [street])
+    }
+    const line = { ax: a.x, ay: a.y, bx: b.x, by: b.y, half: roadHalf(street), height: elevation.heightOf(street.id) }
+    const structure = elevation.structureOf.get(street.id)
+    if (structure === undefined) {
+      beds.add(line)
+      continue
+    }
+    decks[structure]!.add(line)
+    if (landings.has(street.a)) beds.add({ ...line, from: 0, to: Math.min(HEAD, length) })
+    if (landings.has(street.b)) beds.add({ ...line, from: Math.max(0, length - HEAD), to: length })
   }
   const roadHeight: HeightOn = (x, y) => beds.at(x, y, writer.bed)
   const roadLaid = new Laid()
   const roadLaying: Laying = { ...ROAD_LAYING, height: roadHeight, record: roadLaid }
   // Paint lies on the road as laid, split often enough to follow it.
-  const paintLaying: Laying = { tolerance: Infinity, most: 6, least: 6, height: (x, y) => roadLaid.at(x, y) ?? roadHeight(x, y) }
+  const paintOn = (laid: Laid, height: HeightOn): Laying => ({ tolerance: Infinity, most: 6, least: 6, height: (x, y) => laid.at(x, y) ?? height(x, y) })
 
   // Shapes of the map data (tile units) on the plan.
   const ring = (line: Float64Array): [number, number][] => {
@@ -212,22 +271,55 @@ export function streetMesh(
   // The plan. Everything at road level is one surface: where map data runs ways side by side or brings many
   // together, their roads are merged, the slivers between them closed and the corners rounded to a kerb's
   // radius. Living streets, pedestrian zones and squares are paved level with the blocks, and roads cut
-  // through them.
+  // through them. Each bridge's pieces are a plan of their own, on its deck.
   const roadPieces: MultiPolygon = []
   const pavedPieces: MultiPolygon = shapes(squares)
   const bikePieces: MultiPolygon = []
   const parkingPieces: MultiPolygon = []
   const walkPieces: MultiPolygon = []
+  const marks: Vec2[][] = []
+  const onDeck = elevation.structures.map(() => ({ road: [] as MultiPolygon, walks: [] as MultiPolygon, marks: [] as Vec2[][], mouths: [] as MultiPolygon }))
+  /** The bridge a piece is part of, or -1 for one on the ground. */
+  const structureOfPiece = (piece: StreetPiece): number => {
+    if (!piece.level) return -1
+    if (piece.key.startsWith('street:')) return elevation.structureOf.get(piece.key.slice(7)) ?? -1
+    for (const node of piece.key.slice(piece.key.indexOf(':') + 1).split('+')) {
+      for (const street of meeting.get(node) ?? []) {
+        const structure = elevation.structureOf.get(street.id)
+        if (structure !== undefined && (street.level ?? 0) === piece.level) return structure
+      }
+    }
+    return -1
+  }
   for (const piece of geometry.pieces) {
+    const structure = structureOfPiece(piece)
+    if (structure >= 0) {
+      const deck = onDeck[structure]!
+      deck.road.push(...piece.road, ...piece.bike, ...piece.parking)
+      deck.walks.push(...piece.sidewalks)
+      deck.marks.push(...piece.markings, ...piece.crosswalks)
+      continue
+    }
     if (piece.shared) pavedPieces.push(...piece.road)
     else roadPieces.push(...piece.road, ...piece.bike, ...piece.parking)
     bikePieces.push(...piece.bike)
     parkingPieces.push(...piece.parking)
     walkPieces.push(...piece.sidewalks)
+    marks.push(...piece.markings, ...piece.crosswalks)
+    // The junction a bridge lands in is its mouth: no parapet stands across it.
+    if (piece.key.startsWith('junction:')) {
+      for (const node of piece.key.slice(9).split('+')) {
+        if (!landings.has(node)) continue
+        for (const street of meeting.get(node) ?? []) {
+          const structure = elevation.structureOf.get(street.id)
+          if (structure !== undefined) onDeck[structure]!.mouths.push(...piece.road)
+        }
+      }
+    }
   }
+
   // The tile itself, and the area left out: everything is cut to them.
   const whole = rectangle(0, -metres, metres, 0)
-  const n = 2 ** tile.z
   const hole: Region = mask
     ? regionOf([
         [
@@ -241,10 +333,103 @@ export function streetMesh(
       ])
     : []
   const cut = (region: Region): Region => without(common(region, whole), hole)
+  const holeRing = mask ? polygonsOf(hole)[0]?.[0] : undefined
+  const kept = (x: number, y: number) => x >= 0 && x <= metres && y <= 0 && y >= -metres && !(holeRing && insidePolygon([holeRing], x, y))
+  const onEdge = (x: number, y: number) => x < 1e-3 || x > metres - 1e-3 || y > -1e-3 || y < -metres + 1e-3
+  /** An edge along the tile's own edge: where the next tile goes on, not a side. */
+  const seam = (ax: number, ay: number, bx: number, by: number) => onEdge(ax, ay) && onEdge(bx, by) && (Math.abs(ax - bx) < 1e-3 || Math.abs(ay - by) < 1e-3)
 
   const road = cut(withoutIslands(rounded(merged(regionOf(roadPieces)), ROUND, THIN), ISLAND))
   const paving = without(cut(rounded(merged(regionOf(pavedPieces)), 1, 0)), road)
-  __m('roadplan')
+  mark('road plan')
+
+  // The bridges' decks, and where each stands so low over the ground that it's a solid down to it (its
+  // abutments, an approach on a ramp): nothing of the blocks shows there.
+  const structures = new StreetWriter(tile, metres, ground)
+  const laidDecks: { deck: Region; low: Region }[] = []
+  // Footways and tracks mapped as bridges of their own beside a street's bridge are that bridge's walkways
+  // (and a tram's rails on it are in its road): part of its deck, not decks of their own.
+  const spanRegions = spans.map((span) => stroked([span.points], span.width))
+  const absorbed = new Uint8Array(spans.length)
+  elevation.structures.forEach((structure, index) => {
+    const pieces = onDeck[index]!
+    if (pieces.road.length === 0) return
+    const field = decks[index]!
+    const height: HeightOn = (x, y) => field.at(x, y, writer.bed)
+    const carriageway = rounded(merged(regionOf(pieces.road)), ROUND, 0)
+    let surface = merged(carriageway, regionOf(pieces.walks))
+    const beside = grown(surface, 3.5)
+    spans.forEach((span, i) => {
+      if (absorbed[i]) return
+      const area = areaOf(spanRegions[i]!)
+      if (area <= 0 || areaOf(common(spanRegions[i]!, beside)) < area * 0.6) return
+      absorbed[i] = 1
+      if (span.kind !== 'rail') surface = merged(surface, spanRegions[i]!)
+    })
+    // Closed over the slot between the road and a walkway mapped a little apart from it.
+    surface = rounded(surface, 1.2, 0)
+    // Its mouths: the junctions it lands in, and round each landing the width of the road.
+    const mouths: Region[] = [grown(merged(regionOf(pieces.mouths)), 0.5)]
+    const landed: Vec2[] = []
+    const lowLines: Vec2[][] = []
+    let widest = 0
+    for (const id of structure.streets) {
+      const street = network.streets[id]!
+      const a = network.nodes[street.a]!
+      const b = network.nodes[street.b]!
+      const section = crossSection(street)
+      const outer = Math.max(section.outerLeft, section.outerRight)
+      widest = Math.max(widest, outer)
+      for (const node of [a, b]) if (landings.has(node.id)) landed.push(node)
+      // Low: where the deck is within a man's height of the ground under it (not over water).
+      const length = Math.hypot(b.x - a.x, b.y - a.y)
+      const along = elevation.heightOf(id)
+      const count = Math.max(1, Math.ceil(length / 4))
+      let run: Vec2[] = []
+      for (let k = 0; k <= count; k++) {
+        const x = a.x + ((b.x - a.x) * k) / count
+        const y = a.y + ((b.y - a.y) * k) / count
+        const low = along((k / count) * length) - writer.bed(x, y) < SOLID && ground.waterAt(((tile.x + x / metres) / n) * 360 - 180, tileLat(tile.y - y / metres, tile.z)) === null
+        if (low) run.push({ x, y })
+        if ((!low || k === count) && run.length > 0) {
+          if (run.length === 1) run.push({ x: run[0]!.x + 0.01, y: run[0]!.y })
+          lowLines.push(run)
+          run = []
+        }
+      }
+    }
+    // Round each landing, the road it lands on (and a little of the deck's own width): open, no parapet across.
+    for (const node of landed) mouths.push(disc(node.x, node.y, widest + EDGE + 0.6), grown(common(road, disc(node.x, node.y, widest + 4)), 0.6))
+    const mouth = merged(...mouths)
+    // The deck: its surface and an edge beam round it (not across its mouths).
+    const whole = merged(surface, without(grown(surface, EDGE), mouth))
+    const deck = cut(whole)
+    if (deck.length === 0) return
+    const low = lowLines.length > 0 ? common(deck, grown(stroked(lowLines, 2 * widest + 2), 2)) : []
+    const high = without(deck, low)
+    laidDecks.push({ deck, low })
+    const laid = new Laid()
+    const flat: Laying = { ...FILL_LAYING, height }
+    structures.top(polygonsOf(cut(carriageway)), ROAD, colours.road, { ...ROAD_LAYING, height, record: laid })
+    const walkways = without(deck, carriageway)
+    structures.top(polygonsOf(walkways), KERB, colours.sidewalk, flat)
+    // The kerb's face and the deck's edge, down to its underside; under it, where it's clear of the ground.
+    structures.sides(polygonsOf(walkways), KERB, colours.curb, seam, height, (x, y) => height(x, y) - DECK)
+    structures.top(polygonsOf(high), -DECK, colours.curb, flat, true)
+    structures.sides(polygonsOf(low), KERB, colours.curb, seam, height)
+    // Parapets along its edges.
+    // Along its outer edges only: not round the notches where a walkway ends short of the road, nor across a mouth.
+    const closed = grown(grown(whole, 6), -6)
+    const parapet = cut(without(common(without(whole, grown(whole, -PARAPET_WIDTH)), without(closed, grown(closed, -PARAPET_WIDTH - 0.05))), mouth))
+    structures.top(polygonsOf(parapet), PARAPET, colours.curb, flat)
+    structures.sides(polygonsOf(parapet), PARAPET, colours.curb, seam, height, (x, y) => height(x, y) - DECK)
+    for (const mark of pieces.marks) {
+      const clipped = clipRingPlan(mark.map((p) => [p.x, p.y] as [number, number]), { minX: 0, maxX: metres, minY: -metres, maxY: 0 })
+      if (clipped && !(holeRing && clipped.some(([x, y]) => insidePolygon([holeRing], x, y)))) structures.top([[clipped]], PAINT, colours.marking, paintOn(laid, height))
+    }
+  })
+  const solid = merged(...laidDecks.map((d) => d.low))
+  mark('decks')
 
   // The blocks between the streets, raised to kerb height: one plane from the kerbs to the buildings (the
   // plan's complement), green where the map has parks and greenery. So the terrain is ours wherever the
@@ -256,7 +441,7 @@ export function streetMesh(
   if (ground.town && colours.land) {
     const water = regionOf(shapes(ground.water))
     footprints = merged(regionOf(shapes((options.buildings ?? []).filter((b) => b.minHeight === 0).map((b) => b.shape))))
-    const blocks = polygonsOf(without(without(whole, hole), road, paving, water))
+    const blocks = polygonsOf(without(without(whole, hole), road, paving, water, solid))
     const filled: MultiPolygon = []
     const open: MultiPolygon = []
     for (const block of blocks) {
@@ -272,24 +457,18 @@ export function streetMesh(
     green = common(raised, greenery)
     land = without(raised, greenery)
   }
-  __m('blocks')
+  mark('blocks')
 
-  const cover: MultiPolygon = []
+  const cover: MultiPolygon = polygonsOf(solid)
   const greenFills: MultiPolygon = []
-  const paved: MultiPolygon = []
+  const paved: MultiPolygon = [...cover]
   /** A surface laid: its top, or `tops` if what's drawn of it differs from what it covers. */
   const lay = (region: Region, lift: number, colour: readonly number[], kind: 'paved' | 'green', laying: Laying, tops?: Region) => {
     if (region.length === 0) return
     const polygons = polygonsOf(region)
     cover.push(...polygons)
     ;(kind === 'green' ? greenFills : paved).push(...polygons)
-    __m('lay-cut')
-    const __p = tops ? polygonsOf(tops) : polygons
-    __m('lay-holes')
-    const __n = writer.count()
-    writer.top(__p, lift, colour, laying)
-    __m('lay-top')
-    __t['tris@' + lift + '/' + kind + (tops ? 'h' : '')] = (writer.count() - __n) / 3
+    writer.top(tops ? polygonsOf(tops) : polygons, lift, colour, laying)
   }
   // The road, with its parking strips and bike lanes laid into it as parts of the one surface (not on top:
   // two surfaces a hair apart show through each other).
@@ -302,34 +481,178 @@ export function streetMesh(
   // The blocks' surface is cut round the buildings standing on it, so it meets each wall at its base.
   lay(land, KERB, colours.land ?? colours.sidewalk, 'paved', FILL_LAYING, without(land, footprints))
   lay(green, KERB, colours.green ?? colours.land ?? colours.sidewalk, 'green', FILL_LAYING, without(green, footprints))
-  __m('tops')
+  mark('surfaces')
   // Sides: every raised surface is a solid (its kerb faces, and its banks where the land drops away), and so
   // is the plan as a whole, down into the ground. Not along the tile's own edges, where the next tile goes on.
-  const onEdge = (x: number, y: number) => x < 1e-3 || x > metres - 1e-3 || y > -1e-3 || y < -metres + 1e-3
-  const seam = (ax: number, ay: number, bx: number, by: number) => onEdge(ax, ay) && onEdge(bx, by) && (Math.abs(ax - bx) < 1e-3 || Math.abs(ay - by) < 1e-3)
   const raisedLand = merged(land, green, paving)
   writer.sides(polygonsOf(raisedLand), KERB, colours.curb, seam)
   writer.sides(polygonsOf(merged(road, raisedLand)), ROAD, colours.curb, seam, roadHeight)
-  // The road's own edge, where it stands clear of what's beside it (a block lower than the road, or none).
-  writer.sides(polygonsOf(road), ROAD, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || (roadHeight(ax, ay) + ROAD < writer.bed(ax, ay) + KERB - 0.02 && roadHeight(bx, by) + ROAD < writer.bed(bx, by) + KERB - 0.02), roadHeight)
-  __m('sides')
+  // The road's own edge, where it stands clear of what's beside it (on a ramp up to a bridge; a block lower than the road).
+  const sunk = (x: number, y: number) => roadHeight(x, y) + ROAD < writer.bed(x, y) + KERB - 0.02
+  writer.sides(polygonsOf(road), ROAD, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || (sunk(ax, ay) && sunk(bx, by)), roadHeight)
+  mark('sides')
 
   // Lines and zebras on top.
   const rect = { minX: 0, maxX: metres, minY: -metres, maxY: 0 }
-  const holeRing = mask ? polygonsOf(hole)[0]?.[0] : undefined
-  for (const piece of geometry.pieces) {
-    for (const mark of [...piece.markings, ...piece.crosswalks]) {
-      // A line can run the length of a long street: cut like the surfaces, not judged by its middle.
-      const clipped = clipRingPlan(mark.map((p) => [p.x, p.y] as [number, number]), rect)
-      if (!clipped) continue
-      if (holeRing && clipped.some(([x, y]) => insidePolygon([holeRing], x, y))) continue
-      writer.top([[clipped]], PAINT, colours.marking, paintLaying)
-    }
+  const paint = paintOn(roadLaid, roadHeight)
+  for (const mark of marks) {
+    // A line can run the length of a long street: cut like the surfaces, not judged by its middle.
+    const clipped = clipRingPlan(mark.map((p) => [p.x, p.y] as [number, number]), rect)
+    if (!clipped) continue
+    if (holeRing && clipped.some(([x, y]) => insidePolygon([holeRing], x, y))) continue
+    writer.top([[clipped]], PAINT, colours.marking, paint)
   }
-  __m('lanes+marks')
-  const __mesh = writer.finish()
-  __m('finish')
-  return { mesh: __mesh, cover, greenFills, paved }
+  mark('paint')
+
+  // Piers under the decks, where they stand high enough over the ground: a row of them every so often along
+  // each bridge street (by where it lies on the map, so both tiles a bridge crosses put them at the same
+  // places), not on a road passing under.
+  elevation.structures.forEach((structure) => {
+    for (const id of structure.streets) {
+      const street = network.streets[id]!
+      const a = network.nodes[street.a]!
+      const b = network.nodes[street.b]!
+      const length = Math.hypot(b.x - a.x, b.y - a.y)
+      if (length < 1e-6) continue
+      const dx = (b.x - a.x) / length
+      const dy = (b.y - a.y) / length
+      const from = a.x * dx + a.y * dy
+      const along = elevation.heightOf(id)
+      const across = Math.min(Math.max(roadHalf(street) * 1.2, 1.6), 6)
+      for (let m = Math.ceil(from / PIER_EVERY); m * PIER_EVERY <= from + length; m++) {
+        const s = m * PIER_EVERY - from
+        const x = a.x + dx * s
+        const y = a.y + dy * s
+        if (!kept(x, y)) continue
+        const lon = ((tile.x + x / metres) / n) * 360 - 180
+        const lat = tileLat(tile.y - y / metres, tile.z)
+        const surface = ground.waterAt(lon, lat)
+        const under = surface ?? writer.bed(x, y)
+        const head = along(s) - DECK
+        if (head - under < PIER_FROM) continue
+        const corners: [number, number][] = [
+          [x - dy * across - dx * 0.55, y + dx * across - dy * 0.55],
+          [x + dy * across - dx * 0.55, y - dx * across - dy * 0.55],
+          [x + dy * across + dx * 0.55, y - dx * across + dy * 0.55],
+          [x - dy * across + dx * 0.55, y + dx * across + dy * 0.55],
+        ]
+        // Not standing in a road under the bridge.
+        if ([[x, y] as [number, number], ...corners].some(([px, py]) => roadLaid.at(px, py) !== null)) continue
+        structures.box(corners, (surface !== null ? ground.at(lon, lat) : under) - 1, head, colours.curb)
+      }
+    }
+  })
+  // Railway bridges and footbridges: a plain deck each, on abutments where it ends up in the air.
+  spans.forEach((span, index) => {
+    if (absorbed[index]) return
+    const along = elevation.spans[index]!
+    const field = new LineField(4, true)
+    let walked = 0
+    const lowLines: Vec2[][] = []
+    let run: Vec2[] = []
+    for (let i = 0; i + 1 < span.points.length; i++) {
+      const p = span.points[i]!
+      const q = span.points[i + 1]!
+      const length = Math.hypot(q.x - p.x, q.y - p.y)
+      if (length < 1e-6) continue
+      const start = walked
+      field.add({ ax: p.x, ay: p.y, bx: q.x, by: q.y, half: span.width / 2, height: (s) => along(start + s) })
+      const count = Math.max(1, Math.ceil(length / 4))
+      for (let k = 0; k <= count; k++) {
+        const x = p.x + ((q.x - p.x) * k) / count
+        const y = p.y + ((q.y - p.y) * k) / count
+        const low = along(start + (length * k) / count) - writer.bed(x, y) < SOLID / 2 && ground.waterAt(((tile.x + x / metres) / n) * 360 - 180, tileLat(tile.y - y / metres, tile.z)) === null
+        if (low) run.push({ x, y })
+        else if (run.length > 0) {
+          if (run.length > 1) lowLines.push(run)
+          run = []
+        }
+      }
+      walked += length
+    }
+    if (run.length > 1) lowLines.push(run)
+    const deck = cut(spanRegions[index]!)
+    if (deck.length === 0) return
+    const height: HeightOn = (x, y) => field.at(x, y, writer.bed)
+    const flat: Laying = { ...FILL_LAYING, height }
+    const depth = span.kind === 'path' || span.kind === 'track' ? 0.45 : DECK
+    const low = lowLines.length > 0 ? common(deck, stroked(lowLines, span.width + 2)) : []
+    const high = without(deck, low)
+    structures.top(polygonsOf(deck), 0, span.kind === 'rail' ? colours.road : colours.sidewalk, flat)
+    structures.top(polygonsOf(high), -depth, colours.curb, flat, true)
+    structures.sides(polygonsOf(high), 0, colours.curb, seam, height, (x, y) => height(x, y) - depth)
+    structures.sides(polygonsOf(low), 0, colours.curb, seam, height)
+    // An end left in the air (it had to clear something right at its landing) stands on an abutment.
+    for (const [end, next, s] of [
+      [span.points[0]!, span.points[1]!, 0],
+      [span.points[span.points.length - 1]!, span.points[span.points.length - 2]!, walked],
+    ] as const) {
+      const base = writer.bed(end.x, end.y)
+      if (along(s) - base < 0.8 || !kept(end.x, end.y)) continue
+      const l = Math.hypot(next.x - end.x, next.y - end.y) || 1
+      const dx = (next.x - end.x) / l
+      const dy = (next.y - end.y) / l
+      const w = span.width / 2
+      structures.box(
+        [
+          [end.x - dy * w, end.y + dx * w],
+          [end.x + dy * w, end.y - dx * w],
+          [end.x + dy * w + dx * 1.2, end.y - dx * w + dy * 1.2],
+          [end.x - dy * w + dx * 1.2, end.y + dx * w + dy * 1.2],
+        ],
+        base - 1,
+        along(s) - depth,
+        colours.curb,
+      )
+    }
+  })
+  mark('bridges')
+  return { mesh: writer.finish(), structures: structures.finish(), cover, greenFills, paved }
+}
+
+/** A bridge that isn't a street: a railway's, a footbridge. */
+interface Span {
+  points: Vec2[]
+  level: number
+  kind: RoadKind
+  width: number
+}
+
+/** Bridges mapped in pieces joined end to end into one each (by kind and level), so a viaduct is one deck. */
+function chained(spans: readonly Span[]): Span[] {
+  const key = (p: Vec2, span: Span) => `${Math.round(p.x * 10)}:${Math.round(p.y * 10)}:${span.kind}:${span.level}`
+  const ends = new Map<string, number[]>()
+  spans.forEach((span, i) => {
+    for (const p of [span.points[0]!, span.points[span.points.length - 1]!]) {
+      const k = key(p, span)
+      const list = ends.get(k)
+      if (list) list.push(i)
+      else ends.set(k, [i])
+    }
+  })
+  const used = new Uint8Array(spans.length)
+  const out: Span[] = []
+  spans.forEach((span, i) => {
+    if (used[i]) return
+    used[i] = 1
+    let points = [...span.points]
+    // On from each end while exactly one other piece carries on from there.
+    for (const forwards of [true, false]) {
+      for (let guard = 0; guard < 1000; guard++) {
+        const end = forwards ? points[points.length - 1]! : points[0]!
+        const next = (ends.get(key(end, span)) ?? []).filter((j) => !used[j])
+        if (next.length !== 1) break
+        const other = spans[next[0]!]!
+        used[next[0]!] = 1
+        const first = other.points[0]!
+        const starts = Math.hypot(first.x - end.x, first.y - end.y) < 0.2
+        const more = starts ? other.points.slice(1) : [...other.points].reverse().slice(1)
+        points = forwards ? [...points, ...more] : [...more.reverse(), ...points]
+      }
+    }
+    out.push({ ...span, points })
+  })
+  return out
 }
 
 /** A region without its holes smaller than an area (square metres): an island too small to stand on is road. */

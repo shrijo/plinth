@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {
   ancestorAt,
+  bridgeMesh,
   buildingMesh,
   enuFrame,
   fetchFeatures,
@@ -101,31 +102,59 @@ const SHAPE_ZOOM = 12
 /** From this zoom the ground's features come from the finest map data, so parent and child share them exactly. */
 const ROAD_ZOOM = 14
 
+/** Never aborted: what's shared between jobs is fetched for whoever wants it next, whatever becomes of the job that asked first. */
+const ALWAYS = new AbortController().signal
+
 /**
- * The heights for a tile: its own, or from zoom 14 on the finest there are,
- * reaching a little past its edges (the smoothing does), so the ground is
- * the same function on both sides of every seam.
+ * The tile whose ground a tile is built on: its zoom-14 square close up (every tile within it, and its
+ * buildings and streets, stand on the one ground made from its map data and the finest heights), itself
+ * further out.
  */
-async function heightsFor(tile: TileId, signal: AbortSignal): Promise<HeightTile[]> {
-  if (tile.z < SHAPE_ZOOM) return [await heightsOf(tile, signal)].filter((h): h is HeightTile => h !== null)
-  // From zoom 14 on, the finest elevation there is (zoom 15's), so a tile and its parent read the same
-  // heights and the slide between them moves nothing. The coarser shaped tiles (zooms 12 and 13, kilometres
-  // off) read their own zoom's, already finer than their grid: read two zooms deeper, as they were, one took
-  // 36 to 72 downloads, and they were most of a view's.
+const groundTile = (tile: TileId): TileId => (tile.z >= ROAD_ZOOM ? ancestorAt(tile, ROAD_ZOOM) : tile)
+
+/** How far past a ground's tile its heights reach (metres): the widest smoothing looks that far (see makeGround). */
+const HEIGHT_MARGIN = 150
+
+/**
+ * The heights for a ground: its tile's own far out; from zoom 12 on, those of its tile and a margin round it
+ * (the smoothing reaches past its edges, so the ground is the same function on both sides of every seam),
+ * and from zoom 14 on the finest there are (zoom 15's). The coarser shaped tiles (zooms 12 and 13,
+ * kilometres off) read their own zoom's, already finer than their grid.
+ */
+async function heightsFor(tile: TileId): Promise<HeightTile[]> {
+  if (tile.z < SHAPE_ZOOM) return [await heightsOf(tile, ALWAYS)].filter((h): h is HeightTile => h !== null)
   const zoom = tile.z >= ROAD_ZOOM ? TERRAIN_MAX_ZOOM : tile.z
   const b = tileBounds(tile)
-  const margin = 70 / 111320
+  const margin = HEIGHT_MARGIN / 111320
   const wide = margin / Math.max(Math.cos((((b.north + b.south) / 2) * Math.PI) / 180), 0.05)
-  // The tile itself first: most points are on it.
-  const own = ancestorAt(tile, zoom)
-  const around = tilesCovering({ west: b.west - wide, east: b.east + wide, south: b.south - margin, north: b.north + margin }, zoom)
-  const tiles = tile.z >= zoom ? [own, ...around.filter((t) => tileKey(t) !== tileKey(own))] : around
-  return (await Promise.all(tiles.map((t) => heightsOf(t, signal)))).filter((h): h is HeightTile => h !== null)
+  const tiles = tilesCovering({ west: b.west - wide, east: b.east + wide, south: b.south - margin, north: b.north + margin }, zoom)
+  return (await Promise.all(tiles.map((t) => heightsOf(t, ALWAYS)))).filter((h): h is HeightTile => h !== null)
 }
 
-/** The ground a tile is built on: shaped for streets and water close up. */
-function groundFor(tile: TileId, heights: HeightTile[], data: TileFeatures | null): Ground {
-  return makeGround(heights, tile.z >= WATER_ZOOM ? data : null, { roads: tile.z >= SHAPE_ZOOM })
+interface Grounded {
+  /** The map data the ground was made with (its tile's own). */
+  data: TileFeatures | null
+  ground: Ground
+}
+
+/** Grounds made, by their tile: every job on a square stands on the same one, made once. */
+const grounds = new Lru<Promise<Grounded>>(12)
+
+/** The ground a tile is built on (see groundTile): shaped for streets, buildings and water close up. */
+function groundOf(tile: TileId, signal: AbortSignal): Promise<Grounded> {
+  const base = groundTile(tile)
+  const key = tileKey(base)
+  let hit = grounds.get(key)
+  if (!hit) {
+    hit = Promise.all([featuresOf(base, ALWAYS), heightsFor(base)])
+      .then(([data, heights]) => ({ data, ground: makeGround(heights, base.z >= WATER_ZOOM ? data : null, { roads: base.z >= SHAPE_ZOOM, margin: HEIGHT_MARGIN - 20 }) }))
+      .catch((error: unknown) => {
+        grounds.delete(key)
+        throw error
+      })
+    grounds.set(key, hit)
+  }
+  return abortable(hit, signal)
 }
 
 /**
@@ -136,18 +165,12 @@ async function parentSurface(tile: TileId, signal: AbortSignal): Promise<CoarseH
   if (tile.z === 0 || tile.z === 10 || tile.z === 4) return undefined
   const parent = { z: tile.z - 1, x: Math.floor(tile.x / 2), y: Math.floor(tile.y / 2) }
   if (parent.z >= ROAD_ZOOM) return 'same'
-  const [data, heights] = await Promise.all([featuresOf(parent, signal), heightsFor(parent, signal)])
-  const shaped = groundFor(parent, heights, data)
+  const { ground: shaped } = await groundOf(parent, signal)
   return (lon, lat) => shaped.at(lon, lat)
 }
 
 async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, heights, coarse] = await Promise.all([
-    featuresOf(request.tile, signal),
-    heightsFor(request.tile, signal),
-    parentSurface(request.tile, signal),
-  ])
-  const shaped = groundFor(request.tile, heights, data)
+  const [{ data, ground: shaped }, coarse] = await Promise.all([groundOf(request.tile, signal), parentSurface(request.tile, signal)])
   const water = request.tile.z >= WATER_ZOOM ? waterMesh(request.tile, shaped) : null
   const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), coarse)
   const canvas = new OffscreenCanvas(request.size, request.size)
@@ -170,13 +193,14 @@ async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signa
 }
 
 async function buildings(request: Extract<WorkerRequest, { type: 'buildings' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  const { data, ground: shaped } = await groundOf(request.tile, signal)
   if (!data || (data.buildings.length === 0 && !data.roads.some((r) => r.bridge))) return { id: request.id, ok: true, type: 'buildings', result: null }
-  const shaped = groundFor(request.tile, heights, data)
   const keep = request.mask ? masking(request.mask) : undefined
   // On the ground people walk on: the block fills' top in town (see walkingLevel).
-  const result = buildingMesh(request.tile, data.buildings, walkingLevel(shaped), request.colours, { keep, roads: data.roads })
-  return { id: request.id, ok: true, type: 'buildings', result }
+  const mesh = buildingMesh(request.tile, data.buildings, walkingLevel(shaped), request.colours, { keep })
+  // Bridges as plain decks, for where the streets aren't built in 3D (see the renderer: they give way to those).
+  const bridges = bridgeMesh(request.tile, data.roads, (lon, lat) => shaped.level(lon, lat), request.colours)
+  return { id: request.id, ok: true, type: 'buildings', result: mesh || bridges ? { mesh, bridges } : null }
 }
 
 /**
@@ -225,12 +249,11 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
 
 /** The streets of a tile in 3D, on its ground's street beds. */
 async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const [data, heights] = await Promise.all([featuresOf(request.tile, signal), heightsFor(request.tile, signal)])
+  const { data, ground: shaped } = await groundOf(request.tile, signal)
   const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
   const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
   const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
-  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, cover: null, grass: null } }
-  const shaped = groundFor(request.tile, heights, data)
+  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, structures: null, cover: null, grass: null } }
   // A site's own streets stand in its area: the world's are left out there.
   const mask = request.mask
   const corners = mask
@@ -239,7 +262,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
         return { lon: p.lon, lat: p.lat }
       })
     : undefined
-  const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens)
+  const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens, { buildings: data.buildings })
   const LAWN = new Set(['park', 'grass', 'sport', 'cemetery'])
   const lawns = data.areas.filter((a) => LAWN.has(a.kind)).map((a) => a.shape)
   const grass = grassMask(
@@ -254,7 +277,7 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
     id: request.id,
     ok: true,
     type: 'streets',
-    result: { mesh: built.mesh, cover: groundMask(coverMask(request.tile, built.cover), grass), grass },
+    result: { mesh: built.mesh, structures: built.structures, cover: groundMask(coverMask(request.tile, built.cover), grass), grass },
   }
 }
 
@@ -446,10 +469,10 @@ function transfers(response: WorkerResponse): Transferable[] {
     return [...buffers(mesh), mesh.uvs.buffer, ...(mesh.morph ? [mesh.morph.buffer] : []), heights.buffer, image, ...buffers(water)] as Transferable[]
   }
   if (response.type === 'streets') {
-    const { mesh, cover, grass } = response.result
-    return [...buffers(mesh), ...(cover ? [cover.buffer] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
+    const { mesh, structures, cover, grass } = response.result
+    return [...buffers(mesh), ...buffers(structures), ...(cover ? [cover.buffer] : []), ...(grass ? [grass.buffer] : [])] as Transferable[]
   }
-  return buffers(response.result) as Transferable[]
+  return [...buffers(response.result?.mesh ?? null), ...buffers(response.result?.bridges ?? null)] as Transferable[]
 }
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {

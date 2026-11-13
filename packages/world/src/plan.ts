@@ -48,6 +48,13 @@ export function rectangle(minX: number, minY: number, maxX: number, maxY: number
   return [[point(minX, minY), point(maxX, minY), point(maxX, maxY), point(minX, maxY)]]
 }
 
+/** A disc (as a polygon of 24 sides). */
+export function disc(x: number, y: number, radius: number): Region {
+  const path: ClipperLib.Path = []
+  for (let k = 0; k < 24; k++) path.push(point(x + Math.cos((k * Math.PI) / 12) * radius, y + Math.sin((k * Math.PI) / 12) * radius))
+  return [path]
+}
+
 function run(type: ClipperLib.ClipType, subject: Region, clip: Region): Region {
   const clipper = new ClipperLib.Clipper()
   clipper.AddPaths(subject, ClipperLib.PolyType.ptSubject, true)

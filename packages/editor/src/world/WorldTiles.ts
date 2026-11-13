@@ -48,7 +48,7 @@ import {
   type TileId,
   type Vec3,
 } from '@plinth/world'
-import { GRASS_MASK, type GroundResult, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
+import { GRASS_MASK, type BuildingsResult, type GroundResult, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
 import { WorldGrass } from './grass.ts'
 import { MAIN_VIEW_LAYER, WorldWater } from './water.ts'
 
@@ -630,9 +630,18 @@ export class WorldTiles {
       const t = Math.min((now - fading.start) / FADE_IN, 1)
       fading.fade.value = t * t * (3 - 2 * t)
       if (t >= 1) {
-        for (const child of fading.mesh.children) child.visible = this.outlines
+        for (const child of fading.mesh.children) if (child.userData.outline) child.visible = this.outlines
         this.fading.splice(i, 1)
       }
+    }
+
+    // A tile's plain bridge decks give way once its streets (with their bridges as part of them) are fully in.
+    for (const key of buildingKeys) {
+      const bridges = this.buildings.get(key)?.mesh?.children.find((child) => child.userData.farBridges)
+      if (!bridges) continue
+      const streets = this.streets.get(key)
+      const fade = streets?.mesh?.userData.fade as { value: number } | undefined
+      bridges.visible = !(streets?.state === 'ready' && streets.mesh?.visible && (fade?.value ?? 1) >= 1)
     }
 
     // Ground under drawn streets leaves the covered parts out (its streets, paving and fills stand there).
@@ -867,7 +876,7 @@ export class WorldTiles {
   setOutlines(on: boolean): void {
     this.outlines = on
     for (const entry of this.buildings.values()) {
-      const lines = entry.mesh?.children[0]
+      const lines = entry.mesh?.children.find((child) => child.userData.outline)
       if (lines) lines.visible = on
     }
   }
@@ -1045,7 +1054,7 @@ uniform float morphShown;`,
     }
   }
 
-  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; cover: Uint8Array | null; grass: Uint8Array | null }): void {
+  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; structures: MeshBuffers | null; cover: Uint8Array | null; grass: Uint8Array | null }): void {
     entry.state = 'ready'
     entry.grass = result.grass
     if (result.cover) {
@@ -1058,9 +1067,9 @@ uniform float morphShown;`,
       // The ground tiles under this cover stop drawing themselves there.
       for (const ground of this.ground.values()) this.coverGround(ground)
     }
-    if (!result.mesh) return
+    if (!result.mesh && !result.structures) return
     const { material, fade } = this.fadeMaterial(this.streetMaterial, { tile: entry.tile, mask: entry.cover ?? NO_COVER })
-    const mesh = new Mesh(geometryOf(result.mesh, 'color'), material)
+    const mesh = new Mesh(result.mesh ? geometryOf(result.mesh, 'color') : new BufferGeometry(), material)
     mesh.userData.fade = fade
     // Not in the water's reflection: flat, and at a fraction of the screen's resolution the ground's own
     // picture of the streets (under them) stands in for them there, for far fewer triangles.
@@ -1069,6 +1078,14 @@ uniform float morphShown;`,
     mesh.receiveShadow = true
     mesh.visible = false
     mesh.raycast = () => {}
+    if (result.structures) {
+      // Bridges stand clear of the ground: they cast shadows on what's under them, and show in the water.
+      const structures = new Mesh(geometryOf(result.structures, 'color'), material)
+      structures.castShadow = true
+      structures.receiveShadow = true
+      structures.raycast = () => {}
+      mesh.add(structures)
+    }
     this.place(mesh, entry.frame)
     this.group.add(mesh)
     entry.mesh = mesh
@@ -1084,20 +1101,29 @@ uniform float morphShown;`,
     holders.map.value = streets?.cover ?? NO_COVER
   }
 
-  private addBuildings(entry: BuildingEntry, result: MeshBuffers | null): void {
+  private addBuildings(entry: BuildingEntry, result: BuildingsResult | null): void {
     entry.state = 'ready'
     if (!result) return
     const { material, fade } = this.fadeMaterial(this.buildingMaterial)
-    const mesh = new Mesh(geometryOf(result, 'color'), material)
+    const mesh = new Mesh(result.mesh ? geometryOf(result.mesh, 'color') : new BufferGeometry(), material)
     this.fading.push({ mesh, fade, start: -1 })
-    if (result.edges && result.edges.length > 0) {
+    if (result.mesh?.edges && result.mesh.edges.length > 0) {
       const geometry = new BufferGeometry()
-      geometry.setAttribute('position', new BufferAttribute(result.edges, 3))
+      geometry.setAttribute('position', new BufferAttribute(result.mesh.edges, 3))
       const lines = new LineSegments(geometry, this.edgeMaterial)
+      lines.userData.outline = true
       // Shown once the building has dissolved in.
       lines.visible = false
       lines.raycast = () => {}
       mesh.add(lines)
+    }
+    if (result.bridges) {
+      // Bridges as plain decks, until the tile's streets are built in 3D with their bridges (see update).
+      const bridges = new Mesh(geometryOf(result.bridges, 'color'), material)
+      bridges.userData.farBridges = true
+      bridges.castShadow = true
+      bridges.receiveShadow = true
+      mesh.add(bridges)
     }
     mesh.matrixAutoUpdate = false
     mesh.castShadow = true
