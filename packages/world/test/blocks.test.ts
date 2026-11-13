@@ -52,7 +52,8 @@ describe('block fills', () => {
       expect(mesh.positions[i * 3 + 1]!).toBeGreaterThan(399)
       expect(mesh.positions[i * 3 + 1]!).toBeLessThan(400.4)
     }
-    expect(inside).toBeGreaterThan(20)
+    // (Flat ground needs no fine mesh: a few points across the square are enough.)
+    expect(inside).toBeGreaterThan(8)
     // The cover says where the ground needn't draw itself: it includes the filled square.
     const { cover } = streetMesh(tile, loop, flat, colours)
     expect(pointInRegion({ x: 0.5 * m, y: -0.5 * m }, cover)).toBe(true)

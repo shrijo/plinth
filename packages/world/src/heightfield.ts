@@ -199,11 +199,39 @@ function sampler(grid: Lattice): HeightGrid {
   }
 }
 
+/**
+ * Each point's low ground: the height a fifth of the points within `radius` of it (a square round it) lie
+ * under. Not the very lowest: elevation data has pits, over water above all, and one would sink the lot.
+ */
+function lowest(grid: Lattice, radius: number): Lattice {
+  const { cols, rows } = grid
+  const out = new Float32Array(cols * rows)
+  const window = new Float32Array((radius * 2 + 1) ** 2)
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      let count = 0
+      for (let j = Math.max(0, y - radius); j <= Math.min(rows - 1, y + radius); j++) {
+        const row = j * cols
+        for (let i = Math.max(0, x - radius); i <= Math.min(cols - 1, x + radius); i++) window[count++] = grid.values[row + i]!
+      }
+      const sorted = window.subarray(0, count).sort()
+      out[y * cols + x] = sorted[Math.floor(count * 0.2)]!
+    }
+  }
+  return { ...grid, values: out }
+}
+
 export interface HeightGrids {
   /** The heights as they are (bilinear between pixels). */
   raw: HeightGrid
   /** Smoothed with a Gaussian of this many metres; `coarse` for wide ones (worked out on every other pixel or fewer). */
   smoothed(metres: number): HeightGrid
+  /**
+   * The low ground within `reach` metres of each point, smoothed a little: where there's water, its level
+   * (the elevation data is flat on water and rises at its banks, so smoothing the land itself would tilt a
+   * river up towards a high bank).
+   */
+  lowered(reach: number): HeightGrid
 }
 
 /**
@@ -214,16 +242,29 @@ export interface HeightGrids {
 export function heightGrids(tiles: readonly HeightTile[], bounds: LonLatBounds, margin: number): HeightGrids {
   const flat: HeightGrid = { at: () => 0, atMercator: () => 0 }
   const first = tiles[0]
-  if (!first) return { raw: flat, smoothed: () => flat }
+  if (!first) return { raw: flat, smoothed: () => flat, lowered: () => flat }
   const lat = (bounds.north + bounds.south) / 2
   /** Metres to a pixel here. */
   const pixel = (40075016.686 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01)) / (2 ** first.tile.z * first.size)
   const base = lattice(tiles, bounds, Math.ceil(margin / pixel) + 2)
-  if (!base) return { raw: flat, smoothed: () => flat }
+  if (!base) return { raw: flat, smoothed: () => flat, lowered: () => flat }
   const raw = sampler(base)
   const made = new Map<number, HeightGrid>()
+  const low = new Map<number, HeightGrid>()
   return {
     raw,
+    lowered(reach) {
+      let grid = low.get(reach)
+      if (!grid) {
+        // On every fourth pixel or so (the world's lattice, as the wide blurs), when pixels are fine enough.
+        const step = reach / pixel >= 12 ? 4 : reach / pixel >= 6 ? 2 : 1
+        const thin = thinned(base, step)
+        const radius = Math.round(reach / (pixel * step))
+        grid = radius < 1 ? raw : sampler(blurred(lowest(thin, radius), Math.max(radius / 2, 1)))
+        low.set(reach, grid)
+      }
+      return grid
+    },
     smoothed(metres) {
       let grid = made.get(metres)
       if (!grid) {

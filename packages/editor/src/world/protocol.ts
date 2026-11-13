@@ -12,7 +12,8 @@ export interface WorldMask {
 export type WorkerRequest =
   | { id: number; type: 'ground'; tile: TileId; size: number; segments: number; style: GroundStyle }
   | { id: number; type: 'buildings'; tile: TileId; colours: BuildingColours; mask: WorldMask | null }
-  | { id: number; type: 'streets'; tile: TileId; colours: StreetColours; mask: WorldMask | null }
+  /** A quarter of a tile's streets (0 to 3: north-west, north-east, south-west, south-east). */
+  | { id: number; type: 'streets'; tile: TileId; part: number; colours: StreetColours; mask: WorldMask | null }
   | { id: number; type: 'area'; mask: WorldMask; size: number; style: GroundStyle }
   | { id: number; type: 'cancel' }
 
@@ -45,12 +46,12 @@ export type WorkerResponse =
         /** What stands clear of the ground and casts shadows on it: bridge decks with their parapets and piers. */
         structures: MeshBuffers | null
         /**
-         * What lies over the tile's ground, two bytes a pixel (GRASS_MASK square, rows from the north): how
+         * What lies over the quarter's ground, two bytes a pixel (half GRASS_MASK square, rows from the north): how
          * much our own surfaces cover it (streets, paving and block fills: the ground leaves itself out
          * there), and 255 where grass grows (the ground and the green fills turn green under the blades).
          */
         cover: Uint8Array | null
-        /** Where grass grows, a byte per pixel over the tile (GRASS_MASK square): 0 none, 1 on the ground, 2 on a raised green fill. */
+        /** Where grass grows, a byte per pixel over the quarter (half GRASS_MASK square): 0 none, 1 on the ground, 2 on a raised green fill. */
         grass: Uint8Array | null
       }
     }

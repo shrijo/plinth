@@ -8,7 +8,9 @@ import {
   fetchHeights,
   groundMesh,
   makeGround,
-  streetMesh,
+  layStreets,
+  planStreets,
+  quarterOf,
   walkingLevel,
   waterMesh,
   insideRing,
@@ -25,6 +27,7 @@ import {
   type CoarseHeights,
   type Ground,
   type HeightTile,
+  type StreetPlan,
   type TileFeatures,
   tileWidth,
   type TileId,
@@ -172,7 +175,7 @@ async function parentSurface(tile: TileId, signal: AbortSignal): Promise<CoarseH
 async function ground(request: Extract<WorkerRequest, { type: 'ground' }>, signal: AbortSignal): Promise<WorkerResponse> {
   const [{ data, ground: shaped }, coarse] = await Promise.all([groundOf(request.tile, signal), parentSurface(request.tile, signal)])
   const water = request.tile.z >= WATER_ZOOM ? waterMesh(request.tile, shaped) : null
-  const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), coarse)
+  const mesh = groundMesh(request.tile, (lon, lat) => shaped.at(lon, lat), segmentsFor(request.tile, request.segments), coarse, water ? (lon, lat) => shaped.waterAt(lon, lat) : undefined)
   const canvas = new OffscreenCanvas(request.size, request.size)
   const context = canvas.getContext('2d')!
   paintGround(context, request.size, request.tile, data, request.style)
@@ -247,13 +250,35 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
   return { id: request.id, ok: true, type: 'area', result: canvas.transferToImageBitmap() }
 }
 
-/** The streets of a tile in 3D, on its ground's street beds. */
+/** Street plans worked out, by their tile: its quarters are laid one by one from the one plan. */
+const plans = new Lru<Promise<{ plan: StreetPlan | null; data: TileFeatures | null }>>(6)
+
+function planOf(tile: TileId, signal: AbortSignal): Promise<{ plan: StreetPlan | null; data: TileFeatures | null }> {
+  const key = tileKey(tile)
+  let hit = plans.get(key)
+  if (!hit) {
+    hit = groundOf(tile, ALWAYS)
+      .then(({ data, ground: shaped }) => {
+        const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
+        const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
+        const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
+        if (!data || (data.roads.length === 0 && squares.length === 0)) return { plan: null, data }
+        return { plan: planStreets(tile, data.roads, shaped, squares, greens, { buildings: data.buildings }), data }
+      })
+      .catch((error: unknown) => {
+        plans.delete(key)
+        throw error
+      })
+    plans.set(key, hit)
+  }
+  return abortable(hit, signal)
+}
+
+/** A quarter of a tile's streets in 3D, on its ground's street beds. */
 async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, signal: AbortSignal): Promise<WorkerResponse> {
-  const { data, ground: shaped } = await groundOf(request.tile, signal)
-  const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
-  const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
-  const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
-  if (!data || (data.roads.length === 0 && squares.length === 0)) return { id: request.id, ok: true, type: 'streets', result: { mesh: null, structures: null, cover: null, grass: null } }
+  const { plan, data } = await planOf(request.tile, signal)
+  const none: WorkerResponse = { id: request.id, ok: true, type: 'streets', result: { mesh: null, structures: null, cover: null, grass: null } }
+  if (!plan || !data) return none
   // A site's own streets stand in its area: the world's are left out there.
   const mask = request.mask
   const corners = mask
@@ -262,11 +287,13 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
         return { lon: p.lon, lat: p.lat }
       })
     : undefined
-  const built = streetMesh(request.tile, data.roads, shaped, request.colours, corners, squares, greens, { buildings: data.buildings })
+  const built = layStreets(plan, request.colours, { mask: corners, part: quarterOf(plan.metres, request.part) })
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const LAWN = new Set(['park', 'grass', 'sport', 'cemetery'])
   const lawns = data.areas.filter((a) => LAWN.has(a.kind)).map((a) => a.shape)
   const grass = grassMask(
     request.tile,
+    request.part,
     lawns,
     data.buildings.filter((b) => b.minHeight === 0).map((b) => b.shape),
     data.roads.filter((r) => r.bridge),
@@ -277,8 +304,17 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
     id: request.id,
     ok: true,
     type: 'streets',
-    result: { mesh: built.mesh, structures: built.structures, cover: groundMask(coverMask(request.tile, built.cover), grass), grass },
+    result: { mesh: built.mesh, structures: built.structures, cover: groundMask(coverMask(request.tile, request.part, built.cover), grass), grass },
   }
+}
+
+/** The masks over a quarter of a tile are this many pixels a side; the canvas they're drawn on is moved so the quarter fills it. */
+const PART_MASK = GRASS_MASK / 2
+function partCanvas(part: number): { canvas: OffscreenCanvas; context: OffscreenCanvasRenderingContext2D } {
+  const canvas = new OffscreenCanvas(PART_MASK, PART_MASK)
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  context.translate(-(part % 2) * PART_MASK, -Math.floor(part / 2) * PART_MASK)
+  return { canvas, context }
 }
 
 /**
@@ -287,8 +323,8 @@ async function streets(request: Extract<WorkerRequest, { type: 'streets' }>, sig
  */
 function groundMask(cover: Uint8Array | null, grass: Uint8Array | null): Uint8Array | null {
   if (!cover && !grass) return null
-  const mask = new Uint8Array(GRASS_MASK * GRASS_MASK * 2)
-  for (let i = 0; i < GRASS_MASK * GRASS_MASK; i++) {
+  const mask = new Uint8Array(PART_MASK * PART_MASK * 2)
+  for (let i = 0; i < PART_MASK * PART_MASK; i++) {
     mask[i * 2] = cover ? cover[i]! : 0
     mask[i * 2 + 1] = grass && grass[i]! > 0 ? 255 : 0
   }
@@ -303,6 +339,7 @@ function groundMask(cover: Uint8Array | null, grass: Uint8Array | null): Uint8Ar
  */
 function grassMask(
   tile: TileId,
+  part: number,
   lawns: readonly { outer: Float64Array; holes: Float64Array[] }[],
   /** Footprints of the buildings standing on the ground: nothing grows under a roof. */
   buildings: readonly { outer: Float64Array; holes: Float64Array[] }[],
@@ -314,8 +351,7 @@ function grassMask(
 ): Uint8Array | null {
   if (lawns.length === 0 && built.greenFills.length === 0) return null
   const scale = GRASS_MASK / tileWidth(tile)
-  const canvas = new OffscreenCanvas(GRASS_MASK, GRASS_MASK)
-  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  const { context } = partCanvas(part)
   const plan = (polygons: readonly (readonly [number, number][][])[]) => {
     const path = new Path2D()
     for (const polygon of polygons) {
@@ -397,8 +433,8 @@ function grassMask(
     context.lineWidth = (deck + 2) * scale
     context.stroke(path)
   }
-  const pixels = context.getImageData(0, 0, GRASS_MASK, GRASS_MASK).data
-  const mask = new Uint8Array(GRASS_MASK * GRASS_MASK)
+  const pixels = context.getImageData(0, 0, PART_MASK, PART_MASK).data
+  const mask = new Uint8Array(PART_MASK * PART_MASK)
   let any = false
   for (let i = 0; i < mask.length; i++) {
     if (pixels[i * 4 + 3]! < 160) continue
@@ -416,13 +452,11 @@ function grassMask(
  * border is pulled in a few metres (the picture is coarse: the ground
  * keeps a strip under the edges, hidden beneath them).
  */
-function coverMask(tile: TileId, cover: readonly (readonly [number, number][][])[]): Uint8Array | null {
+function coverMask(tile: TileId, part: number, cover: readonly (readonly [number, number][][])[]): Uint8Array | null {
   if (cover.length === 0) return null
-  const SIZE = GRASS_MASK
-  const metres = tileWidth(tile)
-  const scale = SIZE / metres
-  const canvas = new OffscreenCanvas(SIZE, SIZE)
-  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  const SIZE = PART_MASK
+  const scale = GRASS_MASK / tileWidth(tile)
+  const { context } = partCanvas(part)
   context.fillStyle = '#fff'
   context.strokeStyle = '#fff'
   const path = new Path2D()

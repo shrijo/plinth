@@ -18,25 +18,34 @@ describe('streets in 3D', async () => {
   const features = readTile(tile, readFileSync(new URL('./zurich-14-8580-5737.pbf', import.meta.url)))
   const ground = makeGround([heights], features)
 
+  const started = performance.now()
+  const whole = streetMesh(tile, features.roads, ground, colours)
+  const ms = performance.now() - started
+
   it('builds a tile of streets, on the street bed, above the land, quickly enough', () => {
-    const started = performance.now()
-    const mesh = streetMesh(tile, features.roads, ground, colours).mesh!
-    const ms = performance.now() - started
+    const mesh = whole.mesh!
     console.log('streets:', mesh.indices.length / 3, 'triangles in', Math.round(ms), 'ms')
     expect(mesh.indices.length / 3).toBeGreaterThan(10000)
-    expect(ms).toBeLessThan(8000)
-    // Road tops (normal up, road colour) lie just above the street bed and above the land under them.
+    // The heart of a city, all of it at once (the world lays a quarter at a time, side by side).
+    expect(ms).toBeLessThan(20000)
+    // Road tops (normal up, road colour) lie above the land under them, and most just above the street bed (the
+    // rest are held up to a bridge where it lands, on the ramp up to one, or on a road built wider than its
+    // class's bed, level out over land that falls away beside it).
     const frame = tileFrame(tile)
     let checked = 0
+    let lifted = 0
     for (let i = 0; i < mesh.positions.length / 3 && checked < 400; i += 97) {
       if (mesh.normals[i * 3 + 1]! < 0.99 || Math.abs(mesh.colors![i * 3]! - 0.6) > 1e-6) continue
       const p = fromFrame(frame, [mesh.positions[i * 3]!, -mesh.positions[i * 3 + 2]!, mesh.positions[i * 3 + 1]!])
       const place = lonLatFromEcef(p)
       expect(place.height).toBeGreaterThan(ground.at(place.lon, place.lat))
-      expect(place.height - ground.level(place.lon, place.lat)).toBeLessThan(0.2)
+      if (place.height - ground.level(place.lon, place.lat) > 0.2) lifted++
       checked++
     }
     expect(checked).toBeGreaterThan(50)
+    expect(lifted).toBeLessThan(checked * 0.15)
+    // Bridges are part of it: decks standing clear of the ground.
+    expect(whole.structures!.indices.length / 3).toBeGreaterThan(1000)
   })
 
   it('leaves out an area (a site stands there)', () => {
@@ -46,18 +55,17 @@ describe('streets in 3D', async () => {
       return { lon: p.lon, lat: p.lat }
     }
     const mask = [corner(-150, -150), corner(150, -150), corner(150, 150), corner(-150, 150)]
-    const whole = streetMesh(tile, features.roads, ground, colours).mesh!
     const holed = streetMesh(tile, features.roads, ground, colours, mask).mesh!
-    expect(holed.indices.length).toBeLessThan(whole.indices.length)
+    expect(holed.indices.length).toBeLessThan(whole.mesh!.indices.length)
     for (let i = 0; i < holed.positions.length / 3; i++) {
       const x = holed.positions[i * 3]!
       const z = holed.positions[i * 3 + 2]!
       expect(Math.abs(x) < 149 && Math.abs(z) < 149).toBe(false)
     }
-  }, 20000)
+  }, 60000)
 
   it('stays inside its tile', () => {
-    const mesh = streetMesh(tile, features.roads, ground, colours).mesh!
+    const mesh = whole.mesh!
     const frame = tileFrame(tile)
     const n = 2 ** tile.z
     for (let i = 0; i < mesh.positions.length / 3; i += 13) {

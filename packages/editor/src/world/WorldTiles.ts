@@ -194,6 +194,22 @@ interface BuildingEntry {
   cover?: Texture | null
   /** Streets: where grass grows over the tile (see grassMask in the worker). */
   grass?: Uint8Array | null
+  /**
+   * Streets: a tile's streets are built and shown a quarter at a time (the nearest first, each by whichever
+   * worker is free). The tile is `ready` once all four are in.
+   */
+  parts?: StreetPart[]
+}
+
+/** A quarter of a tile's streets (see BuildingEntry.parts). */
+interface StreetPart {
+  state: 'idle' | 'loading' | 'ready'
+  job: number
+  retryAt: number
+  /** What lies over the quarter's ground (see the worker's groundMask), until it has dissolved in and is laid into the tile's. */
+  cover: Uint8Array | null
+  /** Whether it has dissolved in. */
+  settled: boolean
 }
 
 /** The grass's carpet (see WorldGrass.carpet): its colour, and how far round the camera it lies and how strongly. */
@@ -241,7 +257,7 @@ export class WorldTiles {
   private readonly streets = new Map<string, BuildingEntry>()
   private readonly streetMaterial: MeshStandardMaterial
   private readonly workers: Worker[] = []
-  private readonly pending = new Map<number, { worker: Worker; entry: GroundEntry | BuildingEntry }>()
+  private readonly pending = new Map<number, { worker: Worker; entry: GroundEntry | BuildingEntry; part?: number }>()
   /** Questions to the workers (see areaImage), by job: given what came back, or null. */
   private readonly asked = new Map<number, (response: WorkerResponse | null) => void>()
   private readonly arrived: (() => void)[] = []
@@ -270,7 +286,7 @@ export class WorldTiles {
   private readonly warm: { entry: GroundEntry | BuildingEntry; map: { delete(key: string): boolean }; bytes: number }[] = []
   private warmBytes = 0
   /** Buildings and streets dissolving in (see FADE_IN); `start` is when first shown, -1 until then. */
-  private readonly fading: { mesh: Mesh; fade: { value: number }; start: number }[] = []
+  private readonly fading: { mesh: Mesh; fade: { value: number }; start: number; done?: () => void }[] = []
   /** The renderer, once known (see reflect): new pictures go up to the GPU as they arrive, not when first drawn. */
   private renderer: WebGLRenderer | null = null
   /** The scene the world is drawn in (see reflect), for the grass's height map. */
@@ -283,7 +299,7 @@ export class WorldTiles {
   /** How far the view reaches this frame (see update's motion.maxDistance). */
   private maxDistance: number | undefined = undefined
   /** Loads given up on (see the cancelling in update), by job: their results are still welcome if they come. */
-  private readonly givenUp = new Map<number, GroundEntry | BuildingEntry>()
+  private readonly givenUp = new Map<number, { entry: GroundEntry | BuildingEntry; part?: number }>()
   /** The kinds of tile whose shaders are built (see warmUp): only those are drawn, so none holds up a frame. */
   private readonly programs = new Set<Kind>()
   private warming = false
@@ -596,7 +612,8 @@ export class WorldTiles {
       entry.used = this.clock
       entry.wanted = now
       if (entry.state === 'warm') this.revive(entry)
-      if (entry.mesh && entry.state === 'ready' && streetsReady) {
+      // Whatever quarters of it are in.
+      if (entry.mesh && entry.state !== 'warm' && streetsReady) {
         entry.mesh.visible = true
         this.drawn.push(entry.mesh)
       }
@@ -608,7 +625,7 @@ export class WorldTiles {
     for (const key of keepKeys) {
       if (streetKeys.has(key)) continue
       const entry = this.streets.get(key)
-      if (!entry?.mesh || entry.state !== 'ready' || !streetsReady) continue
+      if (!entry?.mesh || entry.state === 'warm' || !streetsReady) continue
       entry.used = this.clock
       entry.mesh.visible = true
       this.drawn.push(entry.mesh)
@@ -624,7 +641,7 @@ export class WorldTiles {
         continue
       }
       if (fading.start < 0) {
-        if (!fading.mesh.visible) continue
+        if (!fading.mesh.visible || fading.mesh.parent?.visible === false) continue
         fading.start = now
       }
       const t = Math.min((now - fading.start) / FADE_IN, 1)
@@ -632,6 +649,7 @@ export class WorldTiles {
       if (t >= 1) {
         for (const child of fading.mesh.children) if (child.userData.outline) child.visible = this.outlines
         this.fading.splice(i, 1)
+        fading.done?.()
       }
     }
 
@@ -640,8 +658,7 @@ export class WorldTiles {
       const bridges = this.buildings.get(key)?.mesh?.children.find((child) => child.userData.farBridges)
       if (!bridges) continue
       const streets = this.streets.get(key)
-      const fade = streets?.mesh?.userData.fade as { value: number } | undefined
-      bridges.visible = !(streets?.state === 'ready' && streets.mesh?.visible && (fade?.value ?? 1) >= 1)
+      bridges.visible = !(streets?.state === 'ready' && streets.mesh?.visible && streets.parts?.every((part) => part.settled))
     }
 
     // Ground under drawn streets leaves the covered parts out (its streets, paving and fills stand there).
@@ -650,9 +667,8 @@ export class WorldTiles {
       const holders = entry?.mesh?.material instanceof MeshStandardMaterial ? (entry.mesh.material.userData.cover as { on: { value: number } } | undefined) : undefined
       if (!entry || !holders) continue
       const streets = entry.tile.z >= BUILDING_ZOOM ? this.streets.get(tileKey(ancestorAt(entry.tile, BUILDING_ZOOM))) : undefined
-      // Only once the streets have dissolved in: cut away sooner, the ground under them would show holes.
-      const fade = streets?.mesh?.userData.fade as { value: number } | undefined
-      holders.on.value = streets?.cover && streets.mesh?.visible && (fade?.value ?? 1) >= 1 ? 1 : 0
+      // The cover holds only the quarters that have dissolved in: cut away sooner, the ground under them would show holes.
+      holders.on.value = streets?.cover && streets.mesh?.visible ? 1 : 0
     }
 
     // What to load, most needed first, the way open-world games stream: what's in view (the ground coarsest
@@ -693,7 +709,7 @@ export class WorldTiles {
     // The buildings and streets in view, nearest first.
     for (const key of nearestFirst([...streetKeys, ...buildingKeys], under.lon, under.lat)) {
       const streets = this.streets.get(key)
-      if (streetKeys.has(key) && streets?.state === 'failed' && this.clock >= streets.retryAt && room(0) && !fast) this.requestStreets(streets)
+      if (streetKeys.has(key) && streets && !fast) this.requestStreets(streets, under.lon, under.lat, 0)
       const buildings = this.buildings.get(key)
       if (buildingKeys.has(key) && buildings?.state === 'failed' && this.clock >= buildings.retryAt && room(0) && !fast) this.requestBuildings(buildings)
     }
@@ -712,10 +728,9 @@ export class WorldTiles {
         entry.used = this.clock
         entry.wanted = now
         if (entry.state === 'warm') this.revive(entry)
-        else if (entry.state === 'failed' && this.clock >= entry.retryAt && room(RESERVED) && !fast) {
-          if (kind === 'buildings') this.requestBuildings(entry)
-          else this.requestStreets(entry)
-        }
+        else if (kind === 'streets') {
+          if (!fast) this.requestStreets(entry, under.lon, under.lat, RESERVED)
+        } else if (entry.state === 'failed' && this.clock >= entry.retryAt && room(RESERVED) && !fast) this.requestBuildings(entry)
       }
     }
     prefetch(this.buildings, 'buildings', [...aheadKeys(BUILDING_ZOOM), ...(altitude < AROUND_BUILDINGS ? squaresAround(under.lon, under.lat, 1) : [])])
@@ -728,14 +743,21 @@ export class WorldTiles {
       this.grass.capture(this.renderer, this.scene, camera.position, hide, now)
     }
     // Loads the view has long moved away from give way (not at once: a turn back shouldn't start them again).
-    for (const [job, { worker, entry }] of this.pending) {
+    for (const [job, { worker, entry, part }] of this.pending) {
       if (now - entry.wanted > CANCEL_AFTER) {
         worker.postMessage({ id: job, type: 'cancel' } satisfies WorkerRequest)
         this.pending.delete(job)
-        entry.state = 'failed'
-        entry.retryAt = 0
+        const quarter = part === undefined ? undefined : (entry as BuildingEntry).parts?.[part]
+        if (quarter) {
+          quarter.state = 'idle'
+          quarter.retryAt = 0
+          this.settleStreets(entry as BuildingEntry)
+        } else {
+          entry.state = 'failed'
+          entry.retryAt = 0
+        }
         // A worker busy with it finishes it all the same: kept then, not thrown away and built again later.
-        this.givenUp.set(job, entry)
+        this.givenUp.set(job, { entry, part })
         if (this.givenUp.size > MAX_GIVEN_UP) this.givenUp.delete(this.givenUp.keys().next().value!)
       }
     }
@@ -773,7 +795,7 @@ export class WorldTiles {
    * clearly busier than another. All the fine ground round the camera shares a source (its zoom-14 square),
    * and with its buildings and streets (seconds of work) it would all queue on one worker.
    */
-  private workerFor(tile: TileId): Worker {
+  private workerFor(tile: TileId, spread = false): Worker {
     const source = ancestorAt(tile, Math.min(tile.z, BUILDING_ZOOM))
     const hash = (source.x * 73856093) ^ (source.y * 19349663) ^ (source.z * 83492791)
     const home = this.workers[Math.abs(hash) % this.workers.length]!
@@ -781,6 +803,8 @@ export class WorldTiles {
     for (const { worker, entry } of this.pending.values()) load.set(worker, (load.get(worker) ?? 0) + ('kind' in entry && entry.kind === 'streets' ? 4 : 1))
     let least = home
     for (const worker of this.workers) if ((load.get(worker) ?? 0) < (load.get(least) ?? 0)) least = worker
+    // A tile's street quarters go to whoever is free: built side by side, they're all in within a quarter's time.
+    if (spread) return least
     return (load.get(home) ?? 0) > (load.get(least) ?? 0) + 1 ? least : home
   }
 
@@ -809,13 +833,38 @@ export class WorldTiles {
     worker.postMessage({ id, type: 'buildings', tile: entry.tile, colours: this.colours, mask: this.options.mask ?? null } satisfies WorkerRequest)
   }
 
-  private requestStreets(entry: BuildingEntry): void {
-    const id = this.nextJob++
-    entry.state = 'loading'
-    entry.job = id
-    const worker = this.workerFor(entry.tile)
-    this.pending.set(id, { worker, entry })
-    worker.postMessage({ id, type: 'streets', tile: entry.tile, colours: this.streetColours, mask: this.options.mask ?? null } satisfies WorkerRequest)
+  /**
+   * Asks for the quarters of a tile's streets that aren't in or on their way, the one nearest a place first,
+   * while there's room for more requests (leaving `spare` of them free).
+   */
+  private requestStreets(entry: BuildingEntry, lon: number, lat: number, spare: number): void {
+    const parts = entry.parts
+    if (!parts || entry.state === 'ready' || entry.state === 'warm' || parts.every((part) => part.state === 'ready')) return
+    // Where the place lies in the tile: the quarter it's in first, the one across from it last.
+    const n = 2 ** entry.tile.z
+    const φ = Math.max(-85, Math.min(85, lat)) * (Math.PI / 180)
+    const u = ((lon + 180) / 360) * n - entry.tile.x
+    const v = ((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n - entry.tile.y
+    const order = [0, 1, 2, 3].sort((p, q) => Math.hypot((p % 2) * 0.5 + 0.25 - u, Math.floor(p / 2) * 0.5 + 0.25 - v) - Math.hypot((q % 2) * 0.5 + 0.25 - u, Math.floor(q / 2) * 0.5 + 0.25 - v))
+    for (const index of order) {
+      const part = parts[index]!
+      if (part.state !== 'idle' || this.clock < part.retryAt) continue
+      if (this.pending.size >= MAX_IN_FLIGHT - spare) break
+      const id = this.nextJob++
+      part.state = 'loading'
+      part.job = id
+      const worker = this.workerFor(entry.tile, true)
+      this.pending.set(id, { worker, entry, part: index })
+      worker.postMessage({ id, type: 'streets', tile: entry.tile, part: index, colours: this.streetColours, mask: this.options.mask ?? null } satisfies WorkerRequest)
+    }
+    this.settleStreets(entry)
+  }
+
+  /** A streets tile's state from its quarters': ready once all are in, loading while any is on its way. */
+  private settleStreets(entry: BuildingEntry): void {
+    const parts = entry.parts
+    if (!parts || entry.state === 'warm') return
+    entry.state = parts.every((part) => part.state === 'ready') ? 'ready' : parts.some((part) => part.state === 'loading') ? 'loading' : 'failed'
   }
 
   /** A picture of the water and green in the mask's area (north up, over its bounding box), or null if it can't be had. */
@@ -845,28 +894,40 @@ export class WorldTiles {
     const job = this.pending.get(response.id)
     const late = job ? undefined : this.givenUp.get(response.id)
     this.givenUp.delete(response.id)
-    // A load given up on, finished after all: kept if the tile still has nothing (not asked for again since).
-    const keep = late && response.ok && !late.mesh && late.state === 'failed' && late.job === response.id
-    if (!job && !keep) {
+    const found = job ?? late
+    const quarter = found?.part === undefined ? undefined : (found.entry as BuildingEntry).parts?.[found.part]
+    // A load given up on, finished after all: kept if the tile (or quarter) still has nothing (not asked for again since).
+    const keep =
+      late && response.ok && (quarter ? quarter.state === 'idle' && quarter.job === response.id : !late.entry.mesh && late.entry.state === 'failed' && late.entry.job === response.id)
+    if (!found || (!job && !keep)) {
       if (response.ok && response.type === 'ground') response.result.image.close()
       return
     }
     if (response.ok && response.type === 'area') return
     this.pending.delete(response.id)
-    const entry = job?.entry ?? late!
-    if (this.disposed || entry.job !== response.id) return
+    const entry = found.entry
+    if (this.disposed || (quarter ? quarter.job : entry.job) !== response.id) return
     if (!response.ok) {
       this.lastError = response.error
-      entry.state = 'failed'
       // Try again in a while (frames, about a few seconds).
-      entry.retryAt = this.clock + (response.aborted ? 0 : 240)
+      const retryAt = this.clock + (response.aborted ? 0 : 240)
+      if (quarter) {
+        quarter.state = 'idle'
+        quarter.retryAt = retryAt
+        this.settleStreets(entry as BuildingEntry)
+      } else {
+        entry.state = 'failed'
+        entry.retryAt = retryAt
+      }
       return
     }
+    // In hand: nothing asks for it again while it waits its turn to go into the scene.
+    if (quarter) quarter.state = 'loading'
     this.arrived.push(() => {
       if (this.disposed) return
       if (response.type === 'ground') this.addGround(entry as GroundEntry, response.result)
-      else if (response.type === 'streets') this.addStreets(entry as BuildingEntry, response.result)
-      else this.addBuildings(entry as BuildingEntry, response.result)
+      else if (response.type === 'streets') this.addStreets(entry as BuildingEntry, found.part ?? 0, response.result)
+      else if (response.type === 'buildings') this.addBuildings(entry as BuildingEntry, response.result)
       this.onChange?.()
     })
     this.onChange?.()
@@ -1054,29 +1115,61 @@ uniform float morphShown;`,
     }
   }
 
-  private addStreets(entry: BuildingEntry, result: { mesh: MeshBuffers | null; structures: MeshBuffers | null; cover: Uint8Array | null; grass: Uint8Array | null }): void {
-    entry.state = 'ready'
-    entry.grass = result.grass
-    if (result.cover) {
-      const texture = new DataTexture(result.cover, GRASS_MASK, GRASS_MASK, RGFormat, UnsignedByteType)
+  /** A quarter of a tile's streets, into the scene: it dissolves in, and then the ground under it stops drawing itself. */
+  private addStreets(entry: BuildingEntry, index: number, result: { mesh: MeshBuffers | null; structures: MeshBuffers | null; cover: Uint8Array | null; grass: Uint8Array | null }): void {
+    const part = entry.parts?.[index]
+    if (!part || entry.state === 'warm') return
+    part.state = 'ready'
+    part.cover = result.cover
+    this.settleStreets(entry)
+    const half = GRASS_MASK / 2
+    const column = (index % 2) * half
+    const row = Math.floor(index / 2) * half
+    if (result.grass) {
+      // Where grass grows, laid into the tile's (asked for once all its quarters are in: see grassMask).
+      entry.grass ??= new Uint8Array(GRASS_MASK * GRASS_MASK)
+      for (let y = 0; y < half; y++) entry.grass.set(result.grass.subarray(y * half, (y + 1) * half), (row + y) * GRASS_MASK + column)
+    }
+    if (!entry.cover) {
+      // The tile's cover, empty until its quarters have dissolved in; the ground tiles under it look at it from now on.
+      const texture = new DataTexture(new Uint8Array(GRASS_MASK * GRASS_MASK * 2), GRASS_MASK, GRASS_MASK, RGFormat, UnsignedByteType)
       texture.generateMipmaps = false
       texture.minFilter = LinearFilter
       texture.magFilter = LinearFilter
       texture.needsUpdate = true
       entry.cover = texture
-      // The ground tiles under this cover stop drawing themselves there.
       for (const ground of this.ground.values()) this.coverGround(ground)
     }
-    if (!result.mesh && !result.structures) return
-    const { material, fade } = this.fadeMaterial(this.streetMaterial, { tile: entry.tile, mask: entry.cover ?? NO_COVER })
+    if (!entry.mesh) {
+      // The tile's own mesh holds its quarters (and is nothing itself).
+      const holder = new Mesh(new BufferGeometry(), this.streetMaterial)
+      holder.layers.set(MAIN_VIEW_LAYER)
+      holder.matrixAutoUpdate = false
+      holder.visible = false
+      holder.raycast = () => {}
+      this.place(holder, entry.frame)
+      this.group.add(holder)
+      entry.mesh = holder
+    }
+    const settle = () => {
+      part.settled = true
+      const cover = entry.cover as DataTexture | null | undefined
+      if (!part.cover || !cover || entry.parts?.[index] !== part) return
+      const data = cover.image.data as Uint8Array
+      for (let y = 0; y < half; y++) data.set(part.cover.subarray(y * half * 2, (y + 1) * half * 2), ((row + y) * GRASS_MASK + column) * 2)
+      part.cover = null
+      cover.needsUpdate = true
+    }
+    if (!result.mesh && !result.structures) {
+      settle()
+      return
+    }
+    const { material, fade } = this.fadeMaterial(this.streetMaterial, { tile: entry.tile, mask: entry.cover })
     const mesh = new Mesh(result.mesh ? geometryOf(result.mesh, 'color') : new BufferGeometry(), material)
-    mesh.userData.fade = fade
     // Not in the water's reflection: flat, and at a fraction of the screen's resolution the ground's own
     // picture of the streets (under them) stands in for them there, for far fewer triangles.
     mesh.layers.set(MAIN_VIEW_LAYER)
-    mesh.matrixAutoUpdate = false
     mesh.receiveShadow = true
-    mesh.visible = false
     mesh.raycast = () => {}
     if (result.structures) {
       // Bridges stand clear of the ground: they cast shadows on what's under them, and show in the water.
@@ -1086,10 +1179,8 @@ uniform float morphShown;`,
       structures.raycast = () => {}
       mesh.add(structures)
     }
-    this.place(mesh, entry.frame)
-    this.group.add(mesh)
-    entry.mesh = mesh
-    this.fading.push({ mesh, fade, start: -1 })
+    entry.mesh.add(mesh)
+    this.fading.push({ mesh, fade, start: -1, done: settle })
   }
 
   /** Points a ground tile's material at the cover of the street tile over it (see coverMask), if any. */
@@ -1147,8 +1238,16 @@ uniform float morphShown;`,
       if (map.size <= limit && loaded.length <= limit) return
       loaded.sort((a, b) => a.used - b.used)
       for (const entry of loaded.slice(0, Math.max(0, loaded.length - limit))) this.retire(entry, map)
-      // Entries never loaded and long out of view.
-      for (const [key, entry] of map) if (!entry.mesh && entry.state !== 'loading' && entry.used < this.clock - 60) map.delete(key)
+      // Entries never loaded and long out of view; and streets only partly loaded, longer out of view.
+      for (const [key, entry] of map) {
+        if (!entry.mesh && entry.state !== 'loading' && entry.used < this.clock - 60) map.delete(key)
+        else if (entry.mesh && entry.state === 'failed' && entry.used < this.clock - 900) {
+          this.group.remove(entry.mesh)
+          this.disposeMesh(entry.mesh)
+          ;(entry as BuildingEntry).cover?.dispose()
+          map.delete(key)
+        }
+      }
     }
     drop(this.ground, MAX_GROUND)
     drop(this.buildings, MAX_BUILDINGS)
@@ -1237,6 +1336,7 @@ uniform float morphShown;`,
       const [z, x, y] = key.split('/').map(Number) as [number, number, number]
       const tile = { z, x, y }
       entry = { kind, tile, key, state: 'failed', job: 0, mesh: null, used: this.clock, wanted: now, retryAt: 0, frame: tileFrame(tile) }
+      if (kind === 'streets') entry.parts = [0, 1, 2, 3].map(() => ({ state: 'idle', job: 0, retryAt: 0, cover: null, settled: false }))
       map.set(key, entry)
     }
     return entry
@@ -1380,16 +1480,22 @@ float fadeBayer4(vec2 a) { return fadeBayer2(0.5 * a) * 0.25 + fadeBayer2(a); }`
     return null
   }
 
-  /** Takes a mesh off the GPU and lets go of what's its own: its material (and picture) unless shared. */
+  /** Takes a mesh (and what hangs from it) off the GPU and lets go of what's its own: each material (and picture) unless shared. */
   private disposeMesh(mesh: Mesh): void {
-    mesh.traverse((o) => (o as Mesh).geometry?.dispose())
-    const material = mesh.material as MeshStandardMaterial
-    if (material.userData.shared) return
-    this.materialHooks?.release(material)
-    const image = material.map?.image as { close?: () => void } | undefined
-    material.map?.dispose()
-    image?.close?.()
-    material.dispose()
+    const materials = new Set<MeshStandardMaterial>()
+    mesh.traverse((o) => {
+      const part = o as Mesh
+      part.geometry?.dispose()
+      if (part.isMesh && part.material instanceof MeshStandardMaterial) materials.add(part.material)
+    })
+    for (const material of materials) {
+      if (material.userData.shared) continue
+      this.materialHooks?.release(material)
+      const image = material.map?.image as { close?: () => void } | undefined
+      material.map?.dispose()
+      image?.close?.()
+      material.dispose()
+    }
   }
 
   dispose(): void {

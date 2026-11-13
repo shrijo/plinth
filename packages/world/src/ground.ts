@@ -34,6 +34,8 @@ const DIP = 0.35
  */
 const LAND_SMOOTHING = 6
 const BED_SMOOTHING = 36
+/** A water's surface is the lowest ground within this far (metres): on water that's the water, even right under a high bank. */
+const WATER_REACH = 45
 /**
  * A building stands on a level pad: the ground is its base height under it and this far round it (metres),
  * blending back into the land by `PAD_REACH`, as a plot is levelled for a house. The elevation data is too
@@ -54,6 +56,12 @@ const SETTLE_NEAR = 6
 const SETTLE_REACH = 20
 /** A street's bed is this much wider each side than its class says (metres): streets are built wider than that where the map shows them so. */
 const BED_MARGIN = 1.5
+/**
+ * Where a street that isn't a bridge crosses water, the ground under its middle (this far either side, metres)
+ * is banked up to it: narrower than any road, so the bank never shows beside the road built on it (whose own
+ * sides reach down into the water), and a road along a quay doesn't bank the water beside it.
+ */
+const CAUSEWAY = 2
 /** The heights are prepared this far beyond the map data's tile (metres): streets are followed a little past its edges. */
 const MARGIN = 130
 
@@ -79,6 +87,8 @@ interface Segment {
   bx: number
   by: number
   half: number
+  /** How far either side of its middle it carries a causeway where it crosses water (see CAUSEWAY). */
+  core: number
 }
 
 /** A building's footprint on the ground, for its pad. */
@@ -221,9 +231,12 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     : heights.map((h) => tileBounds(h.tile)).reduce((a, b) => ({ west: Math.min(a.west, b.west), east: Math.max(a.east, b.east), south: Math.min(a.south, b.south), north: Math.max(a.north, b.north) }), { west: 180, east: -180, south: 90, north: -90 })
   const grids = heightGrids(heights, bounds, options.margin ?? MARGIN)
   const landGrid = grids.smoothed(LAND_SMOOTHING)
-  /** The land's trend: what street beds, building pads and water surfaces follow. Made when first needed. */
+  /** The land's trend: what street beds and building pads follow. Made when first needed. */
   let wide: ReturnType<typeof grids.smoothed> | null = null
   const trend = () => (wide ??= grids.smoothed(BED_SMOOTHING))
+  /** Where water lies: level with the lowest ground round it (see HeightGrids.lowered). Made when first needed. */
+  let lowest: ReturnType<typeof grids.lowered> | null = null
+  const waterLevel = () => (lowest ??= grids.lowered(WATER_REACH))
 
   const water: Shape[] = features ? features.areas.filter((a) => a.kind === 'water').map((a) => a.shape) : []
   /** How far beyond the water a shore keeps its bank (metres, in tile units once divided by the tile's width). */
@@ -296,7 +309,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       const half = reach(road)
       const line = road.line
       for (let i = 0; i + 3 < line.length; i += 2) {
-        const s = { ax: line[i]! * metres, ay: line[i + 1]! * metres, bx: line[i + 2]! * metres, by: line[i + 3]! * metres, half }
+        const s = { ax: line[i]! * metres, ay: line[i + 1]! * metres, bx: line[i + 2]! * metres, by: line[i + 3]! * metres, half, core: Math.min(road.width / 2, CAUSEWAY) }
         const index = segments.push(s) - 1
         const pad = half + SETTLE_REACH
         const cell = metres / CELLS
@@ -399,7 +412,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
         // The ground as it is without pads: a street's bed here, or water.
         const here = shapeAt(x, y, px, py, false)
         if (reached >= PAD_STREET) front = Math.max(front, here.level)
-        if (here.wet) front = Math.max(front, wideGrid.atMercator(x, y) + 0.5)
+        if (here.wet) front = Math.max(front, waterLevel().atMercator(x, y) + 0.5)
       }
     }
     pad.base = total > 0 ? Math.max(sum / total, front) : 0
@@ -487,6 +500,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     let weights = 0
     let beds = 0
     let under = 0
+    let crossing = 0
     let nearRoad = Infinity
     const cell = metres / CELLS
     const list = segments.length > 0 ? cells.get((Math.floor(py / cell) + 8) * 256 + (Math.floor(px / cell) + 8)) : undefined
@@ -509,6 +523,8 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
         weights += w
         beds += w * wideGrid.atMercator(acrossX(qx), acrossY(qy))
         under = Math.max(under, d <= s.half ? 1 : smoothstep(1 - (d - s.half) / 2))
+        // Over water only the middle of the road counts: a quay's road beside the water is not a road across it.
+        if (wet) crossing = Math.max(crossing, d <= s.core ? 1 : smoothstep(1 - (d - s.core)))
       }
     }
     // The land: its trend near anything built, and each building's pad laid into it.
@@ -516,12 +532,9 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     const padding = withPads && pads.length > 0
     if (padding) padsAt(px, py)
     const settle = settled(Math.min(nearRoad, padding ? padNear : Infinity))
-    if (settle > 0 || wet || water.length > 0) {
-      const wideHere = trend().atMercator(x, y)
-      if (settle > 0) land += (wideHere - land) * settle
-      // A shore has a bank, not a long smooth ramp: on land near water, the ground stays above the surface.
-      if (!wet && water.length > 0 && nearWater(u, v)) land = Math.max(land, wideHere + 0.25)
-    }
+    if (settle > 0) land += (trend().atMercator(x, y) - land) * settle
+    // A shore has a bank, not a long smooth ramp: on land near water, the ground stays above the surface.
+    if (!wet && water.length > 0 && nearWater(u, v)) land = Math.max(land, waterLevel().atMercator(x, y) + 0.25)
     if (padding) {
       if (padInside > -Infinity) land = padInside
       else if (padWeights > 0) land += (padSum / padWeights - land) * padMost
@@ -531,12 +544,12 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     if (wet) {
       // Over water a street rides on a causeway just above the surface; under it the ground is an
       // embankment just below its bed, and away from it the basin.
-      const top = trend().atMercator(x, y)
+      const top = waterLevel().atMercator(x, y)
       const basin = Math.min(land, top - WATER_DEPTH)
-      if (weights === 0) return result(land, basin, wet)
+      if (weights === 0 || crossing === 0) return result(land, basin, wet)
       let level = land + (beds / weights - land) * Math.min(weights, 1)
       if (weights > 0.05) level = Math.max(level, top + 0.45)
-      return result(level, basin + (level - DIP - basin) * under, wet)
+      return result(level, basin + (level - DIP - basin) * crossing, wet)
     }
     if (weights === 0) return result(land, paved ? land - DIP : land, wet)
     const level = land + (beds / weights - land) * Math.min(weights, 1)
@@ -555,8 +568,8 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
   const at = (lon: number, lat: number): number => shape(lon, lat).land
   const level = (lon: number, lat: number): number => shape(lon, lat).level
 
-  /** The water's surface: the land under and round it, smoothed widely, and never below the sea. */
-  const surface = (lon: number, lat: number): number => trend().at(lon, lat)
+  /** The water's surface: level with the lowest ground round the point, and never below the sea. */
+  const surface = (lon: number, lat: number): number => waterLevel().at(lon, lat)
 
   const waterAt = (lon: number, lat: number): number | null => {
     if (water.length === 0) return null

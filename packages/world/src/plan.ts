@@ -118,6 +118,17 @@ export function stroked(lines: readonly (readonly { x: number; y: number }[])[],
   return out
 }
 
+/** Whether a point lies in a region (in one of its outlines, in none of its holes). */
+export function inRegion(region: Region, x: number, y: number): boolean {
+  const p = point(x, y)
+  let winding = 0
+  for (const path of region) {
+    if (ClipperLib.Clipper.PointInPolygon(p, path) === 0) continue
+    winding += ClipperLib.Clipper.Orientation(path) ? 1 : -1
+  }
+  return winding > 0
+}
+
 /** The area of a region (square metres). */
 export function areaOf(region: Region): number {
   let sum = 0

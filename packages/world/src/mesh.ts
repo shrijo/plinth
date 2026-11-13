@@ -74,7 +74,14 @@ export type CoarseHeights = HeightAt | 'same'
  * down round its edge so no gap shows where it meets a neighbour drawn in
  * less detail. Texture coordinates run from the north-west corner.
  */
-export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, coarse?: CoarseHeights): GroundMesh {
+export function groundMesh(
+  tile: TileId,
+  heightAt: HeightAt,
+  segments: number,
+  coarse?: CoarseHeights,
+  /** The water's surface at a point, or null on land: the ground's points on the shore are kept under it (see below). */
+  waterAt?: (lon: number, lat: number) => number | null,
+): GroundMesh {
   const frame = tileFrame(tile)
   const side = segments + 1
   const grid = side * side
@@ -96,7 +103,22 @@ export function groundMesh(tile: TileId, heightAt: HeightAt, segments: number, c
     for (let i = 0; i < side; i++) {
       const k = j * side + i
       // The ground itself knows its basins under water and its beds under streets (see makeGround).
-      const h = heightAt(lons[i]!, lats[j]!)
+      let h = heightAt(lons[i]!, lats[j]!)
+      // A point on the shore, with water at the next point along: kept just under the water's surface, or the
+      // triangle from it down into the basin would stand out of the water as a tooth along every shore. (By
+      // where the next points would be, on this tile or the one beside it, so both make the same of a seam.)
+      if (waterAt && waterAt(lons[i]!, lats[j]!) === null) {
+        const stepLon = lons[1]! - lons[0]!
+        const stepLat = lats[Math.min(j + 1, side - 1)]! - lats[Math.max(j - 1, 0)]!
+        const dLat = j === 0 || j === side - 1 ? stepLat : stepLat / 2
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            if (di === 0 && dj === 0) continue
+            const surface = waterAt(lons[i]! + di * stepLon, lats[j]! + dj * dLat)
+            if (surface !== null && surface - SHORE_UNDER < h) h = surface - SHORE_UNDER
+          }
+        }
+      }
       heights[k] = h
       low = Math.min(low, h)
       high = Math.max(high, h)
@@ -236,6 +258,9 @@ function gridNormals(positions: Float32Array, indices: number[], count: number):
   }
   return normals
 }
+
+/** The ground's points on a shore lie this far under the water's surface (metres). */
+const SHORE_UNDER = 0.12
 
 /** A tile's width at its middle, in metres. */
 export function tileWidth(tile: TileId): number {
