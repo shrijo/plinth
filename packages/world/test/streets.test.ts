@@ -5,8 +5,9 @@ import { heightsFromTerrarium } from '../src/terrarium.ts'
 import { readTile } from '../src/features.ts'
 import { makeGround } from '../src/ground.ts'
 import { layStreets, planStreets, quarterOf, streetMesh } from '../src/streets.ts'
-import { lonLatFromEcef, fromFrame } from '../src/geo.ts'
+import { lonLatFromEcef, lonLatToFrame, fromFrame } from '../src/geo.ts'
 import { tileFrame } from '../src/mesh.ts'
+import { tileLat } from '../src/tiles.ts'
 
 const tile = { z: 14, x: 8580, y: 5737 }
 const grey: [number, number, number] = [0.6, 0.6, 0.6]
@@ -74,6 +75,57 @@ describe('streets in 3D', async () => {
       expect(u).toBeGreaterThan(-1e-4)
       expect(u).toBeLessThan(1 + 1e-4)
     }
+  })
+
+  it('leaves no water showing where a bridge lands: the deck, the road and the bank meet', () => {
+    // The two mouths of the Bahnhofbrücke (plan metres: east of the tile's west edge, north of its north edge),
+    // within the bridge's own width. The map's bridge begins some way out from the map's shore there, at one
+    // end between two carriageways that come apart round an island.
+    const mouths = [
+      { minX: 1274.5, maxX: 1287, minY: -734.5, maxY: -718 },
+      { minX: 1335, maxX: 1338.6, minY: -733, maxY: -723.5 },
+    ]
+    const plan = planStreets(tile, features.roads, ground)!
+    const frame = tileFrame(tile)
+    const n = 2 ** tile.z
+    const place = (x: number, y: number) => ({ lon: ((tile.x + x / plan.metres) / n) * 360 - 180, lat: tileLat(tile.y - y / plan.metres, tile.z) })
+    // The tops laid about them, on the frame's own plane.
+    const tops: number[][] = []
+    const corners = mouths.flatMap((m) => [place(m.minX - 30, m.minY - 30), place(m.maxX + 30, m.maxY + 30)]).map((p) => lonLatToFrame(frame, p.lon, p.lat))
+    const east = [Math.min(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[0]))]
+    const north = [Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[1]))]
+    for (const mesh of [whole.mesh!, whole.structures!]) {
+      for (let i = 0; i < mesh.indices.length; i += 3) {
+        const [a, b, c] = [mesh.indices[i]!, mesh.indices[i + 1]!, mesh.indices[i + 2]!]
+        if (mesh.normals[a * 3 + 1]! < 0.9) continue
+        const x = mesh.positions[a * 3]!
+        const y = -mesh.positions[a * 3 + 2]!
+        if (x < east[0]! || x > east[1]! || y < north[0]! || y > north[1]!) continue
+        tops.push([x, y, mesh.positions[b * 3]!, -mesh.positions[b * 3 + 2]!, mesh.positions[c * 3]!, -mesh.positions[c * 3 + 2]!])
+      }
+    }
+    const covered = (px: number, py: number) =>
+      tops.some(([ax, ay, bx, by, cx, cy]) => {
+        const d1 = (px - bx!) * (ay! - by!) - (ax! - bx!) * (py - by!)
+        const d2 = (px - cx!) * (by! - cy!) - (bx! - cx!) * (py - cy!)
+        const d3 = (px - ax!) * (cy! - ay!) - (cx! - ax!) * (py - ay!)
+        return !((d1 < -1e-9 || d2 < -1e-9 || d3 < -1e-9) && (d1 > 1e-9 || d2 > 1e-9 || d3 > 1e-9))
+      })
+    let wet = 0
+    const open: string[] = []
+    for (const mouth of mouths) {
+      for (let x = mouth.minX; x <= mouth.maxX; x += 0.5) {
+        for (let y = mouth.minY; y <= mouth.maxY; y += 0.5) {
+          const { lon, lat } = place(x, y)
+          if (ground.waterAt(lon, lat) === null) continue
+          wet++
+          const p = lonLatToFrame(frame, lon, lat)
+          if (!covered(p[0], p[1])) open.push(`${x},${y}`)
+        }
+      }
+    }
+    expect(wet).toBeGreaterThan(200)
+    expect(open).toEqual([])
   })
 
   it('lays a tile a quarter at a time: each inside its own quarter, together the whole', () => {
