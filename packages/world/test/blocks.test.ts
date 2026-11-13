@@ -7,7 +7,7 @@ import type { RoadFeature } from '../src/features.ts'
 
 const tile = { z: 14, x: 8580, y: 5737 }
 const m = tileWidth(tile)
-const flat: Ground = { at: () => 400, level: () => 400, waterAt: () => null, surface: () => 400, water: [], source: tile, town: true }
+const flat: Ground = { at: () => 400, level: () => 400, waterAt: () => null, surface: () => 400, trend: () => 400, water: [], source: tile, town: true }
 const land: [number, number, number] = [0.5, 0.4, 0.3]
 const green: [number, number, number] = [0.1, 0.8, 0.1]
 const grey: [number, number, number] = [0.6, 0.6, 0.6]

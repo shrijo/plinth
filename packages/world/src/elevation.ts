@@ -31,6 +31,11 @@ export interface ElevationInput {
   under?: readonly Passing[]
   /** Bridges that aren't streets of the network (railways, footbridges): each gets a deck of its own. */
   spans?: readonly SpanInput[]
+  /**
+   * Whether a bridge's loose end (at a node) is only where the map data stops, the bridge going on beyond it:
+   * it then takes the height of the rest. Any other loose end is where the bridge comes down to the ground.
+   */
+  cut?: (node: StreetNode) => boolean
 }
 
 /** Something a bridge passes over. */
@@ -53,7 +58,7 @@ export interface SpanInput {
 export interface Structure {
   level: number
   streets: string[]
-  /** The nodes where it meets streets on the ground. */
+  /** The nodes where it meets streets on the ground, or ends on it. */
   landings: string[]
 }
 
@@ -210,7 +215,7 @@ export function solveElevation(input: ElevationInput): Elevation {
       structure.streets.push(edge.id)
       for (const end of [edge.a, edge.b]) {
         const meeting = at.get(end) ?? []
-        if (meeting.some((o) => o.level === 0)) landings.add(end)
+        if (meeting.some((o) => o.level === 0) || (meeting.length === 1 && !input.cut?.(nodes[end]!))) landings.add(end)
         for (const other of meeting) {
           if (other.level !== start.level || structureOf.has(other.id)) continue
           structureOf.set(other.id, index)

@@ -64,3 +64,28 @@ describe('the ground under buildings', () => {
     expect(ground.at(lon(0.8), lat(0.2))).toBeCloseTo(bare.at(lon(0.8), lat(0.2)), 6)
   })
 })
+
+describe('a building across the edge of a tile', () => {
+  // A long building on the slope, crossing the tile's east edge: each tile has it only as far as its data reaches.
+  const h = 8 / metres
+  const across = (from: number, to: number) => ({ shape: { outer: new Float64Array([from, 0.5 - h, to, 0.5 - h, to, 0.5 + h, from, 0.5 + h]), holes: [] }, height: 12, minHeight: 0 })
+  const east = { z: 14, x: tile.x + 1, y: tile.y }
+  const eastSlope = { tile: east, size: SIZE, heights: Float32Array.from({ length: SIZE * SIZE }, (_, k) => 500 - (1 + (k % SIZE) / SIZE) * metres * 0.2 + 2 * Math.sin(((k % SIZE) + SIZE) * 0.9) * Math.cos(Math.floor(k / SIZE) * 0.7)) }
+  // As map tiles carry them: cut a little past each tile's own edge.
+  const west = makeGround([slope, eastSlope], { ...features, buildings: [across(0.95, 1.015)] })
+  const other = makeGround([slope, eastSlope], { tile: east, buildings: [across(-0.015, 0.06)], roads: [], areas: [], waterways: [] })
+
+  it('stands at one height from both sides, so the ground meets at the seam', () => {
+    for (const dv of [-0.8, -0.3, 0, 0.4, 0.8]) {
+      const at = [lon(1), lat(0.5 + dv * h)] as const
+      expect(west.at(...at)).toBeCloseTo(other.at(...at), 2)
+    }
+  })
+
+  it('steps with the hill rather than being cut level along its whole length', () => {
+    // 80 m into the tile the hill is 16 m higher than at the edge: the ground under the building follows it to within a step.
+    const far = west.at(lon(0.955), lat(0.5))
+    const near = west.at(lon(0.999), lat(0.5))
+    expect(far - near).toBeGreaterThan(8)
+  })
+})

@@ -1,5 +1,6 @@
 import { crossSection, CURB_HEIGHT, labelPoint, streetGeometry, type MultiPolygon, type Snapshot, type Street, type StreetPiece, type Vec2 } from '@plinth/core'
 import { CLEARANCE, solveElevation, type Passing } from './elevation.ts'
+import { clipLine, UNIT } from './clip.ts'
 import type { BuildingFeature, RoadFeature, RoadKind, Shape } from './features.ts'
 import { LineField } from './field.ts'
 import type { Ground } from './ground.ts'
@@ -58,6 +59,8 @@ const THIN = 0.6
 const ISLAND = 60
 /** A road lies at least this far over the ground under it (metres). */
 const OVER_GROUND = 0.1
+/** With the tiles round it, a tile's network is worked out this far past its edges (metres): a ramp's length and more. */
+const REACH = 250
 /** A street's own height reaches this far beyond its road (metres), fading into the ground's. */
 const BED_REACH = 7
 /** A deck is level across out to this far beyond its roads (metres): its walkways, however far out they were mapped. */
@@ -122,6 +125,12 @@ export interface StreetsBuilt {
 export interface StreetOptions {
   /** The tile's buildings: the blocks' surface is cut round those standing on the ground, so it meets each wall at its base. */
   buildings?: readonly BuildingFeature[]
+  /**
+   * The roads of the tiles round this one (each `dx`, `dy` tiles east and south of it). With them the network
+   * is worked out a few hundred metres past the tile's edges: a junction at an edge is whole, a bridge crossing
+   * one has both its landings, and the two tiles make the same of what they share.
+   */
+  around?: readonly { dx: number; dy: number; roads: readonly RoadFeature[] }[]
   /** Filled in with how long each stage took (ms), for looking into it. */
   timings?: Record<string, number>
 }
@@ -184,6 +193,25 @@ export function planStreets(
     for (let i = 0; i + 1 < line.length; i += 2) points.push(toPlan(line[i]!, line[i + 1]!))
     return points
   }
+  // With the tiles round it: this tile's roads cut to its own edges, and theirs (as far as REACH from it) put
+  // beside them, so each road is there once and the pieces meet at the edges (see tidyNetwork: ends that meet join).
+  const reach = options.around ? REACH / metres : 0
+  if (options.around) {
+    const pieces: RoadFeature[] = []
+    for (const road of roads) for (const line of clipLine(road.line, UNIT)) pieces.push({ ...road, line })
+    for (const { dx, dy, roads: theirs } of options.around) {
+      // Theirs as far as REACH from this tile; their bridges whole (a long one is one structure, its height
+      // set from landing to landing: both tiles must see all of it to make the same of it).
+      const all = { minX: dx, maxX: dx + 1, minY: dy, maxY: dy + 1 }
+      const rect = { minX: Math.max(dx, -reach), maxX: Math.min(dx + 1, 1 + reach), minY: Math.max(dy, -reach), maxY: Math.min(dy + 1, 1 + reach) }
+      for (const road of theirs) {
+        if (!road.bridge && (rect.minX >= rect.maxX || rect.minY >= rect.maxY)) continue
+        const moved = road.line.map((value, i) => value + (i % 2 === 0 ? dx : dy))
+        for (const line of clipLine(moved, road.bridge ? all : rect)) pieces.push({ ...road, line })
+      }
+    }
+    roads = pieces
+  }
   const lines: StreetLine[] = []
   // Where streets go on as tunnels (not drawn): their ends there stay apart, flat.
   const apart = new Set<string>()
@@ -219,8 +247,9 @@ export function planStreets(
   if (lines.length === 0 && squares.length === 0 && spans.length === 0) return null
   // One junction per crossing, no stray stubs, no sidewalks down the middle of a divided road; ends at the
   // data's edge (beyond the tile) are where it was cut, not dead ends.
+  const edge = reach * metres - 1
   const network = tidyNetwork(lines, {
-    keepEnd: (p) => p.x < 1 || p.x > metres - 1 || p.y > -1 || p.y < -metres + 1,
+    keepEnd: (p) => p.x < -edge || p.x > metres + edge || p.y > edge || p.y < -metres - edge,
     apart: (p) => apart.has(placeKey(p)),
     footways,
   })
@@ -231,6 +260,17 @@ export function planStreets(
   const n = 2 ** tile.z
   /** The street bed's height at a point of the plan. */
   const bed: HeightOn = (x, y) => ground.level(((tile.x + x / metres) / n) * 360 - 180, tileLat(tile.y - y / metres, tile.z))
+  /**
+   * A street's height along its middle: the land's trend there (the same whichever tile asks, also past this
+   * one's edges), and over water a causeway just above it.
+   */
+  const along: HeightOn = (x, y) => {
+    const lon = ((tile.x + x / metres) / n) * 360 - 180
+    const lat = tileLat(tile.y - y / metres, tile.z)
+    const surface = ground.waterAt(lon, lat)
+    const trend = ground.trend(lon, lat)
+    return surface !== null ? Math.max(trend, surface + 0.45) : trend
+  }
   /** The ground itself at a point of the plan (see Ground.at). */
   const landAt: HeightOn = (x, y) => ground.at(((tile.x + x / metres) / n) * 360 - 180, tileLat(tile.y - y / metres, tile.z))
   /** The water's surface at a point of the plan, or null on land. */
@@ -243,8 +283,10 @@ export function planStreets(
   const elevation = solveElevation({
     nodes: network.nodes,
     streets: network.streets,
-    bed,
+    bed: along,
     water: waterAt,
+    // With the tiles round it a bridge is there whole; alone, one that ends at the tile's edge goes on beyond it.
+    cut: options.around ? undefined : (node) => node.x < 1 || node.x > metres - 1 || node.y > -1 || node.y < -metres + 1,
     half: roadHalf,
     under,
     spans: spans.map((span) => ({ points: span.points, level: span.level, gradient: span.kind === 'rail' ? 0.12 : 0.35 })),

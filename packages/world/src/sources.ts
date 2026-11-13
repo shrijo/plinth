@@ -1,4 +1,4 @@
-import { readTile, type TileFeatures } from './features.ts'
+import { readTile, type RoadFeature, type TileFeatures } from './features.ts'
 import { decodePng } from './png.ts'
 import { heightsFromTerrarium, sampleHeight, type HeightTile } from './terrarium.ts'
 import { tileLat, tileLon, type TileId } from './tiles.ts'
@@ -113,6 +113,20 @@ export async function fetchFeatures(tile: TileId, signal?: AbortSignal): Promise
     return readTile(tile, bytes)
   } catch (error) {
     if (error instanceof FetchError && error.status === 404) return null
+    throw error
+  }
+}
+
+const ROADS = new Set(['transportation'])
+
+/** Just a tile's roads and railways (for the tiles round the one being built: see planStreets), or none where there's no tile. */
+export async function fetchRoads(tile: TileId, signal?: AbortSignal): Promise<RoadFeature[]> {
+  const pattern = await vectorTemplate()
+  try {
+    const response = await fetchWithRetry(address(pattern, tile), signal)
+    return readTile(tile, new Uint8Array(await response.arrayBuffer()), ROADS).roads
+  } catch (error) {
+    if (error instanceof FetchError && error.status === 404) return []
     throw error
   }
 }

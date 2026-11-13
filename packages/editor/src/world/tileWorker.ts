@@ -6,6 +6,7 @@ import {
   enuFrame,
   fetchFeatures,
   fetchHeights,
+  fetchRoads,
   groundMesh,
   makeGround,
   layStreets,
@@ -28,6 +29,7 @@ import {
   type CoarseHeights,
   type Ground,
   type HeightTile,
+  type RoadFeature,
   type StreetPlan,
   type TileFeatures,
   tileWidth,
@@ -117,8 +119,11 @@ const ALWAYS = new AbortController().signal
  */
 const groundTile = (tile: TileId): TileId => (tile.z >= ROAD_ZOOM ? ancestorAt(tile, ROAD_ZOOM) : tile)
 
-/** How far past a ground's tile its heights reach (metres): the widest smoothing looks that far (see makeGround). */
-const HEIGHT_MARGIN = 150
+/**
+ * How far past a ground's tile its heights reach (metres): a tile's streets are followed that far past its
+ * edges (see planStreets), and the widest smoothing looks a little further still (see makeGround).
+ */
+const HEIGHT_MARGIN = 300
 
 /**
  * The heights for a ground: its tile's own far out; from zoom 12 on, those of its tile and a margin round it
@@ -252,25 +257,61 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
   return { id: request.id, ok: true, type: 'area', result: canvas.transferToImageBitmap() }
 }
 
-/** Street plans worked out, by their tile: its quarters are laid one by one from the one plan. */
-const plans = new Lru<Promise<{ plan: StreetPlan | null; data: TileFeatures | null }>>(3)
+/** Roads alone, by tile: for the tiles round the one whose streets are being worked out. */
+const roadsBy = new Lru<Promise<RoadFeature[]>>(48)
 
-function planOf(tile: TileId, signal: AbortSignal): Promise<{ plan: StreetPlan | null; data: TileFeatures | null }> {
+/** The roads of the eight tiles round a tile (none for one that can't be had: the streets are then worked out without it). */
+function roadsAround(tile: TileId): Promise<{ dx: number; dy: number; roads: RoadFeature[] }[]> {
+  const n = 2 ** tile.z
+  const all: Promise<{ dx: number; dy: number; roads: RoadFeature[] }>[] = []
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const y = tile.y + dy
+      if ((dx === 0 && dy === 0) || y < 0 || y >= n) continue
+      const other = { z: tile.z, x: (tile.x + dx + n) % n, y }
+      const key = tileKey(other)
+      let roads = roadsBy.get(key)
+      if (!roads) {
+        // Already read whole, if this worker has the tile's map data; else just its roads.
+        const whole = features.get(key)
+        roads = (whole ? whole.then((data) => data?.roads ?? []) : fetchRoads(other)).catch(() => {
+          roadsBy.delete(key)
+          return []
+        })
+        roadsBy.set(key, roads)
+      }
+      all.push(roads.then((list) => ({ dx, dy, roads: list })))
+    }
+  }
+  return Promise.all(all)
+}
+
+/** Street plans worked out, by their tile: its quarters are laid one by one from the one plan. */
+const plans = new Lru<Promise<Planned>>(3)
+
+interface Planned {
+  plan: StreetPlan | null
+  data: TileFeatures | null
+}
+
+async function planned(tile: TileId): Promise<Planned> {
+  const { data, ground: shaped } = await groundOf(tile, ALWAYS)
+  const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
+  const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
+  const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
+  if (!data || (data.roads.length === 0 && squares.length === 0)) return { plan: null, data }
+  const around = await roadsAround(tile)
+  return { plan: planStreets(tile, data.roads, shaped, squares, greens, { buildings: data.buildings, around }), data }
+}
+
+function planOf(tile: TileId, signal: AbortSignal): Promise<Planned> {
   const key = tileKey(tile)
   let hit = plans.get(key)
   if (!hit) {
-    hit = groundOf(tile, ALWAYS)
-      .then(({ data, ground: shaped }) => {
-        const squares = data?.areas.filter((a) => a.kind === 'square').map((a) => a.shape) ?? []
-        const GREEN = new Set(['park', 'grass', 'wood', 'sport', 'cemetery', 'wetland'])
-        const greens = data?.areas.filter((a) => GREEN.has(a.kind)).map((a) => a.shape) ?? []
-        if (!data || (data.roads.length === 0 && squares.length === 0)) return { plan: null, data }
-        return { plan: planStreets(tile, data.roads, shaped, squares, greens, { buildings: data.buildings }), data }
-      })
-      .catch((error: unknown) => {
-        plans.delete(key)
-        throw error
-      })
+    hit = planned(tile).catch((error: unknown) => {
+      plans.delete(key)
+      throw error
+    })
     plans.set(key, hit)
   }
   return abortable(hit, signal)

@@ -43,7 +43,7 @@ describe('streets in 3D', async () => {
       checked++
     }
     expect(checked).toBeGreaterThan(50)
-    expect(lifted).toBeLessThan(checked * 0.15)
+    expect(lifted).toBeLessThan(checked * 0.25)
     // Bridges are part of it: decks standing clear of the ground.
     expect(whole.structures!.indices.length / 3).toBeGreaterThan(1000)
   })

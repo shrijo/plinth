@@ -47,6 +47,12 @@ const PAD_REACH = 10
 /** A building's base is no lower than a street bed that reaches its outline at least this strongly (see padBase). */
 const PAD_STREET = 0.25
 /**
+ * A pad is never further than this (metres) from the land's trend at any point: a house's is level, but
+ * under a building a hundred metres long on a slope the ground steps with the hill rather than being cut
+ * and banked a storey or two.
+ */
+const PAD_STEP = 2.5
+/**
  * Near anything built, the land is its trend, not its every bump: wholly within `SETTLE_NEAR` metres of a
  * building or a street's edge, back to the land as it is by `SETTLE_REACH`. In town the elevation data's
  * bumps are mostly the buildings and trees themselves; left in, the ground between houses heaves. (No further
@@ -74,6 +80,11 @@ export interface Ground {
   waterAt(lon: number, lat: number): number | null
   /** The height a water surface has at a point (whether or not there's water). */
   surface(lon: number, lat: number): number
+  /**
+   * The land's trend at a point: what a street's bed follows along its middle. The same from whichever tile
+   * it's asked (as far as its heights reach), also beyond the tile's own map data.
+   */
+  trend(lon: number, lat: number): number
   /** The water in the map data (tile units of `source`). */
   water: Shape[]
   source: TileId | null
@@ -101,6 +112,42 @@ interface Pad {
   maxY: number
   /** The pad's height, worked out when first asked for. */
   base?: number
+  /**
+   * Where the building crosses the tile's own edges (tile units, a few points along each crossing): its pad's
+   * height is taken there, where the tile beside this one sees the very same of it (each tile has a building
+   * only as far as its data reaches, so its whole outline would give each a height of its own).
+   */
+  crossings?: number[]
+}
+
+/** Where a ring (tile units) crosses the tile's edges: points along each crossing, x and y interleaved; or none. */
+function edgeCrossings(ring: Float64Array): number[] | undefined {
+  const out: number[] = []
+  // A corner inside it: that alone (all four tiles round the corner take it).
+  for (const [cu, cv] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) if (insideRing(ring, cu, cv)) return [cu, cv]
+  for (const [axis, value] of [[0, 0], [0, 1], [1, 0], [1, 1]] as const) {
+    // Where its outline crosses the edge's line, within the edge; inside it between each pair.
+    const hits: number[] = []
+    for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+      const a = ring[j + axis]!
+      const b = ring[i + axis]!
+      if (a > value === b > value) continue
+      const other = ring[j + 1 - axis]! + ((value - a) / (b - a)) * (ring[i + 1 - axis]! - ring[j + 1 - axis]!)
+      hits.push(other)
+    }
+    hits.sort((p, q) => p - q)
+    for (let k = 0; k + 1 < hits.length; k += 2) {
+      const from = Math.max(hits[k]!, 0)
+      const to = Math.min(hits[k + 1]!, 1)
+      if (to <= from) continue
+      for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const along = from + (to - from) * t
+        if (axis === 0) out.push(value, along)
+        else out.push(along, value)
+      }
+    }
+  }
+  return out.length > 0 ? out : undefined
 }
 
 function insideMetres(ring: Float64Array, x: number, y: number): boolean {
@@ -284,7 +331,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     for (const building of features.buildings) {
       if (building.minHeight > 0) continue
       const rings = [building.shape.outer, ...building.shape.holes].map((ring) => ring.map((value) => value * metres))
-      const pad: Pad = { rings, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+      const pad: Pad = { rings, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, crossings: edgeCrossings(building.shape.outer) }
       const outer = rings[0]!
       for (let i = 0; i < outer.length; i += 2) {
         pad.minX = Math.min(pad.minX, outer[i]!)
@@ -390,6 +437,14 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
    */
   const padBase = (pad: Pad): number => {
     if (pad.base !== undefined) return pad.base
+    if (pad.crossings) {
+      // Across the tile's edge: the trend where it crosses, the same from both sides.
+      const wideGrid = trend()
+      let sum = 0
+      for (let i = 0; i < pad.crossings.length; i += 2) sum += wideGrid.atMercator((source!.x + pad.crossings[i]!) / n, (source!.y + pad.crossings[i + 1]!) / n)
+      pad.base = sum / (pad.crossings.length / 2)
+      return pad.base
+    }
     let total = 0
     let sum = 0
     let front = -Infinity
@@ -426,8 +481,11 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
   let padWeights = 0
   let padMost = 0
 
-  /** The buildings round a point (in the source tile's metres): see padNear and the rest. */
-  const padsAt = (px: number, py: number): void => {
+  /** A pad's height at a point where the land's trend is `here`: its base, within a step of the trend (see PAD_STEP). */
+  const stepped = (base: number, here: number) => (base > here + PAD_STEP ? here + PAD_STEP : base < here - PAD_STEP ? here - PAD_STEP : base)
+
+  /** The buildings round a point (in the source tile's metres, where the land's trend is `here`): see padNear and the rest. */
+  const padsAt = (px: number, py: number, here: number): void => {
     padNear = Infinity
     padInside = -Infinity
     padSum = 0
@@ -454,7 +512,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
           }
         }
         if (within) {
-          padInside = Math.max(padInside, padBase(pad))
+          padInside = Math.max(padInside, stepped(padBase(pad), here))
           padNear = 0
           continue
         }
@@ -468,7 +526,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
       // Nearer walls count for far more, so at a wall the ground is that building's base.
       const k = f / (d2 + 0.0025)
       padWeights += k
-      padSum += k * padBase(pad)
+      padSum += k * stepped(padBase(pad), here)
       if (f > padMost) padMost = f
     }
   }
@@ -530,7 +588,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     // The land: its trend near anything built, and each building's pad laid into it.
     let land = landGrid.atMercator(x, y)
     const padding = withPads && pads.length > 0
-    if (padding) padsAt(px, py)
+    if (padding) padsAt(px, py, trend().atMercator(x, y))
     const settle = settled(Math.min(nearRoad, padding ? padNear : Infinity))
     if (settle > 0) land += (trend().atMercator(x, y) - land) * settle
     // A shore has a bank, not a long smooth ramp: on land near water, the ground stays above the surface.
@@ -578,7 +636,7 @@ export function makeGround(heights: readonly HeightTile[], features: TileFeature
     return inWater(u, v) ? surface(lon, lat) : null
   }
 
-  return { at, level, waterAt, surface, water, source, town }
+  return { at, level, waterAt, surface, trend: (lon, lat) => trend().at(lon, lat), water, source, town }
 }
 
 function smoothstep(t: number): number {

@@ -173,9 +173,10 @@ const WATERWAY_WIDTHS: Record<string, number> = { river: 18, canal: 12, stream: 
 /** Buildings without a height of their own are about this tall (the tiles' default is 5 m). */
 const DEFAULT_HEIGHT = 5
 
-/** Reads a vector tile. */
-export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer): TileFeatures {
-  const data = new VectorTile(new Pbf(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)))
+/** Reads a vector tile; with `only`, just those of its layers (by their names in the tile). */
+export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer, only?: ReadonlySet<string>): TileFeatures {
+  const all = new VectorTile(new Pbf(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)))
+  const data = only ? ({ layers: Object.fromEntries(Object.entries(all.layers).filter(([name]) => only.has(name))) } as VectorTile) : all
   const features: TileFeatures = { tile, buildings: [], roads: [], areas: [], waterways: [] }
 
   forEach(data, 'water', (feature, extent) => {
