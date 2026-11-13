@@ -1150,12 +1150,7 @@ class StreetWriter {
       else this.indices.push(i, k, j)
     }
     for (const polygon of region) {
-      const __t0 = performance.now()
       const { points, triangles } = triangulate(polygon)
-      const __tt = ((globalThis as Record<string, unknown>).__T as Record<string, number>) ?? {}
-      __tt.triangulate = (__tt.triangulate ?? 0) + performance.now() - __t0
-      __tt.polygons = (__tt.polygons ?? 0) + 1
-      __tt.cdtTris = (__tt.cdtTris ?? 0) + triangles.length / 3
       for (let t = 0; t < triangles.length; t += 3) {
         const a = triangles[t]! * 2
         const b = triangles[t + 1]! * 2
