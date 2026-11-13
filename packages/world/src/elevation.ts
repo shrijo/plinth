@@ -13,9 +13,8 @@ import type { Street, StreetNode, Vec2 } from '@plinth/core'
 
 /** A street's steepest ramp up to a bridge (rise over run). */
 const GRADIENT = 0.07
-/** A deck's top stands at least this far over water, and this far over the ground it crosses (metres). */
+/** A deck's top stands at least this far over water (metres); over land, it's never under the ground. */
 const OVER_WATER = 2.2
-const OVER_LAND = 0.05
 /** A bridge's heights are worked out this often along it (metres). */
 const STATION = 5
 
@@ -254,7 +253,7 @@ export function solveElevation(input: ElevationInput): Elevation {
     for (let k = 0; k <= count; k++) {
       const p = stationAt((k / count) * total)
       const surface = water(p.x, p.y)
-      need[k] = surface !== null ? surface + OVER_WATER : bed(p.x, p.y) + OVER_LAND
+      need[k] = surface !== null ? surface + OVER_WATER : bed(p.x, p.y)
     }
     let walked = 0
     for (let i = 0; i + 1 < points.length; i++) {

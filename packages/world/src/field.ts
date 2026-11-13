@@ -99,28 +99,3 @@ export class LineField {
     return beyond + (blend - beyond) * weights
   }
 }
-
-/**
- * Heights along a line worked out every few metres (when first asked for)
- * and taken straight between: asking the ground for every point of every
- * street is most of the time it takes to build them.
- */
-export function stations(length: number, every: number, at: (along: number) => number): (along: number) => number {
-  const count = Math.max(1, Math.ceil(length / every))
-  const step = length / count
-  const known = new Float64Array(count + 1).fill(NaN)
-  const station = (k: number) => {
-    let h = known[k]!
-    if (h !== h) {
-      h = at(k * step)
-      known[k] = h
-    }
-    return h
-  }
-  return (along) => {
-    const f = Math.min(Math.max(along / step, 0), count)
-    const k = Math.min(Math.floor(f), count - 1)
-    const a = station(k)
-    return a + (station(k + 1) - a) * (f - k)
-  }
-}

@@ -288,3 +288,76 @@ describe('tidying map data into a street network', () => {
     expect(streets.filter((s) => s.oneway).length).toBeGreaterThan(8)
   })
 })
+
+describe('streets on different levels', () => {
+  const bridge: StreetProps = { ...residential, level: 1 }
+
+  it('passes a bridge over the street it crosses, with no junction', () => {
+    const network = tidyNetwork([
+      line([
+        [-50, 0],
+        [50, 0],
+      ]),
+      line(
+        [
+          [0, -30],
+          [0, 30],
+        ],
+        bridge,
+      ),
+    ])
+    // Neither is cut where they cross.
+    expect(Object.keys(network.streets)).toHaveLength(2)
+    expect(at(network, 0, 0)).toHaveLength(0)
+  })
+
+  it('does not join them even where each happens to have a point at the same place', () => {
+    const network = tidyNetwork([
+      line([
+        [-50, 0],
+        [0, 0],
+        [50, 0],
+      ]),
+      line(
+        [
+          [0, -30],
+          [0, 0],
+          [0, 30],
+        ],
+        bridge,
+      ),
+    ])
+    const meeting = at(network, 0, 0)
+    // Two streets of the ground meet there, and two of the bridge, but not each other.
+    for (const street of meeting) {
+      const others = meeting.filter((o) => o !== street && (o.a === street.a || o.a === street.b || o.b === street.a || o.b === street.b))
+      expect(others.every((o) => (o.level ?? 0) === (street.level ?? 0))).toBe(true)
+    }
+  })
+
+  it('lands a bridge on the street it carries on as, and on one it ends on', () => {
+    const network = tidyNetwork([
+      // A street, the bridge it goes on as, and the street beyond.
+      line([
+        [-100, 0],
+        [-20, 0],
+      ]),
+      line(
+        [
+          [-20, 0],
+          [20, 0],
+        ],
+        bridge,
+      ),
+      line([
+        [20, 0],
+        [100, 0],
+      ]),
+    ])
+    expect(Object.keys(network.streets)).toHaveLength(3)
+    // One node at each landing, shared by the bridge and the street.
+    const landing = at(network, -20, 0)
+    expect(landing).toHaveLength(2)
+    expect(new Set(landing.flatMap((s) => [s.a, s.b])).size).toBe(3)
+  })
+})

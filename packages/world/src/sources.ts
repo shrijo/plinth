@@ -93,6 +93,14 @@ function vectorTemplate(): Promise<string> {
   return template
 }
 
+/**
+ * What names the map data as it now is (its address pattern carries its date): for keeping what's built from
+ * it only as long as it's the data in use.
+ */
+export function vectorVersion(): Promise<string> {
+  return vectorTemplate()
+}
+
 const address = (pattern: string, t: TileId) =>
   pattern.replace('{z}', String(t.z)).replace('{x}', String(t.x)).replace('{y}', String(t.y))
 

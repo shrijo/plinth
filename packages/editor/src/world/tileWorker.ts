@@ -19,6 +19,7 @@ import {
   paintAreas,
   paintGround,
   tilesCovering,
+  vectorVersion,
   tileBounds,
   frameToLonLat,
   tileKey,
@@ -33,6 +34,7 @@ import {
   type TileId,
 } from '@plinth/world'
 import { GRASS_MASK, type WorkerRequest, type WorkerResponse, type WorldMask } from './protocol.ts'
+import { BUILD_VERSION, keep, kept } from './tileCache.ts'
 
 /**
  * Builds the world's tiles off the main thread: fetches map data and
@@ -141,7 +143,7 @@ interface Grounded {
 }
 
 /** Grounds made, by their tile: every job on a square stands on the same one, made once. */
-const grounds = new Lru<Promise<Grounded>>(12)
+const grounds = new Lru<Promise<Grounded>>(6)
 
 /** The ground a tile is built on (see groundTile): shaped for streets, buildings and water close up. */
 function groundOf(tile: TileId, signal: AbortSignal): Promise<Grounded> {
@@ -251,7 +253,7 @@ async function area(request: Extract<WorkerRequest, { type: 'area' }>, signal: A
 }
 
 /** Street plans worked out, by their tile: its quarters are laid one by one from the one plan. */
-const plans = new Lru<Promise<{ plan: StreetPlan | null; data: TileFeatures | null }>>(6)
+const plans = new Lru<Promise<{ plan: StreetPlan | null; data: TileFeatures | null }>>(3)
 
 function planOf(tile: TileId, signal: AbortSignal): Promise<{ plan: StreetPlan | null; data: TileFeatures | null }> {
   const key = tileKey(tile)
@@ -509,6 +511,36 @@ function transfers(response: WorkerResponse): Transferable[] {
   return [...buffers(response.result?.mesh ?? null), ...buffers(response.result?.bridges ?? null)] as Transferable[]
 }
 
+/**
+ * The key a request's result is kept under (see tileCache), or null for what isn't kept: the ground (quick to
+ * make, and its picture can't be stored) and anything cut round a site (its own to that site).
+ */
+async function keptAs(request: WorkerRequest): Promise<string | null> {
+  if ((request.type !== 'streets' && request.type !== 'buildings') || request.mask) return null
+  const version = await vectorVersion()
+  const colours = JSON.stringify(request.colours)
+  return `${BUILD_VERSION}|${version}|${request.type}|${tileKey(request.tile)}|${request.type === 'streets' ? request.part : ''}|${colours}`
+}
+
+async function built(request: WorkerRequest, signal: AbortSignal): Promise<WorkerResponse> {
+  if (request.type === 'cancel') throw new Error('Nothing to build')
+  const key = await keptAs(request).catch(() => null)
+  if (key) {
+    const result = await kept<unknown>(key)
+    if (result !== undefined) return { id: request.id, ok: true, type: request.type, result } as WorkerResponse
+  }
+  const response =
+    request.type === 'ground'
+      ? await ground(request, signal)
+      : request.type === 'area'
+        ? await area(request, signal)
+        : request.type === 'streets'
+          ? await streets(request, signal)
+          : await buildings(request, signal)
+  if (key && response.ok && (response.type === 'streets' || response.type === 'buildings')) keep(key, response.result)
+  return response
+}
+
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const request = event.data
   if (request.type === 'cancel') {
@@ -520,14 +552,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   jobs.set(request.id, controller)
   let response: WorkerResponse
   try {
-    response =
-      request.type === 'ground'
-        ? await ground(request, controller.signal)
-        : request.type === 'area'
-          ? await area(request, controller.signal)
-          : request.type === 'streets'
-            ? await streets(request, controller.signal)
-            : await buildings(request, controller.signal)
+    response = await built(request, controller.signal)
   } catch (error) {
     response = { id: request.id, ok: false, error: String(error), aborted: controller.signal.aborted }
   }

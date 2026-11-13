@@ -188,31 +188,3 @@ export function polygonsOf(region: Region): MultiPolygon {
 export function simplified(region: Region, tolerance = 0.03): Region {
   return ClipperLib.Clipper.CleanPolygons(region, tolerance * SCALE).filter((path) => path.length >= 3)
 }
-
-/**
- * A region cut into the squares of a grid (`cell` metres, over the
- * rectangle given): strips first, then each strip into squares, so each
- * cut works on less. For triangulating a big region as many small ones,
- * whose edges along the grid meet point for point.
- */
-export function tiled(region: Region, minX: number, minY: number, maxX: number, maxY: number, cell: number): Region[] {
-  const out: Region[] = []
-  if (region.length === 0) return out
-  const columns = Math.max(1, Math.round((maxX - minX) / cell))
-  const rows = Math.max(1, Math.round((maxY - minY) / cell))
-  const width = (maxX - minX) / columns
-  const height = (maxY - minY) / rows
-  for (let i = 0; i < columns; i++) {
-    const strip = common(region, rectangle(minX + i * width, minY, minX + (i + 1) * width, maxY))
-    if (strip.length === 0) continue
-    if (rows === 1) {
-      out.push(strip)
-      continue
-    }
-    for (let j = 0; j < rows; j++) {
-      const piece = common(strip, rectangle(minX + i * width, minY + j * height, minX + (i + 1) * width, minY + (j + 1) * height))
-      if (piece.length > 0) out.push(piece)
-    }
-  }
-  return out
-}

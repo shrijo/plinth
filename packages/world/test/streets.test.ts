@@ -4,7 +4,7 @@ import { decodePng } from '../src/png.ts'
 import { heightsFromTerrarium } from '../src/terrarium.ts'
 import { readTile } from '../src/features.ts'
 import { makeGround } from '../src/ground.ts'
-import { streetMesh } from '../src/streets.ts'
+import { layStreets, planStreets, quarterOf, streetMesh } from '../src/streets.ts'
 import { lonLatFromEcef, fromFrame } from '../src/geo.ts'
 import { tileFrame } from '../src/mesh.ts'
 
@@ -75,4 +75,45 @@ describe('streets in 3D', async () => {
       expect(u).toBeLessThan(1 + 1e-4)
     }
   })
+
+  it('lays a tile a quarter at a time: each inside its own quarter, together the whole', () => {
+    const plan = planStreets(tile, features.roads, ground)!
+    const metres = plan.metres
+    const area = (polygons: readonly (readonly [number, number][][])[]) => {
+      let sum = 0
+      for (const polygon of polygons) {
+        polygon.forEach((ring, r) => {
+          let ringArea = 0
+          for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) ringArea += ring[j]![0] * ring[i]![1] - ring[i]![0] * ring[j]![1]
+          sum += (r === 0 ? 1 : -1) * Math.abs(ringArea / 2)
+        })
+      }
+      return sum
+    }
+    let covered = 0
+    let triangles = 0
+    for (let quarter = 0; quarter < 4; quarter++) {
+      const rect = quarterOf(metres, quarter)
+      const part = layStreets(plan, colours, { part: rect })
+      covered += area(part.cover)
+      triangles += part.mesh!.indices.length / 3
+      // Each point of it, on the map: within the quarter (to a few centimetres).
+      const frame = tileFrame(tile)
+      const n = 2 ** tile.z
+      for (let i = 0; i < part.mesh!.positions.length / 3; i += 7) {
+        const p = lonLatFromEcef(fromFrame(frame, [part.mesh!.positions[i * 3]!, -part.mesh!.positions[i * 3 + 2]!, part.mesh!.positions[i * 3 + 1]!]))
+        const φ = (p.lat * Math.PI) / 180
+        const x = (((p.lon + 180) / 360) * n - tile.x) * metres
+        const y = -(((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n - tile.y) * metres
+        expect(x).toBeGreaterThan(rect.minX - 0.05)
+        expect(x).toBeLessThan(rect.maxX + 0.05)
+        expect(y).toBeGreaterThan(rect.minY - 0.05)
+        expect(y).toBeLessThan(rect.maxY + 0.05)
+      }
+    }
+    // The same ground covered as when laid in one go, to within what the rounding at the quarters' edges leaves.
+    const all = area(whole.cover)
+    expect(Math.abs(covered - all) / all).toBeLessThan(0.002)
+    expect(triangles).toBeGreaterThan(whole.mesh!.indices.length / 3 * 0.9)
+  }, 60000)
 })
