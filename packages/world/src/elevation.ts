@@ -9,6 +9,13 @@ import type { Street, StreetNode, Vec2 } from '@plinth/core'
  * something under it needs more room; what it needs is passed on along
  * the network at no more than a road's gradient, so the rise starts back
  * down the street, as a real approach does.
+ *
+ * A tunnel is the same thing the other way up (a structure on a level
+ * below the ground): straight between its portals unless what's over it
+ * needs it lower (the ground itself once it's well inside, the streets and
+ * railways that cross over it, water), and what it must go down is passed
+ * on the same way, so the streets leading into it sink towards its mouth
+ * in a cutting. Under a hill nothing needs it lower, and it runs in level.
  */
 
 /** A street's steepest ramp up to a bridge (rise over run). */
@@ -17,6 +24,18 @@ const GRADIENT = 0.07
 const OVER_WATER = 2.2
 /** A bridge's heights are worked out this often along it (metres). */
 const STATION = 5
+/** A tunnel's road lies at least this far under the ground over it (metres): its headroom, its roof and what lies on that. */
+export const TUNNEL_COVER = 6
+/** Under water, this far under the surface (metres). */
+const UNDER_WATER = 9
+/**
+ * The ground needn't be over a tunnel yet this far in from a portal (metres; or this share of a short tunnel's
+ * length): a hill has that far to rise over it, and where the land is flat it's a cutting so far.
+ */
+const PORTAL_REACH = 20
+const PORTAL_SHARE = 0.2
+/** No tunnel is taken further down than this (metres): past that the data is at odds with the land. */
+const DEEPEST = 30
 
 export interface ElevationInput {
   nodes: Record<string, StreetNode>
@@ -67,7 +86,9 @@ export interface Elevation {
   heightOf(id: string): (along: number) => number
   /** How far a street on the ground is lifted over its bed at its two ends (0 for nearly all). */
   riseOf(id: string): [number, number]
-  /** The bridges, and which each bridge street belongs to (its index). */
+  /** How far under its bed a street on the ground runs, along it (0 for nearly all: more on the way down into a tunnel). */
+  sunkOf(id: string): (along: number) => number
+  /** The bridges and tunnels (a tunnel's level is below 0), and which each of their streets belongs to (its index). */
   structures: Structure[]
   structureOf: Map<string, number>
   /** The heights along each span given (see ElevationInput.spans), a distance along it from its first point. */
@@ -196,10 +217,11 @@ export function solveElevation(input: ElevationInput): Elevation {
   if (bridges.length === 0 && spansGiven.length === 0) {
     const beds = new Map<string, (along: number) => number>()
     for (const edge of edges) beds.set(edge.id, groundBed(edge))
-    return { heightOf: (id) => beds.get(id) ?? (() => 0), riseOf: () => [0, 0], structures: [], structureOf: new Map(), spans: [] }
+    return { heightOf: (id) => beds.get(id) ?? (() => 0), riseOf: () => [0, 0], sunkOf: () => () => 0, structures: [], structureOf: new Map(), spans: [] }
   }
 
-  // Structures: bridge streets of one level joined at their nodes.
+  // Structures: bridge streets joined at their nodes (a bridge mapped on one level and then another is one
+  // bridge), and tunnel streets likewise.
   const structureOf = new Map<string, number>()
   const structures: Structure[] = []
   for (const start of bridges) {
@@ -217,7 +239,7 @@ export function solveElevation(input: ElevationInput): Elevation {
         const meeting = at.get(end) ?? []
         if (meeting.some((o) => o.level === 0) || (meeting.length === 1 && !input.cut?.(nodes[end]!))) landings.add(end)
         for (const other of meeting) {
-          if (other.level !== start.level || structureOf.has(other.id)) continue
+          if (Math.sign(other.level) !== Math.sign(start.level) || structureOf.has(other.id)) continue
           structureOf.set(other.id, index)
           queue.push(other)
         }
@@ -283,7 +305,38 @@ export function solveElevation(input: ElevationInput): Elevation {
     return need
   }
 
-  // The bridges' own heights, the lowest level first (a higher bridge clears the lower one's deck).
+  /**
+   * The most a tunnel's road may stand at along one of its streets, from what lies over it: the ground (once
+   * it's in from a portal: `inFrom` says how far in a point is), water, and what crosses over it.
+   */
+  const limitsAlong = (edge: Edge, count: number, inFrom: (along: number) => number, free: number): Float64Array => {
+    const limit = new Float64Array(count + 1).fill(Infinity)
+    for (let k = 0; k <= count; k++) {
+      const along = (k / count) * edge.length
+      const x = edge.ax + ((edge.bx - edge.ax) * k) / count
+      const y = edge.ay + ((edge.by - edge.ay) * k) / count
+      const surface = water(x, y)
+      if (surface !== null) limit[k] = surface - UNDER_WATER
+      else if (inFrom(along) >= free) limit[k] = bed(x, y) - TUNNEL_COVER
+    }
+    for (const other of below.near(edge.ax, edge.ay, edge.bx, edge.by)) {
+      // What's over it: the ground's streets and railways, and tunnels less deep (not the bridges over those).
+      if (other.level <= edge.level || other.level > 0) continue
+      const hit = crossing(edge.ax, edge.ay, edge.bx, edge.by, other.ax, other.ay, other.bx, other.by)
+      if (!hit) continue
+      const where = hit.t * edge.length
+      if (where < 0.75 || edge.length - where < 0.75) continue
+      const reach = (other.half + 1.5) / Math.max(hit.sine, 0.35)
+      const height = other.top(hit.u) - other.clearance
+      const from = Math.max(0, Math.floor(((where - reach) / edge.length) * count))
+      const to = Math.min(count, Math.ceil(((where + reach) / edge.length) * count))
+      for (let k = from; k <= to; k++) if (height < limit[k]!) limit[k] = height
+    }
+    return limit
+  }
+
+  // The bridges' own heights, the lowest level first (a higher bridge clears the lower one's deck); then the
+  // tunnels', the least deep first.
   const nodeBed = new Map<string, number>()
   const bedOf = (id: string) => {
     let h = nodeBed.get(id)
@@ -295,10 +348,13 @@ export function solveElevation(input: ElevationInput): Elevation {
     return h
   }
   /** How far each node is lifted over its base, and each bridge street's stations. */
-  const rise = new Map<string, number>()
+  const lifted = new Map<string, number>()
+  /** How far each node is taken down under its base, for the tunnels (and the streets leading into them). */
+  const fall = new Map<string, number>()
   const decks = new Map<string, { base: Float64Array; need: Float64Array; rise: Float64Array }>()
   const baseAt = new Map<string, number>()
-  const byLevel = [...structures.keys()].sort((a, b) => structures[a]!.level - structures[b]!.level)
+  const order = (level: number) => (level > 0 ? level : 1e6 - level)
+  const byLevel = [...structures.keys()].sort((a, b) => order(structures[a]!.level) - order(structures[b]!.level))
   for (const index of byLevel) {
     const structure = structures[index]!
     const own = structure.streets.map((id) => edgeOf.get(id)!)
@@ -332,12 +388,42 @@ export function solveElevation(input: ElevationInput): Elevation {
         if (moved < 0.002) break
       }
     }
+    const tunnel = structure.level < 0
+    // A tunnel: how far in from the nearest portal each of its nodes lies (along it).
+    const inAt = new Map<string, number>()
+    let longest = 0
+    if (tunnel) {
+      const queue = [...landing].filter((id) => ownNodes.has(id))
+      for (const id of queue) inAt.set(id, 0)
+      while (queue.length > 0) {
+        const id = queue.shift()!
+        const here = inAt.get(id)!
+        for (const edge of at.get(id) ?? []) {
+          if (structureOf.get(edge.id) !== index) continue
+          const other = edge.a === id ? edge.b : edge.a
+          if (here + edge.length < (inAt.get(other) ?? Infinity) - 1e-6) {
+            inAt.set(other, here + edge.length)
+            queue.push(other)
+          }
+        }
+      }
+      for (const edge of own) longest += edge.length
+    }
     for (const edge of own) {
       const count = Math.max(1, Math.ceil(edge.length / STATION))
       const base = new Float64Array(count + 1)
       const from = baseAt.get(edge.a)!
       const to = baseAt.get(edge.b)!
       for (let k = 0; k <= count; k++) base[k] = from + ((to - from) * k) / count
+      if (tunnel) {
+        const inA = inAt.get(edge.a) ?? Infinity
+        const inB = inAt.get(edge.b) ?? Infinity
+        const need = limitsAlong(edge, count, (along) => Math.min(inA + along, inB + edge.length - along), Math.min(PORTAL_REACH, longest * PORTAL_SHARE))
+        // (No further down than the data can mean.)
+        for (let k = 0; k <= count; k++) need[k] = Math.max(need[k]!, base[k]! - DEEPEST)
+        decks.set(edge.id, { base, need, rise: new Float64Array(count + 1) })
+        continue
+      }
       const need = needsAlong(
         [{ x: edge.ax, y: edge.ay }, { x: edge.bx, y: edge.by }],
         edge.level,
@@ -350,9 +436,9 @@ export function solveElevation(input: ElevationInput): Elevation {
       for (const [end, k] of [[edge.a, 0], [edge.b, count]] as const) if (landing.has(end)) need[k] = base[k]!
       decks.set(edge.id, { base, need, rise: new Float64Array(count + 1) })
     }
-    // What's needed over the base, passed along the network at a road's gradient (see below), for this
-    // structure and the streets round it; then the deck is known, for whatever crosses over it.
-    spread(own)
+    // What's needed over the base (under it, for a tunnel), passed along the network at a road's gradient (see
+    // below), for this structure and the streets round it; then the deck is known, for whatever crosses it.
+    spread(own, tunnel ? -1 : 1)
     for (const edge of own) {
       const deck = decks.get(edge.id)!
       const count = deck.base.length - 1
@@ -364,7 +450,7 @@ export function solveElevation(input: ElevationInput): Elevation {
         (_, t) => {
           const f = Math.min(Math.max(t * count, 0), count)
           const k = Math.min(Math.floor(f), count - 1)
-          const h = (i: number) => deck.base[i]! + deck.rise[i]!
+          const h = (i: number) => deck.base[i]! + (tunnel ? -deck.rise[i]! : deck.rise[i]!)
           return count === 0 ? h(0) : h(k) + (h(k + 1) - h(k)) * (f - k)
         },
       )
@@ -376,12 +462,14 @@ export function solveElevation(input: ElevationInput): Elevation {
    * landings, falling off at a road's gradient, so nothing is steeper than a street can be. A node's rise is
    * the most that reaches it.
    */
-  function spread(own: Edge[]): void {
+  function spread(own: Edge[], way: 1 | -1): void {
+    // (A tunnel's the same the other way up: how far it must go down, and that passed on.)
+    const rise = way > 0 ? lifted : fall
     let any = false
     for (const edge of own) {
       const deck = decks.get(edge.id)!
       for (let k = 0; k < deck.base.length; k++) {
-        const excess = deck.need[k]! - deck.base[k]!
+        const excess = (deck.need[k]! - deck.base[k]!) * way
         if (excess > deck.rise[k]!) {
           deck.rise[k] = excess
           any = true
@@ -440,7 +528,7 @@ export function solveElevation(input: ElevationInput): Elevation {
         for (let k = 1; k < count; k++) {
           const smooth = (before + 2 * deck.rise[k]! + deck.rise[k + 1]!) / 4
           before = deck.rise[k]!
-          deck.rise[k] = Math.max(smooth, deck.need[k]! - deck.base[k]!, 0)
+          deck.rise[k] = Math.max(smooth, (deck.need[k]! - deck.base[k]!) * way, 0)
         }
       }
     }
@@ -449,23 +537,28 @@ export function solveElevation(input: ElevationInput): Elevation {
   // Each street's height along it.
   const heights = new Map<string, (along: number) => number>()
   const rises = new Map<string, [number, number]>()
+  const sinks = new Map<string, (along: number) => number>()
   for (const edge of edges) {
     const deck = decks.get(edge.id)
     if (deck) {
       const values = new Float64Array(deck.base.length)
-      for (let k = 0; k < values.length; k++) values[k] = deck.base[k]! + deck.rise[k]!
+      for (let k = 0; k < values.length; k++) values[k] = deck.base[k]! + (edge.level < 0 ? -deck.rise[k]! : deck.rise[k]!)
       heights.set(edge.id, sampled(values, edge.length))
       continue
     }
     const onBed = groundBed(edge)
-    const ra = rise.get(edge.a) ?? 0
-    const rb = rise.get(edge.b) ?? 0
-    if (ra <= 0 && rb <= 0) {
+    const ra = lifted.get(edge.a) ?? 0
+    const rb = lifted.get(edge.b) ?? 0
+    const fa = fall.get(edge.a) ?? 0
+    const fb = fall.get(edge.b) ?? 0
+    if (ra <= 0 && rb <= 0 && fa <= 0 && fb <= 0) {
       heights.set(edge.id, onBed)
       continue
     }
-    rises.set(edge.id, [ra, rb])
-    heights.set(edge.id, (along) => onBed(along) + Math.max(0, ra - GRADIENT * along, rb - GRADIENT * (edge.length - along)))
+    if (ra > 0 || rb > 0) rises.set(edge.id, [ra, rb])
+    const sunk = (along: number) => Math.max(0, fa - GRADIENT * along, fb - GRADIENT * (edge.length - along))
+    if (fa > 0 || fb > 0) sinks.set(edge.id, sunk)
+    heights.set(edge.id, (along) => onBed(along) + Math.max(0, ra - GRADIENT * along, rb - GRADIENT * (edge.length - along)) - sunk(along))
   }
 
   // Spans: each from its landings on the ground, lifted where it must clear something, as steeply as it may.
@@ -511,6 +604,7 @@ export function solveElevation(input: ElevationInput): Elevation {
   return {
     heightOf: (id) => heights.get(id) ?? (() => 0),
     riseOf: (id) => rises.get(id) ?? [0, 0],
+    sunkOf: (id) => sinks.get(id) ?? (() => 0),
     structures,
     structureOf,
     spans,

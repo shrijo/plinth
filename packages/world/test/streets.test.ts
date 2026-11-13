@@ -33,17 +33,28 @@ describe('streets in 3D', async () => {
     // rest are held up to a bridge where it lands, on the ramp up to one, or on a road built wider than its
     // class's bed, level out over land that falls away beside it).
     const frame = tileFrame(tile)
+    const planned = planStreets(tile, features.roads, ground)!
     let checked = 0
     let lifted = 0
+    let sunk = 0
     for (let i = 0; i < mesh.positions.length / 3 && checked < 400; i += 97) {
       if (mesh.normals[i * 3 + 1]! < 0.99 || Math.abs(mesh.colors![i * 3]! - 0.6) > 1e-6) continue
       const p = fromFrame(frame, [mesh.positions[i * 3]!, -mesh.positions[i * 3 + 2]!, mesh.positions[i * 3 + 1]!])
       const place = lonLatFromEcef(p)
-      expect(place.height).toBeGreaterThan(ground.at(place.lon, place.lat))
+      // (Under the land only where it's meant to be: in a cutting, on the way down into a tunnel.)
+      if (place.height <= ground.at(place.lon, place.lat)) {
+        const φ = (place.lat * Math.PI) / 180
+        const n = 2 ** tile.z
+        const x = (((place.lon + 180) / 360) * n - tile.x) * planned.metres
+        const y = -(((1 - Math.log(Math.tan(φ) + 1 / Math.cos(φ)) / Math.PI) / 2) * n - tile.y) * planned.metres
+        expect(planned.sinks.at(x, y, () => 0)).toBeGreaterThan(0.1)
+        sunk++
+      }
       if (place.height - ground.level(place.lon, place.lat) > 0.2) lifted++
       checked++
     }
     expect(checked).toBeGreaterThan(50)
+    expect(sunk).toBeLessThan(checked * 0.05)
     expect(lifted).toBeLessThan(checked * 0.25)
     // Bridges are part of it: decks standing clear of the ground.
     expect(whole.structures!.indices.length / 3).toBeGreaterThan(1000)

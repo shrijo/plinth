@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_STREET, type Street, type StreetNode } from '@plinth/core'
-import { CLEARANCE, solveElevation } from '../src/elevation.ts'
+import { CLEARANCE, solveElevation, TUNNEL_COVER } from '../src/elevation.ts'
 
 /** A network from points and the streets between them (`level` 1: a bridge). */
 function network(points: Record<string, [number, number]>, links: [string, string, number?][]) {
@@ -87,5 +87,58 @@ describe('how high streets run', () => {
     expect(span(40)).toBeGreaterThanOrEqual(400 + CLEARANCE.street - 0.01)
     expect(span(0)).toBeCloseTo(400, 3)
     expect(span(80)).toBeCloseTo(400, 3)
+  })
+
+  // A street west to east; another from the south that goes under it in a tunnel (a level below the ground) and on north.
+  const under = network(
+    { w: [-200, 0], e: [200, 0], far: [0, -300], south: [0, -40], north: [0, 40], on: [0, 300] },
+    [
+      ['w', 'e'],
+      ['far', 'south'],
+      ['south', 'north', -1],
+      ['north', 'on'],
+    ],
+  )
+
+  it('takes a tunnel on flat land down under what crosses it, the streets into it sinking to its mouths', () => {
+    const elevation = solveElevation({ ...under, ...flat })
+    const road = elevation.heightOf('s2')
+    // Under the street's middle: its headroom and roof under the street, and the ground over it.
+    expect(road(40)).toBeLessThanOrEqual(400 - CLEARANCE.street + 0.01)
+    expect(road(40)).toBeLessThanOrEqual(400 - TUNNEL_COVER + 0.01)
+    // The street over it stays on the ground.
+    expect(elevation.heightOf('s0')(200)).toBeCloseTo(400, 3)
+    expect(elevation.structures).toHaveLength(1)
+    expect(elevation.structures[0]!.level).toBe(-1)
+    expect(elevation.structures[0]!.landings.sort()).toEqual(['north', 'south'])
+    // Already well down at its mouths, and the street leading in on its way down from further back: a cutting.
+    expect(road(0)).toBeLessThan(400 - 3)
+    const approach = elevation.heightOf('s1')
+    expect(approach(260)).toBeCloseTo(road(0), 2)
+    expect(elevation.sunkOf('s1')(260)).toBeGreaterThan(3)
+    expect(approach(100)).toBeCloseTo(400, 3)
+    expect(elevation.sunkOf('s1')(100)).toBe(0)
+    // Never steeper than a street can be.
+    let steepest = 0
+    for (let s = 0; s < 260; s += 5) steepest = Math.max(steepest, Math.abs(approach(s + 5) - approach(s)) / 5)
+    for (let s = 0; s < 80; s += 5) steepest = Math.max(steepest, Math.abs(road(s + 5) - road(s)) / 5)
+    expect(steepest).toBeLessThan(0.08)
+    // And nothing is lifted for it.
+    expect(elevation.riseOf('s1')).toEqual([0, 0])
+  })
+
+  it('runs a tunnel under a hill in level: nothing over it needs it lower', () => {
+    // A ridge 40 m high between the portals, the land flat beyond them.
+    const hill = (_: number, y: number) => 400 + Math.max(0, 40 - Math.abs(y)) * 4
+    const elevation = solveElevation({ ...under, ...flat, bed: hill })
+    const road = elevation.heightOf('s2')
+    for (let s = 0; s <= 80; s += 8) expect(road(s)).toBeCloseTo(400, 2)
+    expect(elevation.sunkOf('s1')(260)).toBe(0)
+    expect(elevation.heightOf('s1')(260)).toBeCloseTo(400, 3)
+  })
+
+  it('takes a tunnel under water well under its surface', () => {
+    const elevation = solveElevation({ ...under, ...flat, water: (_, y) => (Math.abs(y) < 10 ? 399 : null) })
+    expect(elevation.heightOf('s2')(40)).toBeLessThan(399 - 8)
   })
 })

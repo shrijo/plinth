@@ -76,6 +76,19 @@ const PARAPET_WIDTH = 0.25
 const PARAPET = 1.1
 /** Where a deck stands less than this over the ground (metres), it's a solid down to it: an abutment, a ramp. */
 const SOLID = 1.5
+/**
+ * A tunnel's headroom over its road, the least it makes do with near its mouths, and the depth of its roof
+ * (metres): where the ground stands the least and the roof over the road, it's covered.
+ */
+const TUNNEL_CLEAR = 4.8
+const TUNNEL_LEAST = 3.2
+const TUNNEL_ROOF = 0.6
+/** The wall over a tunnel's mouth stands this far over the ground behind it (metres). */
+const PORTAL_OVER = 0.9
+/** A road this far under the ground (metres) is in a cutting: walls up to the ground beside it. */
+const CUTTING_FROM = 0.25
+/** The blocks come down with a road that runs up to this far under the bed beside it (metres), and not at all with one twice as far under. */
+const KERB_DROP = 0.5
 /** Looked for across a deck in cells this wide (metres). */
 const LOW_CELL = 2.5
 /** A bridge holds the road in its mouth up to itself over this far from where it lands (metres). */
@@ -174,6 +187,13 @@ export function walkingLevel(ground: Ground): (lon: number, lat: number) => numb
   return ground.town ? (lon, lat) => ground.level(lon, lat) + KERB : (lon, lat) => ground.at(lon, lat)
 }
 
+/**
+ * Whether a road is a tunnel that's built: a street's, under the ground. (Not the service roads down into
+ * garages and under buildings, nor paths: those stay out of sight, as the railways' do.)
+ */
+const TUNNELS = new Set<RoadKind>(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'minor'])
+const tunnelled = (road: RoadFeature): boolean => road.tunnel && TUNNELS.has(road.kind)
+
 /** Railways that count as something to clear (a tram runs in the street, on the bridge with it). */
 const RAILWAYS = new Set(['rail', 'light_rail', 'narrow_gauge', 'preserved', ''])
 
@@ -235,19 +255,21 @@ export function planStreets(
       const all = { minX: dx, maxX: dx + 1, minY: dy, maxY: dy + 1 }
       const rect = { minX: Math.max(dx, -reach), maxX: Math.min(dx + 1, 1 + reach), minY: Math.max(dy, -reach), maxY: Math.min(dy + 1, 1 + reach) }
       for (const road of theirs) {
-        if (!road.bridge && (rect.minX >= rect.maxX || rect.minY >= rect.maxY)) continue
+        // (And their tunnels whole, as their bridges.)
+        const whole = road.bridge || tunnelled(road)
+        if (!whole && (rect.minX >= rect.maxX || rect.minY >= rect.maxY)) continue
         const moved = road.line.map((value, i) => value + (i % 2 === 0 ? dx : dy))
-        for (const line of clipLine(moved, road.bridge ? all : rect)) pieces.push({ ...road, line })
+        for (const line of clipLine(moved, whole ? all : rect)) pieces.push({ ...road, line })
       }
     }
     roads = pieces
   }
   const lines: StreetLine[] = []
-  // Where streets go on as tunnels (not drawn): their ends there stay apart, flat.
+  // Where streets go on as tunnels that aren't drawn (see tunnelled): their ends there stay apart, flat.
   const apart = new Set<string>()
   const placeKey = (p: Vec2) => `${Math.round(p.x * 100)}:${Math.round(p.y * 100)}`
   for (const road of roads) {
-    if (!road.tunnel) continue
+    if (!road.tunnel || tunnelled(road)) continue
     const line = road.line
     const end = line.length - 2
     for (const i of [0, end]) apart.add(placeKey(toPlan(line[i]!, line[i + 1]!)))
@@ -258,7 +280,8 @@ export function planStreets(
   const spanLines: Span[] = []
   const under: Passing[] = []
   for (const road of roads) {
-    if (road.tunnel) continue
+    const tunnel = tunnelled(road)
+    if (road.tunnel && !tunnel) continue
     if (road.kind === 'path' && !road.bridge && (road.subclass === 'footway' || road.subclass === 'path')) footways.push(planLine(road.line))
     if (road.kind === 'rail' && !road.bridge && RAILWAYS.has(road.subclass)) under.push({ points: planLine(road.line), level: 0, half: 2.2, clearance: CLEARANCE.rail })
     const props = propsOf(road, ground.town)
@@ -268,7 +291,9 @@ export function planStreets(
     }
     const points = planLine(simplify(road.line, 0.4 / metres))
     // A bridge is a street on a level of its own: it passes over what it crosses, and lands where it ends.
-    if (road.bridge) lines.push({ points, props: { ...props, level: Math.max(road.layer, 1) } })
+    // So is a tunnel, on a level under the ground (no pavements in it).
+    if (tunnel) lines.push({ points, props: { ...props, sidewalkLeft: 0, sidewalkRight: 0, level: Math.min(road.layer, -1) } })
+    else if (road.bridge) lines.push({ points, props: { ...props, level: Math.max(road.layer, 1) } })
     // A roundabout's ring: the tiles drop junction=roundabout and the one-way, single-lane running it implies.
     else if (looksLikeRoundabout(points)) lines.push({ points, props: { ...props, oneway: true, lanes: 1, laneWidth: Math.max(props.laneWidth, 4) } })
     else lines.push({ points, props })
@@ -315,8 +340,11 @@ export function planStreets(
     streets: network.streets,
     bed: along,
     water: waterAt,
-    // With the tiles round it a bridge is there whole; alone, one that ends at the tile's edge goes on beyond it.
-    cut: options.around ? undefined : (node) => node.x < 1 || node.x > metres - 1 || node.y > -1 || node.y < -metres + 1,
+    // With the tiles round it a bridge is there whole, unless it goes on beyond them; alone, one that ends at
+    // the tile's edge goes on beyond it.
+    cut: options.around
+      ? (node) => node.x < -metres + 1 || node.x > 2 * metres - 1 || node.y > metres - 1 || node.y < -2 * metres + 1
+      : (node) => node.x < 1 || node.x > metres - 1 || node.y > -1 || node.y < -metres + 1,
     half: roadHalf,
     under,
     spans: spans.map((span) => ({ points: span.points, level: span.level, gradient: span.kind === 'rail' ? 0.12 : 0.35 })),
@@ -326,6 +354,8 @@ export function planStreets(
   // beds are only as wide as each road's class says), blended where streets meet. A bridge counts for the
   // ground's roads only where it lands, so the road in its mouth is held up to it.
   const beds = new LineField(BED_REACH)
+  /** How far under the ground the roads run that go down into a tunnel (nothing, nearly everywhere). */
+  const sinks = new LineField(BED_REACH)
   const decks = elevation.structures.map(() => new LineField(DECK_REACH, true))
   const landings = new Set(elevation.structures.flatMap((structure) => structure.landings))
   const meeting = new Map<string, Street[]>()
@@ -344,11 +374,20 @@ export function planStreets(
     const structure = elevation.structureOf.get(street.id)
     if (structure === undefined) {
       beds.add(line)
+      // On its way down into a tunnel: how far under the ground it runs (see layStreets: a cutting).
+      const sunk = elevation.sunkOf(street.id)
+      if (sunk(0) > 0 || sunk(length) > 0) sinks.add({ ...line, height: sunk })
       continue
     }
     decks[structure]!.add(line)
-    if (landings.has(street.a)) beds.add({ ...line, from: 0, to: Math.min(HEAD, length) })
-    if (landings.has(street.b)) beds.add({ ...line, from: Math.max(0, length - HEAD), to: length })
+    const heads: [number, number][] = []
+    if (landings.has(street.a)) heads.push([0, Math.min(HEAD, length)])
+    if (landings.has(street.b)) heads.push([Math.max(0, length - HEAD), length])
+    for (const [from, to] of heads) {
+      beds.add({ ...line, from, to })
+      // (A tunnel's mouth as far under the ground as the tunnel is there.)
+      if ((street.level ?? 0) < 0) sinks.add({ ...line, from, to, height: (s) => Math.max(0, along(a.x + ((b.x - a.x) * s) / length, a.y + ((b.y - a.y) * s) / length) - line.height(s)) })
+    }
   }
   // Shapes of the map data (tile units) on the plan.
   const ring = (line: Float64Array): [number, number][] => {
@@ -435,6 +474,7 @@ export function planStreets(
     network,
     elevation,
     beds,
+    sinks,
     decks,
     landings,
     roadHalf,
@@ -489,7 +529,7 @@ const AROUND = 16
  * rectangle and follows the same heights), so a tile can be laid a quarter at a time, the nearest first.
  */
 export function layStreets(plan: StreetPlan, colours: StreetColours, options: LayOptions = {}): StreetsBuilt {
-  const { tile, metres, ground, bed, landAt, waterAt, network, elevation, beds, decks, landings, roadHalf, spans, onDeck } = plan
+  const { tile, metres, ground, bed, landAt, waterAt, network, elevation, beds, sinks, decks, landings, roadHalf, spans, onDeck } = plan
   const mask = options.mask
   let last = performance.now()
   const mark = (stage: string) => {
@@ -507,7 +547,13 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   const writer = new StreetWriter(tile, metres, bed)
   // The road's height: its streets', and never under the ground itself (where a road was built wider than the
   // ground's bed for it, on the uphill side the land would otherwise stand through it).
-  const roadHeight: HeightOn = (x, y) => Math.max(beds.at(x, y, bed), landAt(x, y) + OVER_GROUND)
+  // (But under it where it's meant to be: on its way down into a tunnel, in a cutting.)
+  const none = () => 0
+  const sunkAt = (x: number, y: number): number => (sinks.size > 0 ? sinks.at(x, y, none) : 0)
+  const roadHeight: HeightOn = (x, y) => {
+    const sunk = sunkAt(x, y)
+    return Math.max(beds.at(x, y, bed), landAt(x, y) + OVER_GROUND - (sunk > 0 ? sunk + Math.min(sunk, 0.5) : 0))
+  }
   const roadLaid = new Laid()
   const roadLaying: Laying = { ...ROAD_LAYING, height: roadHeight, record: roadLaid }
   // The blocks' height: the street bed's, and beside a road that runs lower than the bed there (where a bridge
@@ -516,7 +562,9 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   // them, stay on the ground.)
   const fillHeight: HeightOn = (x, y) => {
     const level = bed(x, y)
-    return Math.min(level, beds.at(x, y, () => level))
+    const down = level - beds.at(x, y, () => level)
+    // (Only so far: beside a cutting the blocks stay up, on a wall over it.)
+    return down <= 0 ? level : level - down * (1 - smoothstep((down - KERB_DROP) / KERB_DROP))
   }
   const fillLaying: Laying = { ...FILL_LAYING, height: fillHeight }
   // Paint lies on the road as laid, split often enough to follow it.
@@ -658,7 +706,7 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     let beside: Region | null = null
     const lines = structure.streets.map((id) => network.streets[id]!).map((street) => [network.nodes[street.a]!, network.nodes[street.b]!] as const)
     spans.forEach((span, i) => {
-      if (!spanNear[i]) return
+      if (!spanNear[i] || structure.level < 0) return
       // Only those anywhere near it are looked at closely.
       if (span.box.maxX < reach.minX - 4 || span.box.minX > reach.maxX + 4 || span.box.maxY < reach.minY - 4 || span.box.minY > reach.maxY + 4) return
       const taken = spanTaken[i]!
@@ -785,7 +833,7 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   // slot between a walkway's end and the bank). Only what's shut in there by the decks, the roads and the
   // shore (or all but: open to the rest by no more than a slot), small, behind a landing and against the
   // deck: never the water a bridge crosses.
-  const allEnds = shapes.flatMap((shape) => shape.ends.map((end) => ({ end, shape })))
+  const allEnds = shapes.flatMap((shape) => (shape.level < 0 ? [] : shape.ends.map((end) => ({ end, shape }))))
   if (allEnds.length > 0 && plan.waters.length > 0) {
     // (The water about the ends cut out once: the lake needn't be gone through for each.)
     const water = common(regionOf(polygonsNear(plan.waters)), merged(...allEnds.map(({ end }) => disc(end.x, end.y, end.reach + 2))))
@@ -839,6 +887,79 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   const mouthRoads = new Map<number, Region>()
   for (const shape of shapes) if (shape.mouthRoad.length > 0) mouthRoads.set(shape.level, merged(mouthRoads.get(shape.level) ?? [], shape.mouthRoad))
   const boxes = shapes.map((shape) => regionBox(shape.surface))
+  /** The ground's top beside a cutting: the land, or in town the blocks on it. */
+  const groundTop: HeightOn = (x, y) => Math.max(landAt(x, y), ground.town && colours.land ? bed(x, y) + KERB : -Infinity) + 0.02
+  const shaded = (colour: readonly number[], by: number): number[] => colour.map((c) => c * by)
+  /** Whether what lies just outside an edge (to its right) is in a region. */
+  const against = (region: Region, ax: number, ay: number, bx: number, by: number): boolean => {
+    if (region.length === 0) return false
+    const length = Math.hypot(bx - ax, by - ay) || 1
+    return inRegion(region, (ax + bx) / 2 + ((by - ay) / length) * 0.12, (ay + by) / 2 - ((bx - ax) / length) * 0.12)
+  }
+  /**
+   * A tunnel: its road, under the ground. Covered where the ground stands far enough over the road for its
+   * headroom and its roof (walls, a ceiling, and over each mouth of it a wall up to the ground: the portal);
+   * till then, on the way down from where the map has it begin, a cutting with walls up to the ground beside
+   * it. The ground and the blocks are left out over the cutting, and stay whole over the rest.
+   */
+  const layTunnel = (shape: DeckShape, mouthRoad: Region, height: HeightOn): void => {
+    const structure = elevation.structures[shape.index]!
+    const pieces = onDeck[shape.index]!
+    const deck = cut(shape.surface)
+    if (deck.length === 0) return
+    const coveredLines: Vec2[][] = []
+    let widest = 0
+    for (const id of structure.streets) {
+      const street = network.streets[id]!
+      const a = network.nodes[street.a]!
+      const b = network.nodes[street.b]!
+      const section = crossSection(street)
+      widest = Math.max(widest, section.outerLeft, section.outerRight)
+      const length = Math.hypot(b.x - a.x, b.y - a.y)
+      const along = elevation.heightOf(id)
+      const count = Math.max(1, Math.ceil(length / 3))
+      let run: Vec2[] = []
+      for (let k = 0; k <= count; k++) {
+        const x = a.x + ((b.x - a.x) * k) / count
+        const y = a.y + ((b.y - a.y) * k) / count
+        const under = waterAt(x, y) !== null || groundTop(x, y) - along((k / count) * length) >= TUNNEL_LEAST + TUNNEL_ROOF
+        if (under) run.push({ x, y })
+        if ((!under || k === count) && run.length > 0) {
+          if (run.length === 1) run.push({ x: run[0]!.x + 0.01, y: run[0]!.y })
+          coveredLines.push(run)
+          run = []
+        }
+      }
+    }
+    // (A little beyond each run's ends: across the wedge left where the tunnel bends from one street to the next.)
+    const covered = coveredLines.length > 0 ? common(deck, grown(stroked(coveredLines, 2 * widest + 6), 2)) : []
+    const open = without(deck, covered)
+    laidDecks.push({ deck, low: open })
+    const laid = new Laid()
+    const flat: Laying = { ...FILL_LAYING, height }
+    const inside = shaded(colours.curb, 0.55)
+    const lanes = cut(shape.carriageway)
+    // Its floor: the road, darker under cover; what's beside the road (between two tubes side by side) plain.
+    structures.top(polygonsOf(common(lanes, open)), ROAD, colours.road, { ...ROAD_LAYING, height, record: laid })
+    structures.top(polygonsOf(common(lanes, covered)), ROAD, shaded(colours.road, 0.7), { ...ROAD_LAYING, height, record: laid })
+    structures.top(polygonsOf(without(deck, lanes, mouthRoad)), ROAD, shaded(colours.sidewalk, 0.8), flat)
+    const floor: HeightOn = (x, y) => height(x, y) + ROAD - 0.3
+    // (Its ceiling: its headroom over the road, or what there's room for under the ground near its mouths.)
+    const ceiling: HeightOn = (x, y) => Math.min(height(x, y) + ROAD + TUNNEL_CLEAR, Math.max(groundTop(x, y) - TUNNEL_ROOF, height(x, y) + ROAD + TUNNEL_LEAST - 0.6))
+    const mouth = (ax: number, ay: number, bx: number, by: number) => against(mouthRoad, ax, ay, bx, by)
+    // The cutting's walls, up to the ground beside it.
+    structures.sides(polygonsOf(open), 0, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || mouth(ax, ay, bx, by) || against(covered, ax, ay, bx, by), groundTop, floor, true)
+    // Under cover: walls and a ceiling, and where it opens (into the cutting, or straight onto the road that
+    // leads in) the wall over the opening, from the ceiling up to the ground.
+    const opens = (ax: number, ay: number, bx: number, by: number) => mouth(ax, ay, bx, by) || against(open, ax, ay, bx, by)
+    structures.sides(polygonsOf(covered), 0, inside, (ax, ay, bx, by) => seam(ax, ay, bx, by) || opens(ax, ay, bx, by), ceiling, floor, true)
+    structures.top(polygonsOf(covered), 0, inside, { ...FILL_LAYING, height: ceiling }, true)
+    structures.sides(polygonsOf(covered), PORTAL_OVER, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || !opens(ax, ay, bx, by), groundTop, ceiling)
+    for (const mark of pieces.marks) {
+      const clipped = clipRingPlan(mark.map((p) => [p.x, p.y] as [number, number]), part)
+      if (clipped && !(holeRing && clipped.some(([x, y]) => insidePolygon([holeRing], x, y)))) structures.top([[clipped]], PAINT, colours.marking, paintOn(laid, height))
+    }
+  }
   for (const [s, shape] of shapes.entries()) {
     // (Shaped for the sake of those beside it, if none of it lies in the part itself.)
     if (boxes[s]!.maxX < part.minX - 1 || boxes[s]!.minX > part.maxX + 1 || boxes[s]!.maxY < part.minY - 1 || boxes[s]!.minY > part.maxY + 1) continue
@@ -847,6 +968,10 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     const structure = elevation.structures[index]!
     const pieces = onDeck[index]!
     const height = heightOn(shape)
+    if (shape.level < 0) {
+      layTunnel(shape, mouthRoad, height)
+      continue
+    }
     // Its mouths: the junctions it lands in, and round each landing the width of the road.
     const mouths: Region[] = [grown(merged(regionOf(pieces.mouths)), 0.5), grown(puddles, 1)]
     // And where a deck runs beside it at its own height the two are one: no edge, no parapet between them.
@@ -1039,11 +1164,27 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   // Sides: every raised surface is a solid (its kerb faces, and its banks where the land drops away), and so
   // is the plan as a whole, down into the ground. Not along the tile's own edges, where the next tile goes on.
   const raisedLand = merged(land, green, paving)
-  writer.sides(polygonsOf(raisedLand), KERB, colours.curb, seam, fillHeight)
+  // (Beside a cutting, down past the road in it.)
+  writer.sides(polygonsOf(raisedLand), KERB, colours.curb, seam, fillHeight, sinks.size > 0 ? (x, y) => Math.min(bed(x, y) - DEPTH, roadHeight(x, y) - 0.5) : undefined)
   writer.sides(polygonsOf(merged(road, raisedLand)), ROAD, colours.curb, seam, roadHeight)
   // The road's own edge, where it stands clear of what's beside it (on a ramp up to a bridge; a block lower than the road).
   const sunk = (x: number, y: number) => roadHeight(x, y) + ROAD < fillHeight(x, y) + KERB - 0.02
   writer.sides(polygonsOf(road), ROAD, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || (sunk(ax, ay) && sunk(bx, by)), roadHeight)
+  // Cuttings: where a road runs under the ground on its way down into a tunnel, walls up to the ground beside it
+  // (not across where it goes on into the tunnel).
+  if (sinks.size > 0) {
+    const tubes = merged(...shapes.filter((shape) => shape.level < 0).map((shape) => shape.surface))
+    const level = (ax: number, ay: number, bx: number, by: number) => sunkAt((ax + bx) / 2, (ay + by) / 2) < CUTTING_FROM
+    writer.sides(
+      polygonsOf(road),
+      0,
+      colours.curb,
+      (ax, ay, bx, by) => seam(ax, ay, bx, by) || level(ax, ay, bx, by) || against(tubes, ax, ay, bx, by),
+      groundTop,
+      (x, y) => roadHeight(x, y) + ROAD - 0.3,
+      true,
+    )
+  }
   mark('sides')
 
   // Lines and zebras on top.
@@ -1062,6 +1203,7 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   // places), not on a road passing under.
   const roadAround = elevation.structures.length > 0 ? merged(regionOf(polygonsNear(plan.roads))) : []
   elevation.structures.forEach((structure) => {
+    if (structure.level < 0) return
     for (const id of structure.streets) {
       const street = network.streets[id]!
       const a = network.nodes[street.a]!
@@ -1674,6 +1816,8 @@ class StreetWriter {
     skip?: (ax: number, ay: number, bx: number, by: number) => boolean,
     height: HeightOn = this.bed,
     foot?: HeightOn,
+    /** Seen from inside the region (a cutting's walls, a tunnel's), not from outside it. */
+    inward = false,
   ): void {
     for (const polygon of region) {
       for (const [r, ring] of polygon.entries()) {
@@ -1686,7 +1830,7 @@ class StreetWriter {
           // Outwards: to the right of the edge (outer rings anticlockwise, holes clockwise).
           const nx = (q[1] - p[1]) / length
           const ny = -(q[0] - p[0]) / length
-          const normal = [nx, 0, -ny]
+          const normal = inward ? [-nx, 0, ny] : [nx, 0, -ny]
           const pieces = Math.max(1, Math.ceil(length / SIDE_STEP))
           for (let k = 0; k < pieces; k++) {
             const s0 = k / pieces
@@ -1701,7 +1845,8 @@ class StreetWriter {
             const b = this.vertex(x1, y1, foot ? this.heightAt(foot, x1, y1) : this.heightAt(this.bed, x1, y1) - DEPTH, normal, side)
             const c = this.vertex(x1, y1, top1, normal, side)
             const d = this.vertex(x0, y0, top0, normal, side)
-            this.indices.push(a, b, c, a, c, d)
+            if (inward) this.indices.push(a, c, b, a, d, c)
+            else this.indices.push(a, b, c, a, c, d)
           }
         }
       }

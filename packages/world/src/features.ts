@@ -48,8 +48,14 @@ export interface RoadFeature {
   kind: RoadKind
   /** Width in metres, from its class (the tiles have none of their own). */
   width: number
+  /** Under the ground (on a level below it: see `layer`). */
   tunnel: boolean
   bridge: boolean
+  /**
+   * Covered, but on the ground: a way through a building, an arcade. (The map calls both this and a real
+   * tunnel a tunnel; one mapped without a level of its own under the ground is a passage.)
+   */
+  passage?: boolean
   /** Stacking order where roads cross: bridges higher, tunnels lower. */
   layer: number
   name: string
@@ -226,15 +232,18 @@ export function readTile(tile: TileId, bytes: Uint8Array | ArrayBuffer, only?: R
     if (feature.type !== 2) return
     const brunnel = String(p.brunnel ?? '')
     const layer = Number(p.layer ?? 0) || 0
+    // A tunnel with no level of its own is a passage on the ground (through a building, under an arcade).
+    const passage = brunnel === 'tunnel' && !(layer < 0)
     const name = typeof p.name === 'string' ? p.name : ''
     for (const line of linesOf(feature.loadGeometry(), extent)) {
       features.roads.push({
         line,
         kind,
         width: ROAD_WIDTHS[kind] * (p.ramp === 1 ? 0.6 : 1),
-        tunnel: brunnel === 'tunnel',
+        tunnel: brunnel === 'tunnel' && !passage,
         bridge: brunnel === 'bridge',
-        layer: brunnel === 'bridge' ? Math.max(layer, 1) : brunnel === 'tunnel' ? Math.min(layer, -1) : layer,
+        ...(passage ? { passage } : {}),
+        layer: brunnel === 'bridge' ? Math.max(layer, 1) : brunnel === 'tunnel' && !passage ? Math.min(layer, -1) : passage ? 0 : layer,
         name,
         oneway: p.oneway === 1 || p.oneway === -1,
         service: typeof p.service === 'string' ? p.service : '',
