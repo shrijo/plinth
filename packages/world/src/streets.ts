@@ -87,6 +87,9 @@ const MOUTH_JOIN = 6
 const MOUTH_REACH = 24
 const MOUTH_AHEAD = 3
 const PUDDLE = 300
+/** No parapet stands on a deck's edge within this of the ground beside it (metres), looked for this far beyond a landing's reach. */
+const FLUSH = 0.5
+const FLUSH_REACH = 12
 /** Water open to the rest by a slot no wider than twice this (metres) is shut in all the same. */
 const SLOT = 0.5
 /** A deck's road and the ground's are brought edge to edge where they're within this of each other (metres). */
@@ -606,7 +609,7 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   const besideRoad = grown(roadAtMouths, SEAM)
   const shapes: DeckShape[] = []
   /** What decks have taken of the mouths so far, so that two landing side by side don't both take what's between them. */
-  let taken: Region = []
+  let claimed: Region = []
   elevation.structures.forEach((structure, index) => {
     const pieces = onDeck[index]!
     const deckRoads = within(pieces.road, DECK_AROUND)
@@ -626,11 +629,11 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
       const lands = common(merged(regionOf(pieces.mouths), regionOf(pieces.leads)), about)
       mouthRoad = common(roadAtMouths, grown(lands, ROUND + 0.5))
       const joint = rounded(merged(common(roads, about), lands), ROUND, THIN)
-      const filled = rounded(common(without(joint, roadAtMouths, taken), round), 0, 0.08)
+      const filled = rounded(common(without(joint, roadAtMouths, claimed), round), 0, 0.08)
       if (filled.length > 0) carriageway = merged(carriageway, filled)
-      const between = without(common(common(grown(common(carriageway, about), SEAM), besideRoad), round), roadAtMouths, taken)
+      const between = without(common(common(grown(common(carriageway, about), SEAM), besideRoad), round), roadAtMouths, claimed)
       if (between.length > 0) carriageway = merged(carriageway, between)
-      taken = merged(taken, filled, between)
+      claimed = merged(claimed, filled, between)
     }
     carriageway = withoutIslands(carriageway, 4 * ISLAND)
     let surface = merged(carriageway, regionOf(within(pieces.walks, DECK_AROUND)))
@@ -703,14 +706,16 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     const water = common(regionOf(polygonsNear(plan.waters)), merged(...allEnds.map(({ end }) => disc(end.x, end.y, end.reach + 2))))
     const wet = allEnds.filter(({ end }) => water.some((path) => path.some((p) => Math.hypot(p.X / 1000 - end.x, p.Y / 1000 - end.y) < end.reach + 2.5)))
     if (wet.length > 0) {
-      // The roads about the ends, whole (not only what the part has of them): every part finds the same.
-      const about = (list: readonly Boxed[]): MultiPolygon =>
+      // The roads about the ends: what's been worked out of them already, and about an end near the part's
+      // edge (where the part hasn't all of them) worked out whole, so that every part finds the same.
+      const edging = wet.filter(({ end }) => end.x - end.reach < part.minX - 10 || end.x + end.reach > part.maxX + 10 || end.y - end.reach < part.minY - 10 || end.y + end.reach > part.maxY + 10)
+      const about = (list: readonly Boxed[], ends: typeof wet): MultiPolygon =>
         list
-          .filter(({ box }) => wet.some(({ end }) => box.maxX > end.x - end.reach - 8 && box.minX < end.x + end.reach + 8 && box.maxY > end.y - end.reach - 8 && box.minY < end.y + end.reach + 8))
+          .filter(({ box }) => ends.some(({ end }) => box.maxX > end.x - end.reach - 8 && box.minX < end.x + end.reach + 8 && box.maxY > end.y - end.reach - 8 && box.minY < end.y + end.reach + 8))
           .map((b) => b.polygon)
-      const there = merged(...wet.map(({ end }) => disc(end.x, end.y, end.reach + 8)))
-      const roadsThere = withoutIslands(rounded(common(merged(regionOf(about(plan.roads))), there), ROUND, THIN), ISLAND)
-      const pavedThere = regionOf(about(plan.paved))
+      const there = edging.length > 0 ? merged(...edging.map(({ end }) => disc(end.x, end.y, end.reach + 8))) : []
+      const roadsThere = edging.length > 0 ? merged(roadAtMouths, withoutIslands(rounded(common(merged(regionOf(about(plan.roads, edging))), there), ROUND, THIN), ISLAND)) : roadAtMouths
+      const pavedThere = regionOf(about(plan.paved, wet))
       const left = without(water, roadsThere, pavedThere, ...shapes.map((shape) => shape.surface))
       // The open water and the puddles each for itself, and the slots between them (not the hair's breadths
       // between one surface and the next).
@@ -750,6 +755,8 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   for (const shape of shapes) if (shape.mouthRoad.length > 0) mouthRoads.set(shape.level, merged(mouthRoads.get(shape.level) ?? [], shape.mouthRoad))
   const boxes = shapes.map((shape) => regionBox(shape.surface))
   for (const [s, shape] of shapes.entries()) {
+    // (Shaped for the sake of those beside it, if none of it lies in the part itself.)
+    if (boxes[s]!.maxX < part.minX - 1 || boxes[s]!.minX > part.maxX + 1 || boxes[s]!.maxY < part.minY - 1 || boxes[s]!.minY > part.maxY + 1) continue
     const { index, carriageway, surface, closed: puddles } = shape
     const mouthRoad = mouthRoads.get(shape.level) ?? []
     const structure = elevation.structures[index]!
@@ -769,6 +776,41 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
         for (let i = 0; i < ring.length && level; i += step) level = Math.abs(heightOn(other)(ring[i]![0], ring[i]![1]) - height(ring[i]![0], ring[i]![1])) <= LEVEL
         if (level) mouths.push(grown(regionOf([strip]), 1))
       }
+    }
+    // Nor where its edge runs level with dry ground beside it: at a landing, along the islands in its mouth.
+    if (shape.ends.length > 0) {
+      const flush: Vec2[][] = []
+      const about = (x: number, y: number) => shape.ends.some((end) => Math.hypot(x - end.x, y - end.y) < end.reach + FLUSH_REACH)
+      for (const path of surface) {
+        let run: Vec2[] = []
+        for (let i = 0; i < path.length; i++) {
+          const ax = path[i]!.X / 1000
+          const ay = path[i]!.Y / 1000
+          const bx = path[(i + 1) % path.length]!.X / 1000
+          const by = path[(i + 1) % path.length]!.Y / 1000
+          const length = Math.hypot(bx - ax, by - ay)
+          if (length < 1e-6 || !(about(ax, ay) || about(bx, by))) {
+            if (run.length > 1) flush.push(run)
+            run = []
+            continue
+          }
+          // Out from the edge: to its right (outlines run anticlockwise, holes clockwise).
+          const nx = ((by - ay) / length) * 0.8
+          const ny = (-(bx - ax) / length) * 0.8
+          const count = Math.max(1, Math.ceil(length / 2))
+          for (let k = 0; k <= count; k++) {
+            const x = ax + ((bx - ax) * k) / count
+            const y = ay + ((by - ay) * k) / count
+            if (about(x, y) && waterAt(x + nx, y + ny) === null && Math.abs(height(x + nx, y + ny) - bed(x + nx, y + ny)) < FLUSH) run.push({ x, y })
+            else {
+              if (run.length > 1) flush.push(run)
+              run = []
+            }
+          }
+        }
+        if (run.length > 1) flush.push(run)
+      }
+      if (flush.length > 0) mouths.push(stroked(flush, 2.4))
     }
     const landed: Vec2[] = []
     const lowLines: Vec2[][] = []
@@ -826,9 +868,10 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     // Parapets along its edges.
     // Along its outer edges only: not round the notches where a walkway ends short of the road, nor across a mouth.
     const closed = grown(grown(outline, 6), -6)
-    const parapet = cut(without(common(without(outline, grown(outline, -PARAPET_WIDTH)), without(closed, grown(closed, -PARAPET_WIDTH - 0.05))), mouth))
-    structures.top(polygonsOf(parapet), PARAPET, colours.curb, flat)
-    structures.sides(polygonsOf(parapet), PARAPET, colours.curb, seam, height, (x, y) => height(x, y) - DECK)
+    // (Not the odd stub left standing between one mouth and the next.)
+    const parapet = polygonsOf(cut(without(common(without(outline, grown(outline, -PARAPET_WIDTH)), without(closed, grown(closed, -PARAPET_WIDTH - 0.05))), mouth))).filter((polygon) => blockArea(polygon) > 0.5)
+    structures.top(parapet, PARAPET, colours.curb, flat)
+    structures.sides(parapet, PARAPET, colours.curb, seam, height, (x, y) => height(x, y) - DECK)
     for (const mark of pieces.marks) {
       const clipped = clipRingPlan(mark.map((p) => [p.x, p.y] as [number, number]), part)
       if (clipped && !(holeRing && clipped.some(([x, y]) => insidePolygon([holeRing], x, y)))) structures.top([[clipped]], PAINT, colours.marking, paintOn(laid, height))
