@@ -76,6 +76,8 @@ const PARAPET_WIDTH = 0.25
 const PARAPET = 1.1
 /** Where a deck stands less than this over the ground (metres), it's a solid down to it: an abutment, a ramp. */
 const SOLID = 1.5
+/** Looked for across a deck in cells this wide (metres). */
+const LOW_CELL = 2.5
 /** A bridge holds the road in its mouth up to itself over this far from where it lands (metres). */
 const HEAD = 14
 /** A deck's road and the road it lands on are rounded as one this far round its landing, beyond its own width (metres). */
@@ -87,6 +89,12 @@ const MOUTH_JOIN = 6
 const MOUTH_REACH = 24
 const MOUTH_AHEAD = 3
 const PUDDLE = 300
+/**
+ * A deck takes up what the ground stands over (or under) it where they meet over this far from there (metres);
+ * where they differ by `EASE_MOST` or more they don't meet.
+ */
+const EASE = 10
+const EASE_MOST = 0.8
 /** No parapet stands on a deck's edge within this of the ground beside it (metres), looked for this far beyond a landing's reach. */
 const FLUSH = 0.5
 const FLUSH_REACH = 12
@@ -502,6 +510,15 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   const roadHeight: HeightOn = (x, y) => Math.max(beds.at(x, y, bed), landAt(x, y) + OVER_GROUND)
   const roadLaid = new Laid()
   const roadLaying: Laying = { ...ROAD_LAYING, height: roadHeight, record: roadLaid }
+  // The blocks' height: the street bed's, and beside a road that runs lower than the bed there (where a bridge
+  // lands, where the network's own heights and the ground's part ways) the road's, so a kerb is a kerb's height
+  // and no more. (Not up with a road that climbs over the bed: beside a ramp the blocks, and the buildings on
+  // them, stay on the ground.)
+  const fillHeight: HeightOn = (x, y) => {
+    const level = bed(x, y)
+    return Math.min(level, beds.at(x, y, () => level))
+  }
+  const fillLaying: Laying = { ...FILL_LAYING, height: fillHeight }
   // Paint lies on the road as laid, split often enough to follow it.
   const paintOn = (laid: Laid, height: HeightOn): Laying => ({ tolerance: Infinity, most: 6, least: 6, height: (x, y) => laid.at(x, y) ?? height(x, y) })
 
@@ -676,7 +693,75 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   // notch where two carriageways come apart to land, and between decks that run side by side at one height
   // (a street mapped as two carriageways is two bridges to the map, and one to the eye). What closes a slot
   // is the deck's it lies against; between two decks, theirs only if they're level with each other there.
-  const heightOn = (shape: DeckShape): HeightOn => (x, y) => decks[shape.index]!.at(x, y, bed)
+  /** A deck's height as its bridge runs: level across, at its own street's height. */
+  const levelOn = (shape: DeckShape): HeightOn => {
+    const field = decks[shape.index]!
+    return (x, y) => field.at(x, y, bed)
+  }
+  // A deck's height as it's laid: its bridge's, eased onto the ground's where it lands. The bridge runs level
+  // across at its own street's height; the ground it lands on has the heights of all that meets there (a quay
+  // that climbs past the bridge's mouth, a bank that stands a little over the street). Along the seam itself
+  // (the deck's edge where dry ground lies against it, behind its landings) the deck takes the ground's height
+  // exactly, and gives the difference up over its first metres, so nothing steps where the two meet.
+  const eased = new Map<DeckShape, HeightOn>()
+  const heightOn = (shape: DeckShape): HeightOn => {
+    let height = eased.get(shape)
+    if (height) return height
+    const level = levelOn(shape)
+    const seamAt: number[] = []
+    if (shape.ends.length > 0) {
+      const landing = (x: number, y: number) =>
+        shape.ends.some((end) => {
+          const rx = x - end.x
+          const ry = y - end.y
+          return rx * rx + ry * ry < end.reach * end.reach && rx * end.dx + ry * end.dy < 1.5
+        })
+      for (const path of shape.surface) {
+        for (let i = 0; i < path.length; i++) {
+          const ax = path[i]!.X / 1000
+          const ay = path[i]!.Y / 1000
+          const bx = path[(i + 1) % path.length]!.X / 1000
+          const by = path[(i + 1) % path.length]!.Y / 1000
+          const length = Math.hypot(bx - ax, by - ay)
+          if (length < 1e-6 || !(landing(ax, ay) || landing(bx, by))) continue
+          // Out from the edge: to its right (outlines run anticlockwise, holes clockwise).
+          const nx = ((by - ay) / length) * 0.4
+          const ny = (-(bx - ax) / length) * 0.4
+          const count = Math.max(1, Math.ceil(length))
+          for (let k = 0; k < count; k++) {
+            const x = ax + ((bx - ax) * (k + 0.5)) / count
+            const y = ay + ((by - ay) * (k + 0.5)) / count
+            if (!landing(x + nx, y + ny)) continue
+            // What lies against it there: the road it lands on (which may run out over the water itself), or a block.
+            const onRoad = inRegion(roadAtMouths, x + nx, y + ny)
+            if (!onRoad && waterAt(x + nx, y + ny) !== null) continue
+            // (Its height at the deck's very edge: the ground may slope away from there.)
+            const over = (onRoad ? roadHeight(x, y) : fillHeight(x, y)) - level(x, y)
+            if (Math.abs(over) < EASE_MOST) seamAt.push(x, y, over)
+          }
+        }
+      }
+    }
+    height =
+      seamAt.length === 0
+        ? level
+        : (x, y) => {
+            let sum = 0
+            let weights = 0
+            for (let i = 0; i < seamAt.length; i += 3) {
+              const dx = x - seamAt[i]!
+              const dy = y - seamAt[i + 1]!
+              const d2 = dx * dx + dy * dy
+              if (d2 >= EASE * EASE) continue
+              const weight = 1 / (d2 * d2 + 1e-4)
+              sum += weight * seamAt[i + 2]! * (1 - smoothstep(Math.sqrt(d2) / EASE))
+              weights += weight
+            }
+            return weights > 0 ? level(x, y) + sum / weights : level(x, y)
+          }
+    eased.set(shape, height)
+    return height
+  }
   if (shapes.length > 0) {
     const all = merged(...shapes.map((shape) => shape.surface))
     const boxes = shapes.map((shape) => regionBox(shape.surface))
@@ -688,8 +773,8 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
       if (!first) continue
       if (beside.length > 1) {
         const at = labelPoint([polygon]) ?? { x: polygon[0]![0]![0], y: polygon[0]![0]![1] }
-        const here = heightOn(first)(at.x, at.y)
-        if (beside.some((shape) => Math.abs(heightOn(shape)(at.x, at.y) - here) > LEVEL)) continue
+        const here = levelOn(first)(at.x, at.y)
+        if (beside.some((shape) => Math.abs(levelOn(shape)(at.x, at.y) - here) > LEVEL)) continue
       }
       first.surface = merged(first.surface, grown(regionOf([polygon]), 0.05))
     }
@@ -773,7 +858,7 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
         const ring = strip[0]!
         const step = Math.max(1, Math.floor(ring.length / 8))
         let level = true
-        for (let i = 0; i < ring.length && level; i += step) level = Math.abs(heightOn(other)(ring[i]![0], ring[i]![1]) - height(ring[i]![0], ring[i]![1])) <= LEVEL
+        for (let i = 0; i < ring.length && level; i += step) level = Math.abs(levelOn(other)(ring[i]![0], ring[i]![1]) - levelOn(shape)(ring[i]![0], ring[i]![1])) <= LEVEL
         if (level) mouths.push(grown(regionOf([strip]), 1))
       }
     }
@@ -851,7 +936,21 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     const outline = merged(surface, without(grown(surface, EDGE), mouth))
     const deck = cut(outline)
     if (deck.length === 0) continue
-    const low = lowLines.length > 0 ? common(deck, grown(stroked(lowLines, 2 * widest + 2), 2)) : []
+    let low = lowLines.length > 0 ? common(deck, grown(stroked(lowLines, 2 * widest + 2), 2)) : []
+    // And wherever else it's as low over dry ground (out to its sides, where the shore runs slantwise under
+    // it): looked for cell by cell, or the bank's blocks would be laid under it there and stand up through it.
+    {
+      const box = regionBox(deck)
+      const cells: Region = []
+      for (let cy = box.minY + LOW_CELL / 2; cy < box.maxY; cy += LOW_CELL) {
+        for (let cx = box.minX + LOW_CELL / 2; cx < box.maxX; cx += LOW_CELL) {
+          if (waterAt(cx, cy) !== null || height(cx, cy) - bed(cx, cy) >= SOLID) continue
+          if (!inRegion(deck, cx, cy) || inRegion(low, cx, cy)) continue
+          cells.push(...rectangle(cx - LOW_CELL / 2 - 0.3, cy - LOW_CELL / 2 - 0.3, cx + LOW_CELL / 2 + 0.3, cy + LOW_CELL / 2 + 0.3))
+        }
+      }
+      if (cells.length > 0) low = merged(low, common(deck, merged(cells)))
+    }
     const high = without(deck, low)
     laidDecks.push({ deck, low })
     const laid = new Laid()
@@ -863,8 +962,13 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
     // The kerb's face and the deck's edge, down to its underside; under it, where it's clear of the ground.
     structures.sides(polygonsOf(walkways), KERB, colours.curb, seam, height, (x, y) => height(x, y) - DECK)
     structures.top(polygonsOf(high), -DECK, colours.curb, flat, true)
-    // (From the road's own level: where the deck goes over into the ground's road, nothing stands across it.)
-    structures.sides(polygonsOf(low), ROAD, colours.curb, seam, height)
+    // (From the road's own level, and not along the road it lands on: where the deck goes over into the ground's
+    // road, nothing stands across it.)
+    const landsOn = (ax: number, ay: number, bx: number, by: number) => {
+      const length = Math.hypot(bx - ax, by - ay) || 1
+      return inRegion(mouthRoad, (ax + bx) / 2 + ((by - ay) / length) * 0.1, (ay + by) / 2 - ((bx - ax) / length) * 0.1)
+    }
+    structures.sides(polygonsOf(low), ROAD, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || (mouthRoad.length > 0 && landsOn(ax, ay, bx, by)), height)
     // Parapets along its edges.
     // Along its outer edges only: not round the notches where a walkway ends short of the road, nor across a mouth.
     const closed = grown(grown(outline, 6), -6)
@@ -927,18 +1031,18 @@ export function layStreets(plan: StreetPlan, colours: StreetColours, options: La
   lay(road, ROAD, colours.road, 'paved', roadLaying, without(road, parking, bikes))
   writer.top(polygonsOf(without(parking, bikes)), ROAD, colours.parking, roadLaying)
   writer.top(polygonsOf(bikes), ROAD, colours.bike, roadLaying)
-  lay(paving, KERB, colours.sidewalk, 'paved', FILL_LAYING)
+  lay(paving, KERB, colours.sidewalk, 'paved', fillLaying)
   // The blocks' surface is cut round the buildings standing on it, so it meets each wall at its base.
-  lay(land, KERB, colours.land ?? colours.sidewalk, 'paved', FILL_LAYING, without(land, footprints))
-  lay(green, KERB, colours.green ?? colours.land ?? colours.sidewalk, 'green', FILL_LAYING, without(green, footprints))
+  lay(land, KERB, colours.land ?? colours.sidewalk, 'paved', fillLaying, without(land, footprints))
+  lay(green, KERB, colours.green ?? colours.land ?? colours.sidewalk, 'green', fillLaying, without(green, footprints))
   mark('surfaces')
   // Sides: every raised surface is a solid (its kerb faces, and its banks where the land drops away), and so
   // is the plan as a whole, down into the ground. Not along the tile's own edges, where the next tile goes on.
   const raisedLand = merged(land, green, paving)
-  writer.sides(polygonsOf(raisedLand), KERB, colours.curb, seam)
+  writer.sides(polygonsOf(raisedLand), KERB, colours.curb, seam, fillHeight)
   writer.sides(polygonsOf(merged(road, raisedLand)), ROAD, colours.curb, seam, roadHeight)
   // The road's own edge, where it stands clear of what's beside it (on a ramp up to a bridge; a block lower than the road).
-  const sunk = (x: number, y: number) => roadHeight(x, y) + ROAD < bed(x, y) + KERB - 0.02
+  const sunk = (x: number, y: number) => roadHeight(x, y) + ROAD < fillHeight(x, y) + KERB - 0.02
   writer.sides(polygonsOf(road), ROAD, colours.curb, (ax, ay, bx, by) => seam(ax, ay, bx, by) || (sunk(ax, ay) && sunk(bx, by)), roadHeight)
   mark('sides')
 
@@ -1185,6 +1289,8 @@ function alongside(line: readonly Vec2[], segments: readonly (readonly [Vec2, Ve
   }
   return cos > Math.SQRT1_2
 }
+
+const smoothstep = (t: number): number => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t))
 
 /** A region's bounds on the plan. */
 function regionBox(region: Region): PlanRect {

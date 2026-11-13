@@ -10,7 +10,7 @@
  */
 
 /** Bump when what the workers build changes, so nothing built the old way is shown. */
-export const BUILD_VERSION = 2
+export const BUILD_VERSION = 3
 
 const NAME = 'plinth-world-tiles'
 /** The most kept (bytes). */
